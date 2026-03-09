@@ -247,7 +247,9 @@ export const zhCN: Translations = {
     subtask: "子任务",
     executing: (count: number) =>
       `${count > 1 ? "并行" : ""}执行 ${count} 个子任务`,
+    pending: "待处理",
     in_progress: "子任务运行中",
+    waiting_clarification: "等待澄清",
     completed: "子任务已完成",
     failed: "子任务失败",
   },

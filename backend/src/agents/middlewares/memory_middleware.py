@@ -123,8 +123,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         if not config.enabled:
             return None
 
-        # Get thread ID from runtime context
-        thread_id = runtime.context.get("thread_id")
+        # Get thread ID from runtime context (LangGraph Server) or config fallback
+        thread_id = None
+        if runtime.context is not None:
+            thread_id = runtime.context.get("thread_id")
+        if not thread_id:
+            try:
+                from langgraph.config import get_config
+                thread_id = get_config().get("configurable", {}).get("thread_id")
+            except Exception:
+                pass
         if not thread_id:
             print("MemoryMiddleware: No thread_id in context, skipping memory update")
             return None

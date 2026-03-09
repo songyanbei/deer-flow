@@ -3,14 +3,12 @@ from typing import Annotated
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from langgraph.typing import ContextT
 
-from src.agents.thread_state import ThreadState
 
 
 @tool("present_files", parse_docstring=True)
 def present_file_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime,
     filepaths: list[str],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
@@ -37,3 +35,4 @@ def present_file_tool(
     return Command(
         update={"artifacts": filepaths, "messages": [ToolMessage("Successfully presented files", tool_call_id=tool_call_id)]},
     )
+

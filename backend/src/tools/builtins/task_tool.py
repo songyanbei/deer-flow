@@ -8,10 +8,8 @@ from typing import Annotated, Literal
 
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langgraph.config import get_stream_writer
-from langgraph.typing import ContextT
 
 from src.agents.lead_agent.prompt import get_skills_prompt_section
-from src.agents.thread_state import ThreadState
 from src.subagents import SubagentExecutor, get_subagent_config
 from src.subagents.executor import SubagentStatus, get_background_task_result
 
@@ -20,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 @tool("task", parse_docstring=True)
 def task_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime,
     description: str,
     prompt: str,
     subagent_type: Literal["general-purpose", "bash"],
@@ -85,7 +83,7 @@ def task_tool(
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
         thread_data = runtime.state.get("thread_data")
-        thread_id = runtime.context.get("thread_id")
+        thread_id = runtime.context.get("thread_id") if runtime.context is not None else None
 
         # Try to get parent model from configurable
         metadata = runtime.config.get("metadata", {})
@@ -186,3 +184,4 @@ def task_tool(
             logger.error(f"[trace={trace_id}] Task {task_id} polling timed out after {poll_count} polls (should have been caught by thread pool timeout)")
             writer({"type": "task_timed_out", "task_id": task_id})
             return f"Task polling timed out after {timeout_minutes} minutes. This may indicate the background task is stuck. Status: {result.status.value}"
+

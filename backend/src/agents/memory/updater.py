@@ -3,7 +3,7 @@
 import json
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +39,10 @@ def _get_memory_file_path(agent_name: str | None = None) -> Path:
 
 def _create_empty_memory() -> dict[str, Any]:
     """Create an empty memory structure."""
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     return {
         "version": "1.0",
-        "lastUpdated": datetime.utcnow().isoformat() + "Z",
+        "lastUpdated": now,
         "user": {
             "workContext": {"summary": "", "updatedAt": ""},
             "personalContext": {"summary": "", "updatedAt": ""},
@@ -194,7 +195,7 @@ def _save_memory_to_file(memory_data: dict[str, Any], agent_name: str | None = N
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Update lastUpdated timestamp
-        memory_data["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
+        memory_data["lastUpdated"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         # Write atomically using temp file
         temp_path = file_path.with_suffix(".tmp")
@@ -319,7 +320,7 @@ class MemoryUpdater:
             Updated memory data.
         """
         config = get_memory_config()
-        now = datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
         # Update user sections
         user_updates = update_data.get("user", {})

@@ -1,4 +1,4 @@
-import type { AIMessage, Message } from "@langchain/langgraph-sdk";
+﻿import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 import type { ThreadsClient } from "@langchain/langgraph-sdk/client";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +11,12 @@ import { getAPIClient } from "../api";
 import { useI18n } from "../i18n/hooks";
 import type { FileInMessage } from "../messages/utils";
 import type { LocalSettings } from "../settings";
-import { useUpdateSubtask } from "../tasks/context";
+import {
+  fromLegacyTaskEvent,
+  fromMultiAgentTaskEvent,
+  fromMultiAgentTaskState,
+} from "../tasks/adapters";
+import { useTaskActions } from "../tasks/context";
 import type { UploadedFileInfo } from "../uploads";
 import { uploadFiles } from "../uploads";
 
@@ -22,7 +27,33 @@ export type ToolEndEvent = {
   data: unknown;
 };
 
+export type ThreadAssistantId = "lead_agent" | "multi_agent";
+
+type BaseTaskEvent = {
+  type:
+    | "task_started"
+    | "task_running"
+    | "task_completed"
+    | "task_failed"
+    | "task_timed_out";
+  task_id: string;
+  message?: AIMessage | string;
+  result?: string;
+  error?: string;
+};
+
+type MultiAgentTaskEvent = BaseTaskEvent & {
+  source?: "multi_agent";
+  run_id?: string;
+  agent_name?: string;
+  description?: string;
+  status?: string;
+  status_detail?: string;
+  clarification_prompt?: string;
+};
+
 export type ThreadStreamOptions = {
+  assistantId: ThreadAssistantId;
   threadId?: string | null | undefined;
   context: LocalSettings["context"];
   isMock?: boolean;
@@ -32,6 +63,7 @@ export type ThreadStreamOptions = {
 };
 
 export function useThreadStream({
+  assistantId,
   threadId,
   context,
   isMock,
@@ -42,19 +74,20 @@ export function useThreadStream({
   const { t } = useI18n();
   const [_threadId, setThreadId] = useState<string | null>(threadId ?? null);
   const startedRef = useRef(false);
+  const hydratedRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (_threadId && _threadId !== threadId) {
       setThreadId(threadId ?? null);
-      startedRef.current = false; // Reset for new thread
+      startedRef.current = false;
     }
-  }, [threadId, _threadId]);
+  }, [_threadId, threadId]);
 
   const queryClient = useQueryClient();
-  const updateSubtask = useUpdateSubtask();
+  const { hydrateTasks, resetTasksBySource, upsertTask } = useTaskActions();
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
-    assistantId: "lead_agent",
+    assistantId,
     threadId: _threadId,
     reconnectOnMount: true,
     fetchStateHistory: { limit: 1 },
@@ -74,19 +107,21 @@ export function useThreadStream({
       }
     },
     onCustomEvent(event: unknown) {
-      if (
-        typeof event === "object" &&
-        event !== null &&
-        "type" in event &&
-        event.type === "task_running"
-      ) {
-        const e = event as {
-          type: "task_running";
-          task_id: string;
-          message: AIMessage;
-        };
-        updateSubtask({ id: e.task_id, latestMessage: e.message });
+      if (typeof event !== "object" || event === null || !("type" in event)) {
+        return;
       }
+
+      const taskEvent = classifyTaskEvent(event);
+      if (!taskEvent) {
+        return;
+      }
+
+      if (taskEvent.kind === "multi_agent") {
+        upsertTask(fromMultiAgentTaskEvent(taskEvent.event));
+        return;
+      }
+
+      upsertTask(fromLegacyTaskEvent(taskEvent.event));
     },
     onFinish(state) {
       onFinish?.(state.values);
@@ -94,12 +129,44 @@ export function useThreadStream({
     },
   });
 
-  // Optimistic messages shown before the server stream responds
+  useEffect(() => {
+    if (assistantId !== "multi_agent") {
+      hydratedRunIdRef.current = null;
+      return;
+    }
+
+    const runId = thread.values.run_id ?? null;
+    const taskPool = thread.values.task_pool ?? [];
+    if (runId === null && taskPool.length === 0) {
+      hydratedRunIdRef.current = null;
+      resetTasksBySource("multi_agent");
+      return;
+    }
+
+    if (hydratedRunIdRef.current !== null && hydratedRunIdRef.current !== runId) {
+      resetTasksBySource("multi_agent");
+    }
+
+    hydrateTasks(
+      taskPool.map((task) => fromMultiAgentTaskState(task, _threadId ?? undefined)),
+      {
+        source: "multi_agent",
+        runId,
+      },
+    );
+    hydratedRunIdRef.current = runId;
+  }, [
+    assistantId,
+    _threadId,
+    hydrateTasks,
+    resetTasksBySource,
+    thread.values.run_id,
+    thread.values.task_pool,
+  ]);
+
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
-  // Track message count before sending so we know when server has responded
   const prevMsgCountRef = useRef(thread.messages.length);
 
-  // Clear optimistic when server messages arrive (count increases)
   useEffect(() => {
     if (
       optimisticMessages.length > 0 &&
@@ -117,10 +184,8 @@ export function useThreadStream({
     ) => {
       const text = message.text.trim();
 
-      // Capture current count before showing optimistic messages
       prevMsgCountRef.current = thread.messages.length;
 
-      // Build optimistic files list with uploading status
       const optimisticFiles: FileInMessage[] = (message.files ?? []).map(
         (f) => ({
           filename: f.filename ?? "",
@@ -129,7 +194,6 @@ export function useThreadStream({
         }),
       );
 
-      // Create optimistic human message (shown immediately)
       const optimisticHumanMsg: Message = {
         type: "human",
         id: `opt-human-${Date.now()}`,
@@ -140,7 +204,6 @@ export function useThreadStream({
 
       const newOptimistic: Message[] = [optimisticHumanMsg];
       if (optimisticFiles.length > 0) {
-        // Mock AI message while files are being uploaded
         newOptimistic.push({
           type: "ai",
           id: `opt-ai-${Date.now()}`,
@@ -158,18 +221,14 @@ export function useThreadStream({
       let uploadedFileInfo: UploadedFileInfo[] = [];
 
       try {
-        // Upload files first if any
         if (message.files && message.files.length > 0) {
           try {
-            // Convert FileUIPart to File objects by fetching blob URLs
             const filePromises = message.files.map(async (fileUIPart) => {
               if (fileUIPart.url && fileUIPart.filename) {
                 try {
-                  // Fetch the blob URL to get the file data
                   const response = await fetch(fileUIPart.url);
                   const blob = await response.blob();
 
-                  // Create a File object from the blob
                   return new File([blob], fileUIPart.filename, {
                     type: fileUIPart.mediaType || blob.type,
                   });
@@ -204,7 +263,6 @@ export function useThreadStream({
               const uploadResponse = await uploadFiles(threadId, files);
               uploadedFileInfo = uploadResponse.files;
 
-              // Update optimistic human message with uploaded status + paths
               const uploadedFiles: FileInMessage[] = uploadedFileInfo.map(
                 (info) => ({
                   filename: info.filename,
@@ -239,7 +297,6 @@ export function useThreadStream({
           }
         }
 
-        // Build files metadata for submission (included in additional_kwargs)
         const filesForSubmit: FileInMessage[] = uploadedFileInfo.map(
           (info) => ({
             filename: info.filename,
@@ -292,7 +349,6 @@ export function useThreadStream({
     [thread, t.uploads.uploadingFiles, onStart, context, queryClient],
   );
 
-  // Merge thread with optimistic messages for display
   const mergedThread =
     optimisticMessages.length > 0
       ? ({
@@ -302,6 +358,59 @@ export function useThreadStream({
       : thread;
 
   return [mergedThread, sendMessage] as const;
+}
+
+export type ClassifiedTaskEvent =
+  | {
+      kind: "legacy";
+      event: BaseTaskEvent;
+    }
+  | {
+      kind: "multi_agent";
+      event: MultiAgentTaskEvent;
+    };
+
+const TASK_EVENT_TYPES = new Set<BaseTaskEvent["type"]>([
+  "task_started",
+  "task_running",
+  "task_completed",
+  "task_failed",
+  "task_timed_out",
+]);
+
+export function classifyTaskEvent(event: unknown): ClassifiedTaskEvent | null {
+  if (typeof event !== "object" || event === null) {
+    return null;
+  }
+
+  if (!("type" in event) || !("task_id" in event)) {
+    return null;
+  }
+
+  const candidate = event as Partial<MultiAgentTaskEvent>;
+  if (
+    typeof candidate.type !== "string" ||
+    !TASK_EVENT_TYPES.has(candidate.type) ||
+    typeof candidate.task_id !== "string"
+  ) {
+    return null;
+  }
+
+  if (candidate.source === "multi_agent") {
+    return {
+      kind: "multi_agent",
+      event: candidate as MultiAgentTaskEvent,
+    };
+  }
+
+  if (candidate.source === undefined) {
+    return {
+      kind: "legacy",
+      event: candidate as BaseTaskEvent,
+    };
+  }
+
+  return null;
 }
 
 export function useThreads(

@@ -6,15 +6,13 @@ from typing import Annotated
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from langgraph.typing import ContextT
 
-from src.agents.thread_state import ThreadState
 from src.sandbox.tools import get_thread_data, replace_virtual_path
 
 
 @tool("view_image", parse_docstring=True)
 def view_image_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime,
     image_path: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
@@ -92,3 +90,4 @@ def view_image_tool(
     return Command(
         update={"viewed_images": new_viewed_images, "messages": [ToolMessage("Successfully read image", tool_call_id=tool_call_id)]},
     )
+

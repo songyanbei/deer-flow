@@ -146,7 +146,16 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             return None
 
         # Resolve uploads directory for existence checks
-        thread_id = runtime.context.get("thread_id")
+        # LangGraph Server: runtime.context; direct invocation: get_config() fallback
+        thread_id = None
+        if runtime.context is not None:
+            thread_id = runtime.context.get("thread_id")
+        if thread_id is None:
+            try:
+                from langgraph.config import get_config
+                thread_id = get_config().get("configurable", {}).get("thread_id")
+            except Exception:
+                pass
         uploads_dir = self._paths.sandbox_uploads_dir(thread_id) if thread_id else None
 
         # Get newly uploaded files from the current message's additional_kwargs.files

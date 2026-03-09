@@ -1,4 +1,4 @@
-from typing import Annotated, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents import AgentState
 
@@ -18,30 +18,90 @@ class ViewedImageData(TypedDict):
     mime_type: str
 
 
+class TaskStatus(TypedDict):
+    """Status of a single sub-task in the shared task pool."""
+
+    task_id: str
+    description: str
+    run_id: NotRequired[str | None]
+    assigned_agent: NotRequired[str | None]
+    status: Literal["PENDING", "RUNNING", "DONE", "FAILED"]
+    status_detail: NotRequired[str | None]
+    clarification_prompt: NotRequired[str | None]
+    updated_at: NotRequired[str | None]
+    result: NotRequired[str | None]
+    error: NotRequired[str | None]
+
+
+VerifiedFact = dict[str, Any]
+
+
+def _is_valid_status_transition(old_status: str, new_status: str) -> bool:
+    """Validate task status transitions for blackboard safety."""
+    if old_status == new_status:
+        return True
+
+    allowed_transitions = {
+        "PENDING": {"RUNNING", "FAILED"},
+        "RUNNING": {"DONE", "FAILED"},
+        "DONE": set(),
+        "FAILED": set(),
+    }
+    return new_status in allowed_transitions.get(old_status, set())
+
+
+def merge_task_pool(existing: list[TaskStatus] | None, new: list[TaskStatus] | None) -> list[TaskStatus]:
+    """Reducer for task_pool with transition guard."""
+    if existing is None:
+        return new or []
+    if new is None:
+        return existing
+    if len(new) == 0:
+        return []
+
+    mapping: dict[str, dict] = {t["task_id"]: dict(t) for t in existing}
+    for task in new:
+        tid = task["task_id"]
+        if tid in mapping:
+            updates = {k: v for k, v in task.items() if v is not None}
+            old_status = mapping[tid].get("status")
+            new_status = updates.get("status")
+            if old_status and new_status and not _is_valid_status_transition(str(old_status), str(new_status)):
+                updates.pop("status", None)
+            mapping[tid].update(updates)
+        else:
+            mapping[tid] = dict(task)
+    return list(mapping.values())
+
+
+def merge_verified_facts(existing: VerifiedFact | None, new: VerifiedFact | None) -> VerifiedFact:
+    """Reducer for verified_facts as a keyed blackboard."""
+    if existing is None:
+        return new or {}
+    if new is None:
+        return existing
+    if len(new) == 0:
+        return {}
+    return {**existing, **new}
+
+
 def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:
     """Reducer for artifacts list - merges and deduplicates artifacts."""
     if existing is None:
         return new or []
     if new is None:
         return existing
-    # Use dict.fromkeys to deduplicate while preserving order
     return list(dict.fromkeys(existing + new))
 
 
 def merge_viewed_images(existing: dict[str, ViewedImageData] | None, new: dict[str, ViewedImageData] | None) -> dict[str, ViewedImageData]:
-    """Reducer for viewed_images dict - merges image dictionaries.
-
-    Special case: If new is an empty dict {}, it clears the existing images.
-    This allows middlewares to clear the viewed_images state after processing.
-    """
+    """Reducer for viewed_images dict - merges image dictionaries."""
     if existing is None:
         return new or {}
     if new is None:
         return existing
-    # Special case: empty dict means clear all viewed images
     if len(new) == 0:
         return {}
-    # Merge dictionaries, new values override existing ones for same keys
     return {**existing, **new}
 
 
@@ -52,4 +112,13 @@ class ThreadState(AgentState):
     artifacts: Annotated[list[str], merge_artifacts]
     todos: NotRequired[list | None]
     uploaded_files: NotRequired[list[dict] | None]
-    viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]  # image_path -> {base64, mime_type}
+    viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]
+
+    original_input: NotRequired[str | None]
+    run_id: NotRequired[str | None]
+    planner_goal: NotRequired[str | None]
+    task_pool: Annotated[list[TaskStatus], merge_task_pool]
+    verified_facts: Annotated[VerifiedFact, merge_verified_facts]
+    route_count: NotRequired[int]
+    execution_state: NotRequired[str | None]
+    final_result: NotRequired[str | None]

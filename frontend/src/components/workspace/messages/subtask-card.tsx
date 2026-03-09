@@ -1,11 +1,11 @@
-import {
+﻿import {
   CheckCircleIcon,
   ChevronUp,
   ClipboardListIcon,
   Loader2Icon,
   XCircleIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Streamdown } from "streamdown";
 
 import {
@@ -29,6 +29,33 @@ import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
 
+function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeof useI18n>["t"]) {
+  if (!task) {
+    return "";
+  }
+
+  if (task.status === "pending") {
+    return task.statusDetail ?? t.subtasks.pending;
+  }
+  if (task.status === "waiting_clarification") {
+    return (
+      task.clarificationPrompt ??
+      task.statusDetail ??
+      task.latestUpdate ??
+      t.subtasks.waiting_clarification
+    );
+  }
+  if (task.status === "in_progress") {
+    return task.latestMessage && hasToolCalls(task.latestMessage)
+      ? explainLastToolCall(task.latestMessage, t)
+      : task.latestUpdate ?? task.statusDetail ?? t.subtasks.in_progress;
+  }
+  if (task.status === "completed") {
+    return t.subtasks.completed;
+  }
+  return t.subtasks.failed;
+}
+
 export function SubtaskCard({
   className,
   taskId,
@@ -41,16 +68,26 @@ export function SubtaskCard({
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
-  const task = useSubtask(taskId)!;
-  const icon = useMemo(() => {
-    if (task.status === "completed") {
-      return <CheckCircleIcon className="size-3" />;
-    } else if (task.status === "failed") {
-      return <XCircleIcon className="size-3 text-red-500" />;
-    } else if (task.status === "in_progress") {
-      return <Loader2Icon className="size-3 animate-spin" />;
-    }
-  }, [task.status]);
+  const task = useSubtask(taskId);
+  if (!task) {
+    return null;
+  }
+  let icon = <ClipboardListIcon className="size-3" />;
+  if (task.status === "completed") {
+    icon = <CheckCircleIcon className="size-3" />;
+  } else if (task.status === "failed") {
+    icon = <XCircleIcon className="size-3 text-red-500" />;
+  } else if (
+    task.status === "in_progress" ||
+    task.status === "waiting_clarification"
+  ) {
+    icon = <Loader2Icon className="size-3 animate-spin" />;
+  }
+
+  const progressLabel = getStatusLabel(task, t);
+  const isActive =
+    task.status === "in_progress" || task.status === "waiting_clarification";
+
   return (
     <ChainOfThought
       className={cn("relative w-full gap-2 rounded-lg border py-0", className)}
@@ -59,10 +96,10 @@ export function SubtaskCard({
       <div
         className={cn(
           "ambilight z-[-1]",
-          task.status === "in_progress" ? "enabled" : "",
+          isActive ? "enabled" : "",
         )}
       ></div>
-      {task.status === "in_progress" && (
+      {isActive && (
         <>
           <ShineBorder
             borderWidth={1.5}
@@ -81,7 +118,7 @@ export function SubtaskCard({
               <ChainOfThoughtStep
                 className="font-normal"
                 label={
-                  task.status === "in_progress" ? (
+                  isActive ? (
                     <Shimmer duration={3} spread={3}>
                       {task.description}
                     </Shimmer>
@@ -102,13 +139,9 @@ export function SubtaskCard({
                     {icon}
                     <FlipDisplay
                       className="max-w-[420px] truncate pb-1"
-                      uniqueKey={task.latestMessage?.id ?? ""}
+                      uniqueKey={task.latestMessage?.id ?? task.latestUpdate ?? task.status}
                     >
-                      {task.status === "in_progress" &&
-                      task.latestMessage &&
-                      hasToolCalls(task.latestMessage)
-                        ? explainLastToolCall(task.latestMessage, t)
-                        : t.subtasks[task.status]}
+                      {progressLabel}
                     </FlipDisplay>
                   </div>
                 )}
@@ -135,15 +168,20 @@ export function SubtaskCard({
               }
             ></ChainOfThoughtStep>
           )}
-          {task.status === "in_progress" &&
-            task.latestMessage &&
-            hasToolCalls(task.latestMessage) && (
-              <ChainOfThoughtStep
-                label={t.subtasks.in_progress}
-                icon={<Loader2Icon className="size-4 animate-spin" />}
-              >
-                {explainLastToolCall(task.latestMessage, t)}
-              </ChainOfThoughtStep>
+          {(task.status === "in_progress" ||
+            task.status === "waiting_clarification" ||
+            task.status === "pending") &&
+            progressLabel && (
+            <ChainOfThoughtStep
+              label={progressLabel}
+              icon={
+                task.status === "pending" ? (
+                  <ClipboardListIcon className="size-4" />
+                ) : (
+                  <Loader2Icon className="size-4 animate-spin" />
+                )
+              }
+            ></ChainOfThoughtStep>
             )}
           {task.status === "completed" && (
             <>

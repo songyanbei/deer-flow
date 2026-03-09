@@ -11,6 +11,7 @@ from src.agents.middlewares.memory_middleware import MemoryMiddleware
 from src.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from src.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
 from src.agents.middlewares.title_middleware import TitleMiddleware
+from src.agents.middlewares.tool_call_limit_middleware import ToolCallLimitMiddleware
 from src.agents.middlewares.uploads_middleware import UploadsMiddleware
 from src.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from src.agents.thread_state import ThreadState
@@ -226,12 +227,17 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     todo_list_middleware = _create_todo_list_middleware(is_plan_mode)
     if todo_list_middleware is not None:
         middlewares.append(todo_list_middleware)
+    is_domain_agent = config.get("configurable", {}).get("is_domain_agent", False)
+    if not is_domain_agent:
+        # Add TitleMiddleware
+        middlewares.append(TitleMiddleware())
 
-    # Add TitleMiddleware
-    middlewares.append(TitleMiddleware())
+        # Add MemoryMiddleware (after TitleMiddleware)
+        middlewares.append(MemoryMiddleware(agent_name=agent_name))
 
-    # Add MemoryMiddleware (after TitleMiddleware)
-    middlewares.append(MemoryMiddleware(agent_name=agent_name))
+    max_tool_calls = config.get("configurable", {}).get("max_tool_calls")
+    if isinstance(max_tool_calls, int):
+        middlewares.append(ToolCallLimitMiddleware(max_tool_calls=max_tool_calls))
 
     # Add ViewImageMiddleware only if the current model supports vision.
     # Use the resolved runtime model_name from make_lead_agent to avoid stale config values.
@@ -294,6 +300,9 @@ def make_lead_agent(config: RunnableConfig):
         max_concurrent_subagents,
     )
 
+    if agent_config and "max_tool_calls" not in cfg:
+        cfg["max_tool_calls"] = agent_config.max_tool_calls
+
     # Inject run metadata for LangSmith trace tagging
     if "metadata" not in config:
         config["metadata"] = {}
@@ -321,11 +330,30 @@ def make_lead_agent(config: RunnableConfig):
             state_schema=ThreadState,
         )
 
+    # Resolve available_skills from agent config (domain agents may restrict which skills are exposed)
+    available_skills: set[str] | None = None
+    if agent_config and agent_config.available_skills is not None:
+        available_skills = set(agent_config.available_skills)
+
+    # Fetch per-agent MCP tools from the process-level pool (already connected by executor).
+    # We look up tools here at agent-build time rather than reading from config.configurable
+    # to avoid StructuredTool objects being serialized during LangGraph checkpointing.
+    extra_tools: list = []
+    if agent_name:
+        try:
+            from src.execution.mcp_pool import mcp_pool
+            extra_tools = mcp_pool.get_agent_tools_sync(agent_name)
+            if extra_tools:
+                logger.info("Injecting %d MCP tool(s) for agent '%s'.", len(extra_tools), agent_name)
+        except Exception as e:
+            logger.warning("Failed to get MCP tools for agent '%s': %s", agent_name, e)
+
     # Default lead agent (unchanged behavior)
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
-        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled),
+        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled) + extra_tools,
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),
-        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name),
+        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name, available_skills=available_skills),
         state_schema=ThreadState,
     )
+

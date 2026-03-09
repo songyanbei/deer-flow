@@ -197,7 +197,9 @@ export interface Translations {
   subtasks: {
     subtask: string;
     executing: (count: number) => string;
+    pending: string;
     in_progress: string;
+    waiting_clarification: string;
     completed: string;
     failed: string;
   };

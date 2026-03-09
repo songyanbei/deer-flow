@@ -8,14 +8,16 @@ import { useI18n } from "@/core/i18n/hooks";
 import {
   extractContentFromMessage,
   extractPresentFilesFromMessage,
-  extractTextFromMessage,
   groupMessages,
   hasContent,
   hasPresentFiles,
   hasReasoning,
 } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
-import type { Subtask } from "@/core/tasks";
+import {
+  fromLegacyTaskToolCall,
+  fromLegacyToolMessage,
+} from "@/core/tasks";
 import { useUpdateSubtask } from "@/core/tasks/context";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
@@ -96,52 +98,24 @@ export function MessageList({
               </div>
             );
           } else if (group.type === "assistant:subagent") {
-            const tasks = new Set<Subtask>();
+            const taskIds = new Set<string>();
             for (const message of group.messages) {
               if (message.type === "ai") {
                 for (const toolCall of message.tool_calls ?? []) {
-                  if (toolCall.name === "task") {
-                    const task: Subtask = {
-                      id: toolCall.id!,
-                      subagent_type: toolCall.args.subagent_type,
-                      description: toolCall.args.description,
-                      prompt: toolCall.args.prompt,
-                      status: "in_progress",
-                    };
+                  const task = fromLegacyTaskToolCall(
+                    toolCall,
+                    threadId,
+                  );
+                  if (task) {
                     updateSubtask(task);
-                    tasks.add(task);
+                    taskIds.add(task.id);
                   }
                 }
-              } else if (message.type === "tool") {
-                const taskId = message.tool_call_id;
-                if (taskId) {
-                  const result = extractTextFromMessage(message);
-                  if (result.startsWith("Task Succeeded. Result:")) {
-                    updateSubtask({
-                      id: taskId,
-                      status: "completed",
-                      result: result
-                        .split("Task Succeeded. Result:")[1]
-                        ?.trim(),
-                    });
-                  } else if (result.startsWith("Task failed.")) {
-                    updateSubtask({
-                      id: taskId,
-                      status: "failed",
-                      error: result.split("Task failed.")[1]?.trim(),
-                    });
-                  } else if (result.startsWith("Task timed out")) {
-                    updateSubtask({
-                      id: taskId,
-                      status: "failed",
-                      error: result,
-                    });
-                  } else {
-                    updateSubtask({
-                      id: taskId,
-                      status: "in_progress",
-                    });
-                  }
+              } else {
+                const taskUpdate = fromLegacyToolMessage(message);
+                if (taskUpdate) {
+                  updateSubtask(taskUpdate);
+                  taskIds.add(taskUpdate.id);
                 }
               }
             }
@@ -163,13 +137,13 @@ export function MessageList({
                   key="subtask-count"
                   className="text-muted-foreground font-norma pt-2 text-sm"
                 >
-                  {t.subtasks.executing(tasks.size)}
+                  {t.subtasks.executing(taskIds.size)}
                 </div>,
               );
-              const taskIds = message.tool_calls?.map(
+              const messageTaskIds = message.tool_calls?.map(
                 (toolCall) => toolCall.id,
               );
-              for (const taskId of taskIds ?? []) {
+              for (const taskId of messageTaskIds ?? []) {
                 results.push(
                   <SubtaskCard
                     key={"task-group-" + taskId}

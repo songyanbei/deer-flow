@@ -21,8 +21,14 @@ def _make_paths(base_dir: Path):
     return Paths(base_dir=base_dir)
 
 
-def _write_agent(base_dir: Path, name: str, config: dict, soul: str = "You are helpful.") -> None:
-    """Write an agent directory with config.yaml and SOUL.md."""
+def _write_agent(
+    base_dir: Path,
+    name: str,
+    config: dict,
+    soul: str = "You are helpful.",
+    prompt_file: str = "SOUL.md",
+) -> None:
+    """Write an agent directory with config.yaml and prompt file."""
     agent_dir = base_dir / "agents" / name
     agent_dir.mkdir(parents=True, exist_ok=True)
 
@@ -33,11 +39,11 @@ def _write_agent(base_dir: Path, name: str, config: dict, soul: str = "You are h
     with open(agent_dir / "config.yaml", "w") as f:
         yaml.dump(config_copy, f)
 
-    (agent_dir / "SOUL.md").write_text(soul, encoding="utf-8")
+    (agent_dir / prompt_file).write_text(soul, encoding="utf-8")
 
 
 # ===========================================================================
-# 1. Paths class – agent path methods
+# 1. Paths class 鈥?agent path methods
 # ===========================================================================
 
 
@@ -66,7 +72,7 @@ class TestPaths:
 
 
 # ===========================================================================
-# 2. AgentConfig – Pydantic parsing
+# 2. AgentConfig 鈥?Pydantic parsing
 # ===========================================================================
 
 
@@ -88,19 +94,43 @@ class TestAgentConfig:
             description="Specialized for code review",
             model="deepseek-v3",
             tool_groups=["file:read", "bash"],
+            domain="code",
+            system_prompt_file="reviewer.md",
+            hitl_keywords=["confirm", "approve"],
+            max_tool_calls=12,
+            mcp_servers=[{"name": "code-mcp", "command": "python"}],
+            available_skills=["code-review"],
         )
         assert cfg.name == "code-reviewer"
         assert cfg.model == "deepseek-v3"
         assert cfg.tool_groups == ["file:read", "bash"]
+        assert cfg.domain == "code"
+        assert cfg.system_prompt_file == "reviewer.md"
+        assert cfg.hitl_keywords == ["confirm", "approve"]
+        assert cfg.max_tool_calls == 12
+        assert cfg.mcp_servers[0].name == "code-mcp"
+        assert cfg.available_skills == ["code-review"]
 
     def test_config_from_dict(self):
         from src.config.agents_config import AgentConfig
 
-        data = {"name": "test-agent", "description": "A test", "model": "gpt-4"}
+        data = {
+            "name": "test-agent",
+            "description": "A test",
+            "model": "gpt-4",
+            "domain": "general",
+            "system_prompt_file": "system.md",
+            "hitl_keywords": ["escalate"],
+            "max_tool_calls": 9,
+            "mcp_servers": [{"name": "directory", "command": "node"}],
+            "available_skills": ["search"],
+        }
         cfg = AgentConfig(**data)
         assert cfg.name == "test-agent"
         assert cfg.model == "gpt-4"
         assert cfg.tool_groups is None
+        assert cfg.mcp_servers[0].name == "directory"
+        assert cfg.available_skills == ["search"]
 
 
 # ===========================================================================
@@ -344,7 +374,7 @@ class TestMemoryFilePath:
 
 
 # ===========================================================================
-# 8. Gateway API – Agents endpoints
+# 8. Gateway API 鈥?Agents endpoints
 # ===========================================================================
 
 
@@ -492,7 +522,7 @@ class TestAgentsAPI:
 
 
 # ===========================================================================
-# 9. Gateway API – User Profile endpoints
+# 9. Gateway API 鈥?User Profile endpoints
 # ===========================================================================
 
 
@@ -525,3 +555,176 @@ class TestUserProfileAPI:
         response = agent_client.put("/api/user-profile", json={"content": ""})
         assert response.status_code == 200
         assert response.json()["content"] is None
+
+
+# ===========================================================================
+# 10. Phase 1 acceptance coverage
+# ===========================================================================
+
+
+class TestPhaseOneAgentConfig:
+    def test_load_config_with_orchestration_fields(self, tmp_path):
+        config_dict = {
+            "name": "domain-agent",
+            "description": "Handles employee lookups",
+            "domain": "employee_directory",
+            "system_prompt_file": "DOMAIN.md",
+            "hitl_keywords": ["confirm", "approval"],
+            "max_tool_calls": 7,
+            "mcp_servers": [{"name": "hr-mcp", "command": "node", "args": ["server.js"]}],
+            "available_skills": ["hr"],
+        }
+        agent_dir = tmp_path / "agents" / "domain-agent"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "config.yaml").write_text(yaml.dump(config_dict), encoding="utf-8")
+        (agent_dir / "DOMAIN.md").write_text("Domain prompt", encoding="utf-8")
+
+        with patch("src.config.agents_config.get_paths", return_value=_make_paths(tmp_path)):
+            from src.config.agents_config import load_agent_config
+
+            cfg = load_agent_config("domain-agent")
+
+        assert cfg.domain == "employee_directory"
+        assert cfg.system_prompt_file == "DOMAIN.md"
+        assert cfg.hitl_keywords == ["confirm", "approval"]
+        assert cfg.max_tool_calls == 7
+        assert cfg.mcp_servers[0].name == "hr-mcp"
+        assert cfg.available_skills == ["hr"]
+
+    def test_load_agent_soul_uses_system_prompt_file(self, tmp_path):
+        agent_dir = tmp_path / "agents" / "custom-prompt-agent"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "config.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "custom-prompt-agent",
+                    "system_prompt_file": "SYSTEM.md",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agent_dir / "SYSTEM.md").write_text("Use the custom prompt file", encoding="utf-8")
+
+        with patch("src.config.agents_config.get_paths", return_value=_make_paths(tmp_path)):
+            from src.config.agents_config import load_agent_soul
+
+            soul = load_agent_soul("custom-prompt-agent")
+
+        assert soul == "Use the custom prompt file"
+
+
+class TestPhaseOneAgentsAPI:
+    def test_create_agent_persists_orchestration_fields(self, agent_client, tmp_path):
+        payload = {
+            "name": "employee-agent",
+            "description": "Employee directory specialist",
+            "domain": "employee_directory",
+            "system_prompt_file": "DOMAIN.md",
+            "hitl_keywords": ["confirm", "manager approval"],
+            "max_tool_calls": 5,
+            "tool_groups": ["search"],
+            "mcp_servers": [{"name": "employee-directory", "command": "node", "args": ["dir.js"]}],
+            "available_skills": ["directory", "people"],
+            "soul": "You are the employee directory specialist.",
+        }
+
+        response = agent_client.post("/api/agents", json=payload)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["domain"] == "employee_directory"
+        assert data["system_prompt_file"] == "DOMAIN.md"
+        assert data["hitl_keywords"] == ["confirm", "manager approval"]
+        assert data["max_tool_calls"] == 5
+        assert data["mcp_servers"][0]["name"] == "employee-directory"
+        assert data["available_skills"] == ["directory", "people"]
+
+        config_data = yaml.safe_load((tmp_path / "agents" / "employee-agent" / "config.yaml").read_text(encoding="utf-8"))
+        assert config_data["domain"] == "employee_directory"
+        assert config_data["system_prompt_file"] == "DOMAIN.md"
+        assert config_data["hitl_keywords"] == ["confirm", "manager approval"]
+        assert config_data["max_tool_calls"] == 5
+        assert config_data["mcp_servers"][0]["name"] == "employee-directory"
+        assert config_data["available_skills"] == ["directory", "people"]
+        assert (tmp_path / "agents" / "employee-agent" / "DOMAIN.md").read_text(encoding="utf-8") == payload["soul"]
+
+    def test_get_and_list_agents_include_orchestration_fields(self, agent_client):
+        agent_client.post(
+            "/api/agents",
+            json={
+                "name": "planner-agent",
+                "domain": "planning",
+                "system_prompt_file": "PLANNER.md",
+                "hitl_keywords": ["clarify"],
+                "max_tool_calls": 8,
+                "available_skills": ["planning"],
+                "soul": "You plan tasks.",
+            },
+        )
+
+        get_response = agent_client.get("/api/agents/planner-agent")
+        assert get_response.status_code == 200
+        assert get_response.json()["domain"] == "planning"
+        assert get_response.json()["system_prompt_file"] == "PLANNER.md"
+        assert get_response.json()["available_skills"] == ["planning"]
+
+        list_response = agent_client.get("/api/agents")
+        assert list_response.status_code == 200
+        listed = list_response.json()["agents"][0]
+        assert listed["domain"] == "planning"
+        assert listed["max_tool_calls"] == 8
+        assert listed["available_skills"] == ["planning"]
+
+    def test_update_agent_migrates_prompt_file_without_losing_content(self, agent_client, tmp_path):
+        agent_client.post(
+            "/api/agents",
+            json={
+                "name": "migrate-agent",
+                "system_prompt_file": "OLD.md",
+                "soul": "Original prompt",
+            },
+        )
+
+        response = agent_client.put(
+            "/api/agents/migrate-agent",
+            json={
+                "system_prompt_file": "NEW.md",
+                "domain": "migrated_domain",
+                "hitl_keywords": ["approve"],
+                "max_tool_calls": 11,
+                "mcp_servers": [{"name": "migrated-mcp", "command": "node", "args": ["new.js"]}],
+                "available_skills": ["migrated-skill"],
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["system_prompt_file"] == "NEW.md"
+        assert data["domain"] == "migrated_domain"
+        assert data["hitl_keywords"] == ["approve"]
+        assert data["max_tool_calls"] == 11
+        assert data["mcp_servers"][0]["name"] == "migrated-mcp"
+        assert data["available_skills"] == ["migrated-skill"]
+        assert data["soul"] == "Original prompt"
+        assert (tmp_path / "agents" / "migrate-agent" / "NEW.md").read_text(encoding="utf-8") == "Original prompt"
+
+    def test_update_agent_writes_soul_to_active_prompt_file(self, agent_client, tmp_path):
+        agent_client.post(
+            "/api/agents",
+            json={
+                "name": "prompt-agent",
+                "system_prompt_file": "ACTIVE.md",
+                "soul": "Before update",
+            },
+        )
+
+        response = agent_client.put(
+            "/api/agents/prompt-agent",
+            json={
+                "soul": "After update",
+                "max_tool_calls": 6,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["soul"] == "After update"
+        assert response.json()["max_tool_calls"] == 6
+        assert (tmp_path / "agents" / "prompt-agent" / "ACTIVE.md").read_text(encoding="utf-8") == "After update"
+

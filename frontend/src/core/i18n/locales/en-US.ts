@@ -259,7 +259,9 @@ export const enUS: Translations = {
     subtask: "Subtask",
     executing: (count: number) =>
       `Executing ${count === 1 ? "" : count + " "}subtask${count === 1 ? "" : "s in parallel"}`,
+    pending: "Pending",
     in_progress: "Running subtask",
+    waiting_clarification: "Waiting for clarification",
     completed: "Subtask completed",
     failed: "Subtask failed",
   },
