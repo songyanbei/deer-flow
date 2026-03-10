@@ -2,7 +2,7 @@
 import type { ThreadsClient } from "@langchain/langgraph-sdk/client";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
@@ -36,21 +36,29 @@ type BaseTaskEvent = {
     | "task_completed"
     | "task_failed"
     | "task_timed_out";
+  source?: "legacy_subagent";
   task_id: string;
   message?: AIMessage | string;
   result?: string;
   error?: string;
 };
 
-type MultiAgentTaskEvent = BaseTaskEvent & {
-  source?: "multi_agent";
+type MultiAgentTaskEvent = Omit<BaseTaskEvent, "source"> & {
+  source: "multi_agent";
   run_id?: string;
   agent_name?: string;
   description?: string;
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
+  resolved_orchestration_mode?: AgentThreadState["resolved_orchestration_mode"];
+  orchestration_reason?: AgentThreadState["orchestration_reason"];
 };
+
+type ThreadEventPatch = Pick<
+  AgentThreadState,
+  "resolved_orchestration_mode" | "orchestration_reason" | "run_id"
+>;
 
 export type ThreadStreamOptions = {
   assistantId: ThreadAssistantId;
@@ -85,6 +93,8 @@ export function useThreadStream({
 
   const queryClient = useQueryClient();
   const { hydrateTasks, resetTasksBySource, upsertTask } = useTaskActions();
+  const [eventPatch, setEventPatch] = useState<ThreadEventPatch>({});
+  const hadWorkflowHydrationRef = useRef(false);
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
     assistantId,
@@ -107,6 +117,18 @@ export function useThreadStream({
       }
     },
     onCustomEvent(event: unknown) {
+      const patch = extractThreadEventPatch(event);
+      if (patch) {
+        setEventPatch((current) => ({
+          resolved_orchestration_mode:
+            patch.resolved_orchestration_mode ??
+            current.resolved_orchestration_mode,
+          orchestration_reason:
+            patch.orchestration_reason ?? current.orchestration_reason,
+          run_id: patch.run_id ?? current.run_id,
+        }));
+      }
+
       if (typeof event !== "object" || event === null || !("type" in event)) {
         return;
       }
@@ -130,21 +152,56 @@ export function useThreadStream({
   });
 
   useEffect(() => {
-    if (assistantId !== "multi_agent") {
+    setEventPatch({});
+    hadWorkflowHydrationRef.current = false;
+    hydratedRunIdRef.current = null;
+  }, [_threadId]);
+
+  const mergedValues = useMemo<AgentThreadState>(
+    () => ({
+      ...thread.values,
+      resolved_orchestration_mode:
+        thread.values.resolved_orchestration_mode !== undefined
+          ? thread.values.resolved_orchestration_mode
+          : eventPatch.resolved_orchestration_mode,
+      orchestration_reason:
+        thread.values.orchestration_reason !== undefined
+          ? thread.values.orchestration_reason
+          : eventPatch.orchestration_reason,
+      run_id:
+        thread.values.run_id !== undefined
+          ? thread.values.run_id
+          : eventPatch.run_id,
+    }),
+    [eventPatch, thread.values],
+  );
+
+  useEffect(() => {
+    const runId = mergedValues.run_id ?? null;
+    const taskPool = mergedValues.task_pool ?? [];
+    const shouldHydrateWorkflow =
+      mergedValues.resolved_orchestration_mode === "workflow" ||
+      taskPool.length > 0;
+
+    if (!shouldHydrateWorkflow) {
+      if (hadWorkflowHydrationRef.current) {
+        if (hydratedRunIdRef.current === null) {
+          resetTasksBySource("multi_agent");
+        } else {
+          resetTasksBySource("multi_agent", hydratedRunIdRef.current);
+        }
+      }
+      hadWorkflowHydrationRef.current = false;
       hydratedRunIdRef.current = null;
       return;
     }
 
-    const runId = thread.values.run_id ?? null;
-    const taskPool = thread.values.task_pool ?? [];
-    if (runId === null && taskPool.length === 0) {
-      hydratedRunIdRef.current = null;
-      resetTasksBySource("multi_agent");
-      return;
-    }
-
-    if (hydratedRunIdRef.current !== null && hydratedRunIdRef.current !== runId) {
-      resetTasksBySource("multi_agent");
+    if (hadWorkflowHydrationRef.current && hydratedRunIdRef.current !== runId) {
+      if (hydratedRunIdRef.current === null) {
+        resetTasksBySource("multi_agent");
+      } else {
+        resetTasksBySource("multi_agent", hydratedRunIdRef.current);
+      }
     }
 
     hydrateTasks(
@@ -154,14 +211,15 @@ export function useThreadStream({
         runId,
       },
     );
+    hadWorkflowHydrationRef.current = true;
     hydratedRunIdRef.current = runId;
   }, [
-    assistantId,
     _threadId,
     hydrateTasks,
+    mergedValues.resolved_orchestration_mode,
+    mergedValues.run_id,
+    mergedValues.task_pool,
     resetTasksBySource,
-    thread.values.run_id,
-    thread.values.task_pool,
   ]);
 
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
@@ -353,9 +411,13 @@ export function useThreadStream({
     optimisticMessages.length > 0
       ? ({
           ...thread,
+          values: mergedValues,
           messages: [...thread.messages, ...optimisticMessages],
         } as typeof thread)
-      : thread;
+      : ({
+          ...thread,
+          values: mergedValues,
+        } as typeof thread);
 
   return [mergedThread, sendMessage] as const;
 }
@@ -403,7 +465,10 @@ export function classifyTaskEvent(event: unknown): ClassifiedTaskEvent | null {
     };
   }
 
-  if (candidate.source === undefined) {
+  if (
+    candidate.source === undefined ||
+    candidate.source === "legacy_subagent"
+  ) {
     return {
       kind: "legacy",
       event: candidate as BaseTaskEvent,
@@ -411,6 +476,37 @@ export function classifyTaskEvent(event: unknown): ClassifiedTaskEvent | null {
   }
 
   return null;
+}
+
+function extractThreadEventPatch(event: unknown): ThreadEventPatch | null {
+  if (typeof event !== "object" || event === null) {
+    return null;
+  }
+
+  const candidate = event as Partial<
+    Pick<
+      MultiAgentTaskEvent,
+      "resolved_orchestration_mode" | "orchestration_reason" | "run_id"
+    >
+  >;
+  const patch: ThreadEventPatch = {};
+
+  if (
+    candidate.resolved_orchestration_mode === "leader" ||
+    candidate.resolved_orchestration_mode === "workflow"
+  ) {
+    patch.resolved_orchestration_mode = candidate.resolved_orchestration_mode;
+  }
+
+  if (typeof candidate.orchestration_reason === "string") {
+    patch.orchestration_reason = candidate.orchestration_reason;
+  }
+
+  if (typeof candidate.run_id === "string" && candidate.run_id) {
+    patch.run_id = candidate.run_id;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 export function useThreads(

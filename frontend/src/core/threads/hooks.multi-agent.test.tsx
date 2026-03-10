@@ -107,8 +107,8 @@ describe("useThreadStream multi-agent compatibility", () => {
     const rendered = renderHook({
       assistantId: "lead_agent",
       threadValues: {
+        resolved_orchestration_mode: "leader",
         run_id: "run-1",
-        task_pool: [{ task_id: "task-1", description: "Task", status: "PENDING" }],
       },
     });
 

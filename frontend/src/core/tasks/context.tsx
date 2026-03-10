@@ -184,10 +184,10 @@ export function SubtasksProvider({ children }: { children: React.ReactNode }) {
       const normalizedSource = task.source ?? existing?.source ?? "legacy_subagent";
       const nextTask: TaskViewModel = {
         ...existing,
+        ...task,
         id: task.id,
         description: task.description ?? existing?.description ?? "",
         status: task.status ?? existing?.status ?? "pending",
-        ...task,
         source: normalizedSource,
       } as TaskViewModel;
 

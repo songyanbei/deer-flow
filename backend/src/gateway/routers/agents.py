@@ -299,6 +299,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
 
     agent_dir = get_paths().agent_dir(name)
+    requested_mode_provided = "requested_orchestration_mode" in request.model_fields_set
 
     try:
         next_prompt_file = request.system_prompt_file if request.system_prompt_file is not None else agent_cfg.system_prompt_file
@@ -314,9 +315,8 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 request.max_tool_calls,
                 request.mcp_servers,
                 request.available_skills,
-                request.requested_orchestration_mode,
             ]
-        )
+        ) or requested_mode_provided
 
         if config_changed:
             updated = _build_config_data(
@@ -330,7 +330,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 max_tool_calls=request.max_tool_calls if request.max_tool_calls is not None else agent_cfg.max_tool_calls,
                 mcp_servers=request.mcp_servers if request.mcp_servers is not None else agent_cfg.mcp_servers,
                 available_skills=request.available_skills if request.available_skills is not None else agent_cfg.available_skills,
-                requested_orchestration_mode=request.requested_orchestration_mode if request.requested_orchestration_mode is not None else agent_cfg.requested_orchestration_mode,
+                requested_orchestration_mode=request.requested_orchestration_mode if requested_mode_provided else agent_cfg.requested_orchestration_mode,
             )
             _write_config(agent_dir, updated)
             _migrate_prompt_file_if_needed(agent_dir, agent_cfg.system_prompt_file, next_prompt_file)

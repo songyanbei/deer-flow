@@ -57,6 +57,23 @@ def test_selector_falls_back_to_leader_for_simple_auto_request():
     assert decision["resolved_mode"] == "leader"
 
 
+def test_selector_routes_structured_chinese_auto_request_to_workflow():
+    decision = decide_orchestration(
+        {
+            "messages": [
+                HumanMessage(
+                    content="请并行调研三个竞品，分别总结优缺点，并形成一份报告。",
+                )
+            ]
+        },
+        {"configurable": {"requested_orchestration_mode": "auto"}},
+    )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "workflow"
+    assert decision["workflow_score"] >= 3
+
+
 def test_selector_reuses_existing_mode_for_clarification_resume():
     decision = decide_orchestration(
         {
@@ -64,6 +81,25 @@ def test_selector_reuses_existing_mode_for_clarification_resume():
                 HumanMessage(content="Prepare a report and validate the data"),
                 AIMessage(content="Please clarify the target region.", name="ask_clarification"),
                 HumanMessage(content="Use APAC only."),
+            ],
+            "requested_orchestration_mode": "auto",
+            "resolved_orchestration_mode": "workflow",
+        },
+        {"configurable": {"requested_orchestration_mode": "auto"}},
+    )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "workflow"
+    assert "Resume current workflow run" in decision["reason"]
+
+
+def test_selector_reuses_existing_mode_for_chinese_clarification_resume():
+    decision = decide_orchestration(
+        {
+            "messages": [
+                HumanMessage(content="请调研并汇总这个市场。"),
+                AIMessage(content="请先澄清目标国家。", name="assistant"),
+                HumanMessage(content="只看日本市场。"),
             ],
             "requested_orchestration_mode": "auto",
             "resolved_orchestration_mode": "workflow",

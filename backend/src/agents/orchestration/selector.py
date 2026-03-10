@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
-from typing import Literal, TypedDict
+from typing import TypedDict
 
 from langchain_core.runnables import RunnableConfig
 
-from src.agents.thread_state import RequestedOrchestrationMode, ResolvedOrchestrationMode, ThreadState
+from src.agents.thread_state import (
+    RequestedOrchestrationMode,
+    ResolvedOrchestrationMode,
+    ThreadState,
+)
 from src.config.agents_config import load_agent_config
 
 
@@ -29,15 +33,15 @@ _WORKFLOW_HINTS = (
     "validate",
     "summarize",
     "cross-check",
-    "并行",
-    "分别",
-    "多步骤",
-    "调研",
-    "报告",
-    "汇总",
-    "总结",
-    "规划",
-    "步骤",
+    "\u5e76\u884c",
+    "\u5206\u522b",
+    "\u591a\u6b65",
+    "\u8c03\u7814",
+    "\u62a5\u544a",
+    "\u6c47\u603b",
+    "\u603b\u7ed3",
+    "\u89c4\u5212",
+    "\u6b65\u9aa4",
 )
 _LEADER_HINTS = (
     "explore",
@@ -51,15 +55,26 @@ _LEADER_HINTS = (
     "code",
     "file",
     "web",
-    "探索",
-    "看看",
-    "怎么",
-    "为什么",
-    "代码",
-    "文件",
-    "网页",
-    "搜索",
-    "快速",
+    "\u63a2\u7d22",
+    "\u770b\u770b",
+    "\u600e\u4e48",
+    "\u4e3a\u4ec0\u4e48",
+    "\u4ee3\u7801",
+    "\u6587\u4ef6",
+    "\u7f51\u9875",
+    "\u641c\u7d22",
+    "\u5feb\u901f",
+)
+_CLARIFICATION_KEYWORD = "\u6f84\u6e05"
+_MULTI_GOAL_CONNECTORS = (
+    " and ",
+    " then ",
+    " also ",
+    "\u540c\u65f6",
+    "\u5e76\u4e14",
+    "\u4ee5\u53ca",
+    "\u5206\u522b",
+    "\u7136\u540e",
 )
 
 
@@ -84,7 +99,10 @@ def _content_to_text(content: object) -> str:
 
 
 def _is_human_message(message: object) -> bool:
-    return getattr(message, "type", None) == "human" or message.__class__.__name__ == "HumanMessage"
+    return (
+        getattr(message, "type", None) == "human"
+        or message.__class__.__name__ == "HumanMessage"
+    )
 
 
 def _extract_latest_user_input(state: ThreadState) -> str:
@@ -106,7 +124,11 @@ def _latest_user_message_is_clarification_answer(state: ThreadState) -> bool:
 
     prev_name = getattr(prev, "name", None)
     prev_content = _content_to_text(getattr(prev, "content", ""))
-    return prev_name == "ask_clarification" or "clarification" in prev_content.lower() or "澄清" in prev_content
+    return (
+        prev_name == "ask_clarification"
+        or "clarification" in prev_content.lower()
+        or _CLARIFICATION_KEYWORD in prev_content
+    )
 
 
 def _count_matches(text: str, patterns: tuple[str, ...]) -> int:
@@ -118,20 +140,16 @@ def _looks_like_multiple_goals(text: str) -> bool:
     lowered = text.lower()
     if re.search(r"(^|\n)\s*(\d+\.|-|\*)\s+", text):
         return True
-    connectors = (
-        " and ",
-        " then ",
-        " also ",
-        "同时",
-        "并且",
-        "以及",
-        "分别",
-        "然后",
-    )
-    return sum(1 for connector in connectors if connector in lowered or connector in text) >= 1
+    return sum(
+        1
+        for connector in _MULTI_GOAL_CONNECTORS
+        if connector in lowered or connector in text
+    ) >= 1
 
 
-def _load_agent_default_mode(config: RunnableConfig) -> RequestedOrchestrationMode | None:
+def _load_agent_default_mode(
+    config: RunnableConfig,
+) -> RequestedOrchestrationMode | None:
     agent_name = config.get("configurable", {}).get("agent_name")
     if not isinstance(agent_name, str) or not agent_name:
         return None
@@ -144,15 +162,24 @@ def _load_agent_default_mode(config: RunnableConfig) -> RequestedOrchestrationMo
     return None
 
 
-def decide_orchestration(state: ThreadState, config: RunnableConfig) -> OrchestrationDecision:
+def decide_orchestration(
+    state: ThreadState,
+    config: RunnableConfig,
+) -> OrchestrationDecision:
     configurable = config.get("configurable", {})
     requested_mode = _normalize_requested_mode(
-        configurable.get("requested_orchestration_mode") or configurable.get("orchestration_mode")
+        configurable.get("requested_orchestration_mode")
+        or configurable.get("orchestration_mode")
     )
-    existing_requested_mode = _normalize_requested_mode(state.get("requested_orchestration_mode"))
+    existing_requested_mode = _normalize_requested_mode(
+        state.get("requested_orchestration_mode")
+    )
     existing_resolved_mode = state.get("resolved_orchestration_mode")
 
-    if _latest_user_message_is_clarification_answer(state) and existing_resolved_mode in {"leader", "workflow"}:
+    if (
+        _latest_user_message_is_clarification_answer(state)
+        and existing_resolved_mode in {"leader", "workflow"}
+    ):
         return {
             "requested_mode": existing_requested_mode,
             "resolved_mode": existing_resolved_mode,

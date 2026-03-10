@@ -23,7 +23,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useDeleteAgent } from "@/core/agents";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useDeleteAgent, useUpdateAgent } from "@/core/agents";
 import type { Agent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 
@@ -35,6 +42,7 @@ export function AgentCard({ agent }: AgentCardProps) {
   const { t } = useI18n();
   const router = useRouter();
   const deleteAgent = useDeleteAgent();
+  const updateAgent = useUpdateAgent();
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   function handleChat() {
@@ -46,6 +54,22 @@ export function AgentCard({ agent }: AgentCardProps) {
       await deleteAgent.mutateAsync(agent.name);
       toast.success(t.agents.deleteSuccess);
       setDeleteOpen(false);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleOrchestrationModeChange(
+    value: "auto" | "leader" | "workflow",
+  ) {
+    try {
+      await updateAgent.mutateAsync({
+        name: agent.name,
+        request: {
+          requested_orchestration_mode: value === "auto" ? null : value,
+        },
+      });
+      toast.success(`${agent.name} updated`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
@@ -64,11 +88,21 @@ export function AgentCard({ agent }: AgentCardProps) {
                 <CardTitle className="truncate text-base">
                   {agent.name}
                 </CardTitle>
-                {agent.model && (
-                  <Badge variant="secondary" className="mt-0.5 text-xs">
-                    {agent.model}
-                  </Badge>
-                )}
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {agent.model && (
+                    <Badge variant="secondary" className="text-xs">
+                      {agent.model}
+                    </Badge>
+                  )}
+                  {agent.requested_orchestration_mode &&
+                    agent.requested_orchestration_mode !== "auto" && (
+                      <Badge variant="outline" className="text-xs">
+                        {agent.requested_orchestration_mode === "leader"
+                          ? t.inputBox.leaderOrchestrationMode
+                          : t.inputBox.workflowOrchestrationMode}
+                      </Badge>
+                    )}
+                </div>
               </div>
             </div>
           </div>
@@ -92,10 +126,35 @@ export function AgentCard({ agent }: AgentCardProps) {
         )}
 
         <CardFooter className="mt-auto flex items-center justify-between gap-2 pt-3">
-          <Button size="sm" className="flex-1" onClick={handleChat}>
-            <MessageSquareIcon className="mr-1.5 h-3.5 w-3.5" />
-            {t.agents.chat}
-          </Button>
+          <div className="flex flex-1 items-center gap-2">
+            <Button size="sm" className="flex-1" onClick={handleChat}>
+              <MessageSquareIcon className="mr-1.5 h-3.5 w-3.5" />
+              {t.agents.chat}
+            </Button>
+            <Select
+              value={agent.requested_orchestration_mode ?? "auto"}
+              onValueChange={(value) =>
+                void handleOrchestrationModeChange(
+                  value as "auto" | "leader" | "workflow",
+                )
+              }
+            >
+              <SelectTrigger className="w-[120px]" size="sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">
+                  {t.inputBox.autoOrchestrationMode}
+                </SelectItem>
+                <SelectItem value="leader">
+                  {t.inputBox.leaderOrchestrationMode}
+                </SelectItem>
+                <SelectItem value="workflow">
+                  {t.inputBox.workflowOrchestrationMode}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex gap-1">
             <Button
               size="icon"

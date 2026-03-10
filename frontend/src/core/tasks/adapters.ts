@@ -35,7 +35,7 @@ export type MultiAgentTaskEvent = BaseTaskEvent & {
 };
 
 export type LegacyTaskEvent = BaseTaskEvent & {
-  source?: undefined;
+  source?: "legacy_subagent";
 };
 
 function asString(value: unknown): string {

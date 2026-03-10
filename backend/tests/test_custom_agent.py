@@ -752,3 +752,27 @@ class TestPhaseOneAgentsAPI:
         assert response.json()["soul"] == "After update"
         assert response.json()["max_tool_calls"] == 6
         assert (tmp_path / "agents" / "prompt-agent" / "ACTIVE.md").read_text(encoding="utf-8") == "After update"
+
+    def test_update_agent_can_clear_orchestration_mode(self, agent_client, tmp_path):
+        agent_client.post(
+            "/api/agents",
+            json={
+                "name": "clear-mode-agent",
+                "requested_orchestration_mode": "workflow",
+                "soul": "Prompt",
+            },
+        )
+
+        response = agent_client.put(
+            "/api/agents/clear-mode-agent",
+            json={"requested_orchestration_mode": None},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["requested_orchestration_mode"] is None
+        config_data = yaml.safe_load(
+            (tmp_path / "agents" / "clear-mode-agent" / "config.yaml").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert "requested_orchestration_mode" not in config_data

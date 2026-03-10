@@ -3,6 +3,7 @@
 import { ArrowLeftIcon, BotIcon, CheckCircleIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 import {
   PromptInput,
@@ -12,10 +13,17 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ArtifactsProvider } from "@/components/workspace/artifacts";
 import { MessageList } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
-import type { Agent } from "@/core/agents";
+import { useUpdateAgent, type Agent } from "@/core/agents";
 import { checkAgentName, getAgent } from "@/core/agents/api";
 import { useI18n } from "@/core/i18n/hooks";
 import { useThreadStream } from "@/core/threads/hooks";
@@ -23,24 +31,46 @@ import { uuid } from "@/core/utils/uuid";
 import { cn } from "@/lib/utils";
 
 type Step = "name" | "chat";
+type RequestedOrchestrationMode = "auto" | "leader" | "workflow";
 
 const NAME_RE = /^[A-Za-z0-9-]+$/;
 
 export default function NewAgentPage() {
   const { t } = useI18n();
   const router = useRouter();
+  const updateAgent = useUpdateAgent();
 
-  // ── Step 1: name form ──────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("name");
   const [nameInput, setNameInput] = useState("");
   const [nameError, setNameError] = useState("");
   const [isCheckingName, setIsCheckingName] = useState(false);
   const [agentName, setAgentName] = useState("");
   const [agent, setAgent] = useState<Agent | null>(null);
-  // ── Step 2: chat ───────────────────────────────────────────────────────────
+  const [requestedOrchestrationMode, setRequestedOrchestrationMode] =
+    useState<RequestedOrchestrationMode>("auto");
 
-  // Stable thread ID — all turns belong to the same thread
   const threadId = useMemo(() => uuid(), []);
+
+  const syncAgentDefaultMode = useCallback(
+    async (currentAgent: Agent) => {
+      if (
+        requestedOrchestrationMode === "auto" ||
+        currentAgent.requested_orchestration_mode === requestedOrchestrationMode
+      ) {
+        setAgent(currentAgent);
+        return;
+      }
+
+      const updated = await updateAgent.mutateAsync({
+        name: currentAgent.name,
+        request: {
+          requested_orchestration_mode: requestedOrchestrationMode,
+        },
+      });
+      setAgent(updated);
+    },
+    [requestedOrchestrationMode, updateAgent],
+  );
 
   const [thread, sendMessage] = useThreadStream({
     assistantId: "lead_agent",
@@ -50,24 +80,28 @@ export default function NewAgentPage() {
       is_bootstrap: true,
     },
     onToolEnd({ name }) {
-      if (name !== "setup_agent" || !agentName) return;
+      if (name !== "setup_agent" || !agentName) {
+        return;
+      }
+
       getAgent(agentName)
-        .then((fetched) => setAgent(fetched))
-        .catch(() => {
-          // agent write may not be flushed yet — ignore silently
+        .then((fetched) => void syncAgentDefaultMode(fetched))
+        .catch((error) => {
+          toast.error(error instanceof Error ? error.message : String(error));
         });
     },
   });
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
-
   const handleConfirmName = useCallback(async () => {
     const trimmed = nameInput.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      return;
+    }
     if (!NAME_RE.test(trimmed)) {
       setNameError(t.agents.nameStepInvalidError);
       return;
     }
+
     setNameError("");
     setIsCheckingName(true);
     try {
@@ -82,6 +116,7 @@ export default function NewAgentPage() {
     } finally {
       setIsCheckingName(false);
     }
+
     setAgentName(trimmed);
     setStep("chat");
     await sendMessage(threadId, {
@@ -91,16 +126,16 @@ export default function NewAgentPage() {
   }, [
     nameInput,
     sendMessage,
-    threadId,
-    t.agents.nameStepBootstrapMessage,
-    t.agents.nameStepInvalidError,
     t.agents.nameStepAlreadyExistsError,
+    t.agents.nameStepBootstrapMessage,
     t.agents.nameStepCheckError,
+    t.agents.nameStepInvalidError,
+    threadId,
   ]);
 
-  const handleNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
+  const handleNameKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
       void handleConfirmName();
     }
   };
@@ -108,17 +143,17 @@ export default function NewAgentPage() {
   const handleChatSubmit = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || thread.isLoading) return;
+      if (!trimmed || thread.isLoading) {
+        return;
+      }
       await sendMessage(
         threadId,
         { text: trimmed, files: [] },
         { agent_name: agentName },
       );
     },
-    [thread.isLoading, sendMessage, threadId, agentName],
+    [agentName, sendMessage, thread.isLoading, threadId],
   );
-
-  // ── Shared header ──────────────────────────────────────────────────────────
 
   const header = (
     <header className="flex shrink-0 items-center gap-3 border-b px-4 py-3">
@@ -132,8 +167,6 @@ export default function NewAgentPage() {
       <h1 className="text-sm font-semibold">{t.agents.createPageTitle}</h1>
     </header>
   );
-
-  // ── Step 1: name form ──────────────────────────────────────────────────────
 
   if (step === "name") {
     return (
@@ -160,8 +193,8 @@ export default function NewAgentPage() {
                 autoFocus
                 placeholder={t.agents.nameStepPlaceholder}
                 value={nameInput}
-                onChange={(e) => {
-                  setNameInput(e.target.value);
+                onChange={(event) => {
+                  setNameInput(event.target.value);
                   setNameError("");
                 }}
                 onKeyDown={handleNameKeyDown}
@@ -170,6 +203,34 @@ export default function NewAgentPage() {
               {nameError && (
                 <p className="text-destructive text-sm">{nameError}</p>
               )}
+              <div className="space-y-2 text-left">
+                <p className="text-muted-foreground text-sm">
+                  {t.inputBox.orchestrationMode}
+                </p>
+                <Select
+                  value={requestedOrchestrationMode}
+                  onValueChange={(value) =>
+                    setRequestedOrchestrationMode(
+                      value as RequestedOrchestrationMode,
+                    )
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">
+                      {t.inputBox.autoOrchestrationMode}
+                    </SelectItem>
+                    <SelectItem value="leader">
+                      {t.inputBox.leaderOrchestrationMode}
+                    </SelectItem>
+                    <SelectItem value="workflow">
+                      {t.inputBox.workflowOrchestrationMode}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
               <Button
                 className="w-full"
                 onClick={() => void handleConfirmName()}
@@ -184,8 +245,6 @@ export default function NewAgentPage() {
     );
   }
 
-  // ── Step 2: chat ───────────────────────────────────────────────────────────
-
   return (
     <ThreadContext.Provider value={{ thread }}>
       <ArtifactsProvider>
@@ -193,7 +252,6 @@ export default function NewAgentPage() {
           {header}
 
           <main className="flex min-h-0 flex-1 flex-col">
-            {/* ── Message area ── */}
             <div className="flex min-h-0 flex-1 justify-center">
               <MessageList
                 className="size-full pt-10"
@@ -202,20 +260,16 @@ export default function NewAgentPage() {
               />
             </div>
 
-            {/* ── Bottom action area ── */}
             <div className="bg-background flex shrink-0 justify-center border-t px-4 py-4">
               <div className="w-full max-w-(--container-width-md)">
                 {agent ? (
-                  // ✅ Success card
                   <div className="flex flex-col items-center gap-4 rounded-2xl border py-8 text-center">
                     <CheckCircleIcon className="text-primary h-10 w-10" />
                     <p className="font-semibold">{t.agents.agentCreated}</p>
                     <div className="flex gap-2">
                       <Button
                         onClick={() =>
-                          router.push(
-                            `/workspace/agents/${agentName}/chats/new`,
-                          )
+                          router.push(`/workspace/agents/${agentName}/chats/new`)
                         }
                       >
                         {t.agents.startChatting}
@@ -229,7 +283,6 @@ export default function NewAgentPage() {
                     </div>
                   </div>
                 ) : (
-                  // 📝 Normal input
                   <PromptInput
                     onSubmit={({ text }) => void handleChatSubmit(text)}
                   >

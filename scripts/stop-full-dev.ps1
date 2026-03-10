@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$Quiet
 )
@@ -20,24 +20,49 @@ function Stop-ProcessTree([int]$ProcessId) {
     try {
         $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
         if ($null -ne $proc) {
-            & taskkill /PID $ProcessId /T /F | Out-Null
+            & taskkill /PID $ProcessId /T /F 2>$null | Out-Null
         }
     }
     catch {
     }
 }
 
-function Stop-PortOwner([int]$Port) {
+function Get-ListeningProcessIds([int]$Port) {
+    $owners = @()
     $lines = netstat -ano -p tcp | Select-String ":$Port"
     foreach ($line in $lines) {
         $parts = ($line.ToString() -split '\s+') | Where-Object { $_ }
         if ($parts.Length -ge 5 -and $parts[3] -eq 'LISTENING') {
             $ownerPid = 0
             if ([int]::TryParse($parts[4], [ref]$ownerPid)) {
-                Stop-ProcessTree -ProcessId $ownerPid
+                $owners += $ownerPid
             }
         }
     }
+    return $owners | Sort-Object -Unique
+}
+
+function Stop-PortOwner([int]$Port) {
+    foreach ($ownerPid in Get-ListeningProcessIds -Port $Port) {
+        Stop-ProcessTree -ProcessId $ownerPid
+    }
+}
+
+function Ensure-PortReleased([int]$Port, [int]$TimeoutSeconds = 15) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $owners = @(Get-ListeningProcessIds -Port $Port)
+        if ($owners.Count -eq 0) {
+            return
+        }
+        foreach ($ownerPid in $owners) {
+            Stop-ProcessTree -ProcessId $ownerPid
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    $remaining = (Get-ListeningProcessIds -Port $Port) -join ', '
+    throw "Port $Port is still in use by PID(s): $remaining"
 }
 
 if (Test-Path -LiteralPath $stateFile) {
@@ -46,7 +71,6 @@ if (Test-Path -LiteralPath $stateFile) {
         Write-Info "Stopping $($process.name) (PID $($process.pid))..."
         Stop-ProcessTree -ProcessId ([int]$process.pid)
     }
-    Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
 }
 else {
     Write-Info 'No state file found. Falling back to port-based cleanup.'
@@ -54,6 +78,7 @@ else {
 
 foreach ($port in 3000, 8001, 2024) {
     Stop-PortOwner -Port $port
+    Ensure-PortReleased -Port $port
 }
 
 if (Get-Command docker -ErrorAction SilentlyContinue) {
@@ -68,6 +93,8 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     }
 }
 
+if (Test-Path -LiteralPath $stateFile) {
+    Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
+}
+
 Write-Info 'All managed development services are stopped.'
-
-

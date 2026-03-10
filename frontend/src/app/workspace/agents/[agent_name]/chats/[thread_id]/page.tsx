@@ -12,6 +12,8 @@ import { ChatBox, useThreadChat } from "@/components/workspace/chats";
 import { InputBox } from "@/components/workspace/input-box";
 import { MessageList } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
+import { OrchestrationSummary } from "@/components/workspace/orchestration-summary";
+import { TaskPanel } from "@/components/workspace/task-panel";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { Tooltip } from "@/components/workspace/tooltip";
@@ -99,8 +101,9 @@ export default function AgentChatPage() {
               </span>
             </div>
 
-            <div className="flex w-full items-center text-sm font-medium">
+            <div className="flex min-w-0 w-full items-center gap-2 text-sm font-medium">
               <ThreadTitle threadId={threadId} thread={thread} />
+              <OrchestrationSummary thread={thread} />
             </div>
             <div className="mr-4 flex items-center">
               <Tooltip content={t.agents.newChat}>
@@ -138,7 +141,8 @@ export default function AgentChatPage() {
                 )}
               >
                 <div className="absolute -top-4 right-0 left-0 z-0">
-                  <div className="absolute right-0 bottom-0 left-0">
+                  <div className="absolute right-0 bottom-0 left-0 flex flex-col gap-2">
+                    <TaskPanel thread={thread} />
                     <TodoList
                       className="bg-background/5"
                       todos={thread.values.todos ?? []}
