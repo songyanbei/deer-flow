@@ -33,6 +33,10 @@ class TaskStatus(TypedDict):
     error: NotRequired[str | None]
 
 
+RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
+ResolvedOrchestrationMode = Literal["leader", "workflow"]
+
+
 VerifiedFact = dict[str, Any]
 
 
@@ -115,6 +119,9 @@ class ThreadState(AgentState):
     viewed_images: Annotated[dict[str, ViewedImageData], merge_viewed_images]
 
     original_input: NotRequired[str | None]
+    requested_orchestration_mode: NotRequired[RequestedOrchestrationMode | None]
+    resolved_orchestration_mode: NotRequired[ResolvedOrchestrationMode | None]
+    orchestration_reason: NotRequired[str | None]
     run_id: NotRequired[str | None]
     planner_goal: NotRequired[str | None]
     task_pool: Annotated[list[TaskStatus], merge_task_pool]

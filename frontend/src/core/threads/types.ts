@@ -2,6 +2,9 @@ import type { Message, Thread } from "@langchain/langgraph-sdk";
 
 import type { Todo } from "../todos";
 
+export type RequestedOrchestrationMode = "auto" | "leader" | "workflow";
+export type ResolvedOrchestrationMode = "leader" | "workflow";
+
 export interface ThreadTaskState {
   task_id: string;
   description: string;
@@ -21,6 +24,9 @@ export interface AgentThreadState extends Record<string, unknown> {
   artifacts: string[];
   todos?: Todo[];
   original_input?: string | null;
+  requested_orchestration_mode?: RequestedOrchestrationMode | null;
+  resolved_orchestration_mode?: ResolvedOrchestrationMode | null;
+  orchestration_reason?: string | null;
   run_id?: string | null;
   planner_goal?: string | null;
   task_pool?: ThreadTaskState[];
@@ -39,5 +45,6 @@ export interface AgentThreadContext extends Record<string, unknown> {
   is_plan_mode: boolean;
   subagent_enabled: boolean;
   reasoning_effort?: "minimal" | "low" | "medium" | "high";
+  requested_orchestration_mode?: RequestedOrchestrationMode;
   agent_name?: string;
 }

@@ -4,6 +4,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
+from typing import Literal
 from typing import Any
 
 import yaml
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api", tags=["agents"])
 
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 DEFAULT_PROMPT_FILE = "SOUL.md"
+RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
 
 
 class AgentResponse(BaseModel):
@@ -33,6 +35,7 @@ class AgentResponse(BaseModel):
     max_tool_calls: int | None = Field(default=None, description="Maximum tool calls allowed for the agent")
     mcp_servers: list[McpServerEntry] | None = Field(default=None, description="Optional per-agent MCP server definitions")
     available_skills: list[str] | None = Field(default=None, description="Optional skill allowlist for this agent")
+    requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Default orchestration mode for the agent")
     soul: str | None = Field(default=None, description="System prompt content (included on GET /{name})")
 
 
@@ -55,6 +58,7 @@ class AgentCreateRequest(BaseModel):
     max_tool_calls: int | None = Field(default=None, description="Maximum tool calls allowed for the agent")
     mcp_servers: list[McpServerEntry] | None = Field(default=None, description="Optional per-agent MCP server definitions")
     available_skills: list[str] | None = Field(default=None, description="Optional skill allowlist for this agent")
+    requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Default orchestration mode for the agent")
     soul: str = Field(default="", description="System prompt content for the agent")
 
 
@@ -70,6 +74,7 @@ class AgentUpdateRequest(BaseModel):
     max_tool_calls: int | None = Field(default=None, description="Updated maximum tool calls")
     mcp_servers: list[McpServerEntry] | None = Field(default=None, description="Updated MCP server definitions")
     available_skills: list[str] | None = Field(default=None, description="Updated skill allowlist")
+    requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Updated default orchestration mode")
     soul: str | None = Field(default=None, description="Updated system prompt content")
 
 
@@ -118,6 +123,7 @@ def _build_config_data(
     max_tool_calls: int | None,
     mcp_servers: list[McpServerEntry] | None,
     available_skills: list[str] | None,
+    requested_orchestration_mode: RequestedOrchestrationMode | None,
 ) -> dict[str, Any]:
     config_data: dict[str, Any] = {"name": name, "description": description}
     if model is not None:
@@ -136,6 +142,8 @@ def _build_config_data(
         config_data["mcp_servers"] = [server.model_dump() for server in mcp_servers]
     if available_skills is not None:
         config_data["available_skills"] = available_skills
+    if requested_orchestration_mode is not None:
+        config_data["requested_orchestration_mode"] = requested_orchestration_mode
     return config_data
 
 
@@ -178,6 +186,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         max_tool_calls=agent_cfg.max_tool_calls,
         mcp_servers=agent_cfg.mcp_servers,
         available_skills=agent_cfg.available_skills,
+        requested_orchestration_mode=agent_cfg.requested_orchestration_mode,
         soul=soul,
     )
 
@@ -257,6 +266,7 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
             max_tool_calls=request.max_tool_calls,
             mcp_servers=request.mcp_servers,
             available_skills=request.available_skills,
+            requested_orchestration_mode=request.requested_orchestration_mode,
         )
         _write_config(agent_dir, config_data)
         _write_prompt_file(agent_dir, request.system_prompt_file, request.soul)
@@ -304,6 +314,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 request.max_tool_calls,
                 request.mcp_servers,
                 request.available_skills,
+                request.requested_orchestration_mode,
             ]
         )
 
@@ -319,6 +330,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 max_tool_calls=request.max_tool_calls if request.max_tool_calls is not None else agent_cfg.max_tool_calls,
                 mcp_servers=request.mcp_servers if request.mcp_servers is not None else agent_cfg.mcp_servers,
                 available_skills=request.available_skills if request.available_skills is not None else agent_cfg.available_skills,
+                requested_orchestration_mode=request.requested_orchestration_mode if request.requested_orchestration_mode is not None else agent_cfg.requested_orchestration_mode,
             )
             _write_config(agent_dir, updated)
             _migrate_prompt_file_if_needed(agent_dir, agent_cfg.system_prompt_file, next_prompt_file)
@@ -392,4 +404,3 @@ async def delete_agent(name: str) -> None:
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")
-

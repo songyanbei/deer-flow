@@ -33,7 +33,7 @@ export default function ChatPage() {
   const { showNotification } = useNotification();
 
   const [thread, sendMessage] = useThreadStream({
-    assistantId: "lead_agent",
+    assistantId: "entry_graph",
     threadId: isNewThread ? undefined : threadId,
     context: settings.context,
     isMock,

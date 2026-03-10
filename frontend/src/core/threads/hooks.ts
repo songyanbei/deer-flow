@@ -27,7 +27,7 @@ export type ToolEndEvent = {
   data: unknown;
 };
 
-export type ThreadAssistantId = "lead_agent" | "multi_agent";
+export type ThreadAssistantId = "entry_graph" | "lead_agent" | "multi_agent";
 
 type BaseTaskEvent = {
   type:

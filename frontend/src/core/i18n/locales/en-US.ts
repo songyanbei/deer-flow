@@ -71,6 +71,7 @@ export const enUS: Translations = {
       "We're going to build a new skill step by step with `skill-creator`. To start, what do you want this skill to do?",
     addAttachments: "Add attachments",
     mode: "Mode",
+    orchestrationMode: "Orchestration",
     flashMode: "Flash",
     flashModeDescription: "Fast and efficient, but may not be accurate",
     reasoningMode: "Reasoning",
@@ -82,6 +83,15 @@ export const enUS: Translations = {
     ultraMode: "Ultra",
     ultraModeDescription:
       "Pro mode with subagents to divide work; best for complex multi-step tasks",
+    autoOrchestrationMode: "Auto",
+    autoOrchestrationModeDescription:
+      "Let the system choose between Leader and Workflow for this turn",
+    leaderOrchestrationMode: "Leader",
+    leaderOrchestrationModeDescription:
+      "Best for open-ended, exploratory, or tool-centric tasks",
+    workflowOrchestrationMode: "Workflow",
+    workflowOrchestrationModeDescription:
+      "Best for structured, multi-step, and recoverable tasks",
     reasoningEffort: "Reasoning Effort",
     reasoningEffortMinimal: "Minimal",
     reasoningEffortMinimalDescription: "Retrieval + Direct Output",

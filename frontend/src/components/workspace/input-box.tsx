@@ -4,6 +4,7 @@ import type { ChatStatus } from "ai";
 import {
   CheckIcon,
   GraduationCapIcon,
+  GitBranchIcon,
   LightbulbIcon,
   PaperclipIcon,
   PlusIcon,
@@ -70,6 +71,7 @@ import { ModeHoverGuide } from "./mode-hover-guide";
 import { Tooltip } from "./tooltip";
 
 type InputMode = "flash" | "thinking" | "pro" | "ultra";
+type OrchestrationMode = "auto" | "leader" | "workflow";
 
 function getResolvedMode(
   mode: InputMode | undefined,
@@ -107,6 +109,7 @@ export function InputBox({
   > & {
     mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
     reasoning_effort?: "minimal" | "low" | "medium" | "high";
+    requested_orchestration_mode?: OrchestrationMode;
   };
   extraHeader?: React.ReactNode;
   isNewThread?: boolean;
@@ -118,6 +121,7 @@ export function InputBox({
     > & {
       mode: "flash" | "thinking" | "pro" | "ultra" | undefined;
       reasoning_effort?: "minimal" | "low" | "medium" | "high";
+      requested_orchestration_mode?: OrchestrationMode;
     },
   ) => void;
   onSubmit?: (message: PromptInputMessage) => void;
@@ -142,11 +146,13 @@ export function InputBox({
       return;
     }
 
-    onContextChange?.({
-      ...context,
-      model_name: nextModelName,
-      mode: nextMode,
-    });
+      onContextChange?.({
+        ...context,
+        model_name: nextModelName,
+        mode: nextMode,
+        requested_orchestration_mode:
+          context.requested_orchestration_mode ?? "auto",
+      });
   }, [context, models, onContextChange]);
 
   const selectedModel = useMemo(() => {
@@ -177,6 +183,8 @@ export function InputBox({
         model_name,
         mode: getResolvedMode(context.mode, model.supports_thinking ?? false),
         reasoning_effort: context.reasoning_effort,
+        requested_orchestration_mode:
+          context.requested_orchestration_mode ?? "auto",
       });
       setModelDialogOpen(false);
     },
@@ -192,6 +200,16 @@ export function InputBox({
       });
     },
     [onContextChange, context, supportThinking],
+  );
+
+  const handleOrchestrationModeSelect = useCallback(
+    (requested_orchestration_mode: OrchestrationMode) => {
+      onContextChange?.({
+        ...context,
+        requested_orchestration_mode,
+      });
+    },
+    [onContextChange, context],
   );
 
   const handleReasoningEffortSelect = useCallback(
@@ -302,7 +320,6 @@ export function InputBox({
                 <DropdownMenuLabel className="text-muted-foreground text-xs">
                   {t.inputBox.mode}
                 </DropdownMenuLabel>
-                <PromptInputActionMenu>
                   <PromptInputActionMenuItem
                     className={cn(
                       context.mode === "flash"
@@ -425,7 +442,105 @@ export function InputBox({
                       <div className="ml-auto size-4" />
                     )}
                   </PromptInputActionMenuItem>
-                </PromptInputActionMenu>
+              </DropdownMenuGroup>
+            </PromptInputActionMenuContent>
+          </PromptInputActionMenu>
+          <PromptInputActionMenu>
+            <Tooltip
+              content={
+                ((context.requested_orchestration_mode ?? "auto") === "auto" &&
+                  `${t.inputBox.autoOrchestrationMode}: ${t.inputBox.autoOrchestrationModeDescription}`) ||
+                ((context.requested_orchestration_mode ?? "auto") === "leader" &&
+                  `${t.inputBox.leaderOrchestrationMode}: ${t.inputBox.leaderOrchestrationModeDescription}`) ||
+                `${t.inputBox.workflowOrchestrationMode}: ${t.inputBox.workflowOrchestrationModeDescription}`
+              }
+            >
+              <PromptInputActionMenuTrigger className="gap-1! px-2!">
+                <GitBranchIcon className="size-3" />
+                <div className="text-xs font-normal">
+                  {(context.requested_orchestration_mode ?? "auto") === "auto" &&
+                    t.inputBox.autoOrchestrationMode}
+                  {(context.requested_orchestration_mode ?? "auto") === "leader" &&
+                    t.inputBox.leaderOrchestrationMode}
+                  {(context.requested_orchestration_mode ?? "auto") === "workflow" &&
+                    t.inputBox.workflowOrchestrationMode}
+                </div>
+              </PromptInputActionMenuTrigger>
+            </Tooltip>
+            <PromptInputActionMenuContent className="w-80">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel className="text-muted-foreground text-xs">
+                  {t.inputBox.orchestrationMode}
+                </DropdownMenuLabel>
+                <PromptInputActionMenuItem
+                  className={cn(
+                    (context.requested_orchestration_mode ?? "auto") === "auto"
+                      ? "text-accent-foreground"
+                      : "text-muted-foreground/65",
+                  )}
+                  onSelect={() => handleOrchestrationModeSelect("auto")}
+                >
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-1 font-bold">
+                      <GitBranchIcon className="mr-2 size-4" />
+                      {t.inputBox.autoOrchestrationMode}
+                    </div>
+                    <div className="pl-7 text-xs">
+                      {t.inputBox.autoOrchestrationModeDescription}
+                    </div>
+                  </div>
+                  {(context.requested_orchestration_mode ?? "auto") === "auto" ? (
+                    <CheckIcon className="ml-auto size-4" />
+                  ) : (
+                    <div className="ml-auto size-4" />
+                  )}
+                </PromptInputActionMenuItem>
+                <PromptInputActionMenuItem
+                  className={cn(
+                    (context.requested_orchestration_mode ?? "auto") === "leader"
+                      ? "text-accent-foreground"
+                      : "text-muted-foreground/65",
+                  )}
+                  onSelect={() => handleOrchestrationModeSelect("leader")}
+                >
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-1 font-bold">
+                      <GitBranchIcon className="mr-2 size-4" />
+                      {t.inputBox.leaderOrchestrationMode}
+                    </div>
+                    <div className="pl-7 text-xs">
+                      {t.inputBox.leaderOrchestrationModeDescription}
+                    </div>
+                  </div>
+                  {(context.requested_orchestration_mode ?? "auto") === "leader" ? (
+                    <CheckIcon className="ml-auto size-4" />
+                  ) : (
+                    <div className="ml-auto size-4" />
+                  )}
+                </PromptInputActionMenuItem>
+                <PromptInputActionMenuItem
+                  className={cn(
+                    (context.requested_orchestration_mode ?? "auto") === "workflow"
+                      ? "text-accent-foreground"
+                      : "text-muted-foreground/65",
+                  )}
+                  onSelect={() => handleOrchestrationModeSelect("workflow")}
+                >
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-1 font-bold">
+                      <GitBranchIcon className="mr-2 size-4" />
+                      {t.inputBox.workflowOrchestrationMode}
+                    </div>
+                    <div className="pl-7 text-xs">
+                      {t.inputBox.workflowOrchestrationModeDescription}
+                    </div>
+                  </div>
+                  {(context.requested_orchestration_mode ?? "auto") === "workflow" ? (
+                    <CheckIcon className="ml-auto size-4" />
+                  ) : (
+                    <div className="ml-auto size-4" />
+                  )}
+                </PromptInputActionMenuItem>
               </DropdownMenuGroup>
             </PromptInputActionMenuContent>
           </PromptInputActionMenu>
@@ -445,7 +560,6 @@ export function InputBox({
                   <DropdownMenuLabel className="text-muted-foreground text-xs">
                     {t.inputBox.reasoningEffort}
                   </DropdownMenuLabel>
-                  <PromptInputActionMenu>
                     <PromptInputActionMenuItem
                       className={cn(
                         context.reasoning_effort === "minimal"
@@ -534,7 +648,6 @@ export function InputBox({
                         <div className="ml-auto size-4" />
                       )}
                     </PromptInputActionMenuItem>
-                  </PromptInputActionMenu>
                 </DropdownMenuGroup>
               </PromptInputActionMenuContent>
             </PromptInputActionMenu>

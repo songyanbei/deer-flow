@@ -3,6 +3,7 @@
 import logging
 import re
 from typing import Any
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -39,6 +40,7 @@ class AgentConfig(BaseModel):
     max_tool_calls: int = 20                       # Per-agent safety limit for tool usage inside one task execution.
     mcp_servers: list[McpServerEntry] = Field(default_factory=list)  # Domain-specific MCP servers (stdio connections)
     available_skills: list[str] | None = None      # Skill names to expose; None = all enabled skills
+    requested_orchestration_mode: Literal["auto", "leader", "workflow"] | None = None
 
 
 def load_agent_config(name: str | None) -> AgentConfig | None:

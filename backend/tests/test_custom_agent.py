@@ -100,6 +100,7 @@ class TestAgentConfig:
             max_tool_calls=12,
             mcp_servers=[{"name": "code-mcp", "command": "python"}],
             available_skills=["code-review"],
+            requested_orchestration_mode="workflow",
         )
         assert cfg.name == "code-reviewer"
         assert cfg.model == "deepseek-v3"
@@ -110,6 +111,7 @@ class TestAgentConfig:
         assert cfg.max_tool_calls == 12
         assert cfg.mcp_servers[0].name == "code-mcp"
         assert cfg.available_skills == ["code-review"]
+        assert cfg.requested_orchestration_mode == "workflow"
 
     def test_config_from_dict(self):
         from src.config.agents_config import AgentConfig
@@ -124,6 +126,7 @@ class TestAgentConfig:
             "max_tool_calls": 9,
             "mcp_servers": [{"name": "directory", "command": "node"}],
             "available_skills": ["search"],
+            "requested_orchestration_mode": "leader",
         }
         cfg = AgentConfig(**data)
         assert cfg.name == "test-agent"
@@ -131,6 +134,7 @@ class TestAgentConfig:
         assert cfg.tool_groups is None
         assert cfg.mcp_servers[0].name == "directory"
         assert cfg.available_skills == ["search"]
+        assert cfg.requested_orchestration_mode == "leader"
 
 
 # ===========================================================================
@@ -434,6 +438,17 @@ class TestAgentsAPI:
         response = agent_client.post("/api/agents", json=payload)
         assert response.status_code == 409
 
+    def test_create_agent_rejects_invalid_orchestration_mode(self, agent_client):
+        response = agent_client.post(
+            "/api/agents",
+            json={
+                "name": "bad-mode-agent",
+                "requested_orchestration_mode": "invalid",
+                "soul": "test",
+            },
+        )
+        assert response.status_code == 422
+
     def test_list_agents_after_create(self, agent_client):
         agent_client.post("/api/agents", json={"name": "agent-one", "soul": "p1"})
         agent_client.post("/api/agents", json={"name": "agent-two", "soul": "p2"})
@@ -573,6 +588,7 @@ class TestPhaseOneAgentConfig:
             "max_tool_calls": 7,
             "mcp_servers": [{"name": "hr-mcp", "command": "node", "args": ["server.js"]}],
             "available_skills": ["hr"],
+            "requested_orchestration_mode": "workflow",
         }
         agent_dir = tmp_path / "agents" / "domain-agent"
         agent_dir.mkdir(parents=True)
@@ -590,6 +606,7 @@ class TestPhaseOneAgentConfig:
         assert cfg.max_tool_calls == 7
         assert cfg.mcp_servers[0].name == "hr-mcp"
         assert cfg.available_skills == ["hr"]
+        assert cfg.requested_orchestration_mode == "workflow"
 
     def test_load_agent_soul_uses_system_prompt_file(self, tmp_path):
         agent_dir = tmp_path / "agents" / "custom-prompt-agent"
@@ -625,6 +642,7 @@ class TestPhaseOneAgentsAPI:
             "tool_groups": ["search"],
             "mcp_servers": [{"name": "employee-directory", "command": "node", "args": ["dir.js"]}],
             "available_skills": ["directory", "people"],
+            "requested_orchestration_mode": "workflow",
             "soul": "You are the employee directory specialist.",
         }
 
@@ -637,6 +655,7 @@ class TestPhaseOneAgentsAPI:
         assert data["max_tool_calls"] == 5
         assert data["mcp_servers"][0]["name"] == "employee-directory"
         assert data["available_skills"] == ["directory", "people"]
+        assert data["requested_orchestration_mode"] == "workflow"
 
         config_data = yaml.safe_load((tmp_path / "agents" / "employee-agent" / "config.yaml").read_text(encoding="utf-8"))
         assert config_data["domain"] == "employee_directory"
@@ -645,6 +664,7 @@ class TestPhaseOneAgentsAPI:
         assert config_data["max_tool_calls"] == 5
         assert config_data["mcp_servers"][0]["name"] == "employee-directory"
         assert config_data["available_skills"] == ["directory", "people"]
+        assert config_data["requested_orchestration_mode"] == "workflow"
         assert (tmp_path / "agents" / "employee-agent" / "DOMAIN.md").read_text(encoding="utf-8") == payload["soul"]
 
     def test_get_and_list_agents_include_orchestration_fields(self, agent_client):
@@ -657,6 +677,7 @@ class TestPhaseOneAgentsAPI:
                 "hitl_keywords": ["clarify"],
                 "max_tool_calls": 8,
                 "available_skills": ["planning"],
+                "requested_orchestration_mode": "leader",
                 "soul": "You plan tasks.",
             },
         )
@@ -666,6 +687,7 @@ class TestPhaseOneAgentsAPI:
         assert get_response.json()["domain"] == "planning"
         assert get_response.json()["system_prompt_file"] == "PLANNER.md"
         assert get_response.json()["available_skills"] == ["planning"]
+        assert get_response.json()["requested_orchestration_mode"] == "leader"
 
         list_response = agent_client.get("/api/agents")
         assert list_response.status_code == 200
@@ -673,6 +695,7 @@ class TestPhaseOneAgentsAPI:
         assert listed["domain"] == "planning"
         assert listed["max_tool_calls"] == 8
         assert listed["available_skills"] == ["planning"]
+        assert listed["requested_orchestration_mode"] == "leader"
 
     def test_update_agent_migrates_prompt_file_without_losing_content(self, agent_client, tmp_path):
         agent_client.post(
@@ -693,6 +716,7 @@ class TestPhaseOneAgentsAPI:
                 "max_tool_calls": 11,
                 "mcp_servers": [{"name": "migrated-mcp", "command": "node", "args": ["new.js"]}],
                 "available_skills": ["migrated-skill"],
+                "requested_orchestration_mode": "workflow",
             },
         )
         assert response.status_code == 200
@@ -703,6 +727,7 @@ class TestPhaseOneAgentsAPI:
         assert data["max_tool_calls"] == 11
         assert data["mcp_servers"][0]["name"] == "migrated-mcp"
         assert data["available_skills"] == ["migrated-skill"]
+        assert data["requested_orchestration_mode"] == "workflow"
         assert data["soul"] == "Original prompt"
         assert (tmp_path / "agents" / "migrate-agent" / "NEW.md").read_text(encoding="utf-8") == "Original prompt"
 
@@ -727,4 +752,3 @@ class TestPhaseOneAgentsAPI:
         assert response.json()["soul"] == "After update"
         assert response.json()["max_tool_calls"] == 6
         assert (tmp_path / "agents" / "prompt-agent" / "ACTIVE.md").read_text(encoding="utf-8") == "After update"
-

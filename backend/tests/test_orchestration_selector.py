@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from langchain_core.messages import AIMessage, HumanMessage
+
+from src.agents.orchestration.selector import decide_orchestration
+
+
+def test_selector_respects_explicit_leader_request():
+    decision = decide_orchestration(
+        {"messages": [HumanMessage(content="Research this topic")]},
+        {"configurable": {"requested_orchestration_mode": "leader"}},
+    )
+
+    assert decision["requested_mode"] == "leader"
+    assert decision["resolved_mode"] == "leader"
+    assert "explicitly requested leader" in decision["reason"]
+
+
+def test_selector_respects_explicit_workflow_request():
+    decision = decide_orchestration(
+        {"messages": [HumanMessage(content="Just answer directly")]},
+        {"configurable": {"requested_orchestration_mode": "workflow"}},
+    )
+
+    assert decision["requested_mode"] == "workflow"
+    assert decision["resolved_mode"] == "workflow"
+    assert "explicitly requested workflow" in decision["reason"]
+
+
+def test_selector_routes_structured_auto_request_to_workflow():
+    decision = decide_orchestration(
+        {
+            "messages": [
+                HumanMessage(
+                    content="Please research the market, compare competitors, and summarize the findings in a report.",
+                )
+            ]
+        },
+        {"configurable": {"requested_orchestration_mode": "auto"}},
+    )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "workflow"
+    assert decision["workflow_score"] >= 3
+
+
+def test_selector_falls_back_to_leader_for_simple_auto_request():
+    decision = decide_orchestration(
+        {"messages": [HumanMessage(content="What is the capital of Japan?")]},
+        {"configurable": {"requested_orchestration_mode": "auto"}},
+    )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "leader"
+
+
+def test_selector_reuses_existing_mode_for_clarification_resume():
+    decision = decide_orchestration(
+        {
+            "messages": [
+                HumanMessage(content="Prepare a report and validate the data"),
+                AIMessage(content="Please clarify the target region.", name="ask_clarification"),
+                HumanMessage(content="Use APAC only."),
+            ],
+            "requested_orchestration_mode": "auto",
+            "resolved_orchestration_mode": "workflow",
+        },
+        {"configurable": {"requested_orchestration_mode": "auto"}},
+    )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "workflow"
+    assert "Resume current workflow run" in decision["reason"]
+
+
+def test_selector_uses_agent_default_mode_before_auto():
+    with patch(
+        "src.agents.orchestration.selector.load_agent_config",
+        return_value=SimpleNamespace(requested_orchestration_mode="workflow"),
+    ):
+        decision = decide_orchestration(
+            {"messages": [HumanMessage(content="Do something simple")]},
+            {
+                "configurable": {
+                    "requested_orchestration_mode": "auto",
+                    "agent_name": "planner-agent",
+                }
+            },
+        )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "workflow"
+    assert "Agent default routed to workflow" == decision["reason"]

@@ -56,6 +56,7 @@ export interface Translations {
     createSkillPrompt: string;
     addAttachments: string;
     mode: string;
+    orchestrationMode: string;
     flashMode: string;
     flashModeDescription: string;
     reasoningMode: string;
@@ -64,6 +65,12 @@ export interface Translations {
     proModeDescription: string;
     ultraMode: string;
     ultraModeDescription: string;
+    autoOrchestrationMode: string;
+    autoOrchestrationModeDescription: string;
+    leaderOrchestrationMode: string;
+    leaderOrchestrationModeDescription: string;
+    workflowOrchestrationMode: string;
+    workflowOrchestrationModeDescription: string;
     reasoningEffort: string;
     reasoningEffortMinimal: string;
     reasoningEffortMinimalDescription: string;
