@@ -68,6 +68,25 @@ def test_planner_empty_unfinished_tasks_returns_error():
     asyncio.run(_run())
 
 
+def test_planner_model_invocation_error_returns_visible_error_message():
+    class FailingPlannerLLM:
+        async def ainvoke(self, _messages):
+            raise RuntimeError("Connection error.")
+
+    async def _run():
+        with patch("src.agents.planner.node.create_chat_model", return_value=FailingPlannerLLM()):
+            with patch("src.agents.planner.node.list_domain_agents", return_value=[]):
+                result = await planner_node(
+                    {"messages": [HumanMessage(content="Find Wang Mingtian's employee id")]},
+                    {"configurable": {}},
+                )
+        assert result["execution_state"] == "ERROR"
+        assert result["final_result"] == "Workflow planning failed: Connection error."
+        assert result["messages"][0].content == "Workflow planning failed: Connection error."
+
+    asyncio.run(_run())
+
+
 def test_planner_run_id_changes_on_new_user_turn_and_reuses_on_clarification():
     class PlannerLLM:
         async def ainvoke(self, _messages):
@@ -180,6 +199,51 @@ def test_executor_empty_output_marks_task_failed(monkeypatch):
         assert result["execution_state"] == "EXECUTING_DONE"
         assert result["task_pool"][0]["status"] == "FAILED"
         assert result["task_pool"][0]["error"] == "Domain agent returned no final answer."
+
+    asyncio.run(_run())
+
+
+def test_executor_prefers_final_ai_message_over_trailing_tool_output(monkeypatch):
+    class DomainAgentWithTrailingTool:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {
+                "messages": [
+                    AIMessage(content="The launch brief is complete."),
+                    ToolMessage(
+                        content="artifact generated",
+                        tool_call_id="present-1",
+                        name="present_files",
+                    ),
+                ]
+            }
+
+    def _make_lead_agent(_config):
+        return DomainAgentWithTrailingTool()
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            result = await executor_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "prepare launch brief",
+                            "assigned_agent": "copy-agent",
+                            "status": "RUNNING",
+                        }
+                    ],
+                    "verified_facts": {},
+                },
+                {"configurable": {}},
+            )
+
+        assert result["task_pool"][0]["status"] == "DONE"
+        assert result["task_pool"][0]["result"] == "The launch brief is complete."
+        assert result["verified_facts"]["t1"]["summary"] == "The launch brief is complete."
 
     asyncio.run(_run())
 

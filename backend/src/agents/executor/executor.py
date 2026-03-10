@@ -169,7 +169,9 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
 
 def _extract_agent_output(messages: list[Any]) -> str:
     for message in reversed(messages):
-        if isinstance(message, ToolMessage) and message.name == "ask_clarification":
+        if isinstance(message, ToolMessage):
+            continue
+        if not isinstance(message, AIMessage):
             continue
         text = _content_to_text(getattr(message, "content", ""))
         if text.strip():

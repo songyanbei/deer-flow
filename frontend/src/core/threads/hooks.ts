@@ -60,6 +60,22 @@ type ThreadEventPatch = Pick<
   "resolved_orchestration_mode" | "orchestration_reason" | "run_id"
 >;
 
+function mergePatchedThreadValue<T>(
+  value: T | null | undefined,
+  patch: T | undefined,
+  isLoading: boolean,
+) {
+  if (value !== undefined && value !== null) {
+    return value;
+  }
+
+  if (isLoading && patch !== undefined) {
+    return patch;
+  }
+
+  return value;
+}
+
 export type ThreadStreamOptions = {
   assistantId: ThreadAssistantId;
   threadId?: string | null | undefined;
@@ -161,19 +177,25 @@ export function useThreadStream({
     () => ({
       ...thread.values,
       resolved_orchestration_mode:
-        thread.values.resolved_orchestration_mode !== undefined
-          ? thread.values.resolved_orchestration_mode
-          : eventPatch.resolved_orchestration_mode,
+        mergePatchedThreadValue(
+          thread.values.resolved_orchestration_mode,
+          eventPatch.resolved_orchestration_mode,
+          thread.isLoading,
+        ) ?? null,
       orchestration_reason:
-        thread.values.orchestration_reason !== undefined
-          ? thread.values.orchestration_reason
-          : eventPatch.orchestration_reason,
+        mergePatchedThreadValue(
+          thread.values.orchestration_reason,
+          eventPatch.orchestration_reason,
+          thread.isLoading,
+        ) ?? null,
       run_id:
-        thread.values.run_id !== undefined
-          ? thread.values.run_id
-          : eventPatch.run_id,
+        mergePatchedThreadValue(
+          thread.values.run_id,
+          eventPatch.run_id,
+          thread.isLoading,
+        ) ?? null,
     }),
-    [eventPatch, thread.values],
+    [eventPatch, thread.isLoading, thread.values],
   );
 
   useEffect(() => {
@@ -241,6 +263,8 @@ export function useThreadStream({
       extraContext?: Record<string, unknown>,
     ) => {
       const text = message.text.trim();
+      const shouldStreamSubgraphs =
+        context.requested_orchestration_mode !== "workflow";
 
       prevMsgCountRef.current = thread.messages.length;
 
@@ -382,7 +406,7 @@ export function useThreadStream({
           },
           {
             threadId: threadId,
-            streamSubgraphs: true,
+            streamSubgraphs: shouldStreamSubgraphs,
             streamResumable: true,
             streamMode: ["values", "messages-tuple", "custom"],
             config: {

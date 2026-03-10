@@ -4,6 +4,7 @@ import re
 from typing import TypedDict
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 
 from src.agents.thread_state import (
     RequestedOrchestrationMode,
@@ -241,6 +242,20 @@ def decide_orchestration(
 
 def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> dict:
     decision = decide_orchestration(state, config)
+    try:
+        writer = get_stream_writer()
+    except Exception:
+        writer = None
+
+    if writer is not None:
+        writer(
+            {
+                "type": "orchestration_mode_resolved",
+                "requested_orchestration_mode": decision["requested_mode"],
+                "resolved_orchestration_mode": decision["resolved_mode"],
+                "orchestration_reason": decision["reason"],
+            }
+        )
     return {
         "requested_orchestration_mode": decision["requested_mode"],
         "resolved_orchestration_mode": decision["resolved_mode"],

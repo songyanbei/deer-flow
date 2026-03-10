@@ -152,18 +152,50 @@ class LocalSandbox(Sandbox):
             "/bin/sh, and `sh` on PATH."
         )
 
+    @staticmethod
+    def _get_windows_shell_command(command: str) -> list[str] | None:
+        """Build a Windows shell invocation for the given command."""
+        pwsh = shutil.which("pwsh")
+        if pwsh is not None:
+            return [pwsh, "-NoProfile", "-NonInteractive", "-Command", command]
+
+        powershell = shutil.which("powershell")
+        if powershell is not None:
+            return [powershell, "-NoProfile", "-NonInteractive", "-Command", command]
+
+        cmd = shutil.which("cmd")
+        if cmd is not None:
+            return [cmd, "/d", "/s", "/c", command]
+
+        return None
+
     def execute_command(self, command: str) -> str:
         # Resolve container paths in command before execution
         resolved_command = self._resolve_paths_in_command(command)
 
-        result = subprocess.run(
-            resolved_command,
-            executable=self._get_shell(),
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        if os.name == "nt":
+            shell_command = self._get_windows_shell_command(resolved_command)
+            if shell_command is None:
+                raise RuntimeError(
+                    "No suitable shell executable found. Tried `pwsh`, "
+                    "`powershell`, and `cmd` on PATH."
+                )
+            result = subprocess.run(
+                shell_command,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        else:
+            result = subprocess.run(
+                resolved_command,
+                executable=self._get_shell(),
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
         output = result.stdout
         if result.stderr:
             output += f"\nStd Error:\n{result.stderr}" if output else result.stderr

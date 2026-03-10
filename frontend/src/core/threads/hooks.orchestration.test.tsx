@@ -47,10 +47,18 @@ vi.mock("../tasks/context", () => ({
 type HarnessProps = {
   assistantId: "entry_graph" | "lead_agent" | "multi_agent";
   threadValues?: Record<string, unknown>;
+  isLoading?: boolean;
+  requestedOrchestrationMode?: "auto" | "leader" | "workflow";
 };
 
 let lastStreamOptions: Record<string, unknown> = {};
-let latestThread: { values: Record<string, unknown> } | null = null;
+let latestThread: {
+  values: Record<string, unknown>;
+  submit?: ReturnType<typeof vi.fn>;
+} | null = null;
+let latestSendMessage:
+  | ((threadId: string, message: { text: string; files: [] }) => Promise<void>)
+  | null = null;
 
 function renderHook(initialProps: HarnessProps) {
   const container = document.createElement("div");
@@ -59,23 +67,32 @@ function renderHook(initialProps: HarnessProps) {
   let currentProps = initialProps;
 
   function Harness() {
-    const [thread] = useThreadStream({
+    const [thread, sendMessage] = useThreadStream({
       assistantId: currentProps.assistantId,
       threadId: "thread-1",
-      context: { mode: "flash", requested_orchestration_mode: "auto" },
+      context: {
+        mode: "flash",
+        requested_orchestration_mode:
+          currentProps.requestedOrchestrationMode ?? "auto",
+      },
     });
-    latestThread = thread;
+    latestThread = thread as unknown as {
+      values: Record<string, unknown>;
+      submit?: ReturnType<typeof vi.fn>;
+    };
+    latestSendMessage = sendMessage as typeof latestSendMessage;
     return null;
   }
 
   useStreamMock.mockImplementation((options: unknown) => {
     lastStreamOptions = options as Record<string, unknown>;
+    const submit = vi.fn().mockResolvedValue(undefined);
     return {
       messages: [],
       values: currentProps.threadValues ?? {},
-      isLoading: false,
+      isLoading: currentProps.isLoading ?? false,
       isThreadLoading: false,
-      submit: vi.fn(),
+      submit,
       stop: vi.fn(),
     };
   });
@@ -108,6 +125,7 @@ describe("useThreadStream orchestration hydration", () => {
     upsertTaskMock.mockReset();
     lastStreamOptions = {};
     latestThread = null;
+    latestSendMessage = null;
   });
 
   afterEach(() => {
@@ -204,6 +222,7 @@ describe("useThreadStream orchestration hydration", () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {},
+      isLoading: true,
     });
 
     act(() => {
@@ -246,11 +265,104 @@ describe("useThreadStream orchestration hydration", () => {
         orchestration_reason: null,
         run_id: null,
       },
+      isLoading: false,
     });
 
     expect(latestThread?.values.resolved_orchestration_mode).toBeNull();
     expect(latestThread?.values.orchestration_reason).toBeNull();
     expect(latestThread?.values.run_id).toBeNull();
+
+    rendered.cleanup();
+  });
+
+  it("syncs resolved mode and reason from non-task orchestration events", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {},
+      isLoading: true,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "orchestration_mode_resolved",
+        resolved_orchestration_mode: "workflow",
+        orchestration_reason: "Agent default routed to workflow",
+      });
+    });
+
+    expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
+    expect(latestThread?.values.orchestration_reason).toBe(
+      "Agent default routed to workflow",
+    );
+    expect(upsertTaskMock).not.toHaveBeenCalled();
+
+    rendered.cleanup();
+  });
+
+  it("keeps workflow mode patched while loading if streamed values temporarily clear", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {},
+      isLoading: true,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "task_running",
+        source: "multi_agent",
+        task_id: "task-4",
+        run_id: "run-4",
+        resolved_orchestration_mode: "workflow",
+        orchestration_reason: "Run workflow subtasks in parallel.",
+      });
+    });
+
+    rendered.rerender({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: null,
+        orchestration_reason: null,
+        run_id: null,
+      },
+      isLoading: true,
+    });
+
+    expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
+    expect(latestThread?.values.orchestration_reason).toBe(
+      "Run workflow subtasks in parallel.",
+    );
+    expect(latestThread?.values.run_id).toBe("run-4");
+
+    rendered.cleanup();
+  });
+
+  it("disables subgraph streaming for explicit workflow mode submissions", async () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+    });
+
+    const submitMock = latestThread?.submit as ReturnType<typeof vi.fn>;
+
+    await act(async () => {
+      await latestSendMessage?.("thread-1", {
+        text: "Plan this in workflow mode.",
+        files: [],
+      });
+    });
+
+    expect(submitMock).toHaveBeenCalledTimes(1);
+    expect(submitMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        streamSubgraphs: false,
+      }),
+    );
 
     rendered.cleanup();
   });

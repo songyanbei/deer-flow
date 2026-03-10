@@ -5,7 +5,10 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.orchestration.selector import decide_orchestration
+from src.agents.orchestration.selector import (
+    decide_orchestration,
+    orchestration_selector_node,
+)
 
 
 def test_selector_respects_explicit_leader_request():
@@ -130,3 +133,32 @@ def test_selector_uses_agent_default_mode_before_auto():
     assert decision["requested_mode"] == "auto"
     assert decision["resolved_mode"] == "workflow"
     assert "Agent default routed to workflow" == decision["reason"]
+
+
+def test_selector_node_emits_mode_patch_event():
+    events: list[dict] = []
+
+    with patch(
+        "src.agents.orchestration.selector.get_stream_writer",
+        return_value=events.append,
+    ):
+        result = orchestration_selector_node(
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Please research the market, compare competitors, and summarize the findings in a report.",
+                    )
+                ]
+            },
+            {"configurable": {"requested_orchestration_mode": "auto"}},
+        )
+
+    assert result["resolved_orchestration_mode"] == "workflow"
+    assert events == [
+        {
+            "type": "orchestration_mode_resolved",
+            "requested_orchestration_mode": "auto",
+            "resolved_orchestration_mode": "workflow",
+            "orchestration_reason": "Detected structured or multi-step task; routed to workflow",
+        }
+    ]
