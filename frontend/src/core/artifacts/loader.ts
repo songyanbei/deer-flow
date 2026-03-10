@@ -3,6 +3,7 @@ import type { BaseStream } from "@langchain/langgraph-sdk/react";
 import type { AgentThreadState } from "../threads";
 
 import { urlOfArtifact } from "./utils";
+import { parseWriteFileUrl } from "./write-file-url";
 
 export async function loadArtifactContent({
   filepath,
@@ -30,9 +31,7 @@ export function loadArtifactContentFromToolCall({
   url: string;
   thread: BaseStream<AgentThreadState>;
 }) {
-  const url = new URL(urlString);
-  const toolCallId = url.searchParams.get("tool_call_id");
-  const messageId = url.searchParams.get("message_id");
+  const { toolCallId, messageId } = parseWriteFileUrl(urlString);
   if (messageId && toolCallId) {
     const message = thread.messages.find((message) => message.id === messageId);
     if (message?.type === "ai" && message.tool_calls) {

@@ -204,6 +204,26 @@ class TestRegistryGetSubagentConfig:
 
         assert get_subagent_config("general-purpose") is not None
         assert get_subagent_config("bash") is not None
+        assert get_subagent_config("agent_meeting_01") is not None
+        assert get_subagent_config("agent_contacts_01") is not None
+        assert get_subagent_config("agent_hr_01") is not None
+
+    def test_returns_config_for_custom_agents(self, monkeypatch):
+        from src.subagents.registry import get_subagent_config
+
+        monkeypatch.setattr(
+            "src.config.agents_config.load_agent_config",
+            lambda name: type("AgentCfg", (), {"name": name, "description": "Payment specialist", "model": "gpt-test"})(),
+        )
+        monkeypatch.setattr("src.config.agents_config.load_agent_soul", lambda name: "Handle payment workflows carefully.")
+
+        config = get_subagent_config("payments")
+
+        assert config is not None
+        assert config.name == "payments"
+        assert config.description == "Payment specialist"
+        assert config.model == "gpt-test"
+        assert "Handle payment workflows carefully." in config.system_prompt
 
     def test_default_timeout_preserved_when_no_config(self):
         from src.subagents.registry import get_subagent_config
@@ -287,6 +307,34 @@ class TestRegistryListSubagents:
         names = {cfg.name for cfg in list_subagents()}
         assert "general-purpose" in names
         assert "bash" in names
+        assert "agent_meeting_01" in names
+        assert "agent_contacts_01" in names
+        assert "agent_hr_01" in names
+
+    def test_laifu_builtin_prompts_include_copied_skill_content(self):
+        from src.subagents.registry import get_subagent_config
+
+        meeting = get_subagent_config("agent_meeting_01")
+        contacts = get_subagent_config("agent_contacts_01")
+        hr = get_subagent_config("agent_hr_01")
+
+        assert "room_shenzhen_001" in meeting.system_prompt
+        assert "IM_OPEN_ID" in contacts.system_prompt
+        assert "2026-03-05" in hr.system_prompt
+
+    def test_lists_custom_agents_alongside_builtin_agents(self, monkeypatch):
+        from src.subagents.registry import get_subagent_names, list_subagents
+
+        agent_cfg = type("AgentCfg", (), {"name": "payments", "description": "Payment specialist", "model": None})
+        monkeypatch.setattr("src.config.agents_config.list_custom_agents", lambda: [agent_cfg])
+        monkeypatch.setattr("src.config.agents_config.load_agent_config", lambda name: agent_cfg)
+        monkeypatch.setattr("src.config.agents_config.load_agent_soul", lambda name: None)
+
+        names = set(get_subagent_names())
+        configs = {cfg.name for cfg in list_subagents()}
+
+        assert "payments" in names
+        assert "payments" in configs
 
     def test_all_returned_configs_get_global_override(self):
         from src.subagents.registry import list_subagents

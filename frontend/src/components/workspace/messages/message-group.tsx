@@ -38,6 +38,7 @@ import { FlipDisplay } from "../flip-display";
 import { Tooltip } from "../tooltip";
 
 import { MarkdownContent } from "./markdown-content";
+import { buildWriteFileUrl } from "@/core/artifacts/write-file-url";
 
 export function MessageGroup({
   className,
@@ -337,9 +338,11 @@ function ToolCall({
     const path: string | undefined = (args as { path: string })?.path;
     if (isLoading && isLast && autoOpen && autoSelect && path) {
       setTimeout(() => {
-        const url = new URL(
-          `write-file:${path}?message_id=${messageId}&tool_call_id=${id}`,
-        ).toString();
+        const url = buildWriteFileUrl({
+          path,
+          messageId,
+          toolCallId: id,
+        });
         if (selectedArtifact === url) {
           return;
         }
@@ -356,9 +359,11 @@ function ToolCall({
         icon={NotebookPenIcon}
         onClick={() => {
           select(
-            new URL(
-              `write-file:${path}?message_id=${messageId}&tool_call_id=${id}`,
-            ).toString(),
+            buildWriteFileUrl({
+              path: path ?? "",
+              messageId,
+              toolCallId: id,
+            }),
           );
           setOpen(true);
         }}

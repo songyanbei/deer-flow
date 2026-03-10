@@ -31,6 +31,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { CodeEditor } from "@/components/workspace/code-editor";
 import { useArtifactContent } from "@/core/artifacts/hooks";
 import { urlOfArtifact } from "@/core/artifacts/utils";
+import { parseWriteFileUrl } from "@/core/artifacts/write-file-url";
 import { useI18n } from "@/core/i18n/hooks";
 import { installSkill } from "@/core/skills/api";
 import { streamdownPlugins } from "@/core/streamdown";
@@ -60,8 +61,7 @@ export function ArtifactFileDetail({
   }, [filepathFromProps]);
   const filepath = useMemo(() => {
     if (isWriteFile) {
-      const url = new URL(filepathFromProps);
-      return decodeURIComponent(url.pathname);
+      return parseWriteFileUrl(filepathFromProps).path;
     }
     return filepathFromProps;
   }, [filepathFromProps, isWriteFile]);

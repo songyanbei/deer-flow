@@ -9,6 +9,42 @@ from src.subagents.config import SubagentConfig
 logger = logging.getLogger(__name__)
 
 
+def _build_custom_subagent_config(name: str) -> SubagentConfig | None:
+    """Adapt a custom agent config into a lightweight subagent config."""
+    try:
+        from src.config.agents_config import load_agent_config, load_agent_soul
+
+        agent_config = load_agent_config(name)
+        if agent_config is None:
+            return None
+    except Exception as exc:
+        logger.warning("Failed to load custom agent '%s' for subagent registry: %s", name, exc)
+        return None
+
+    soul = load_agent_soul(name)
+    system_prompt = (
+        f"You are the custom agent '{agent_config.name}'. Complete the delegated task autonomously and stay focused on your domain expertise."
+    )
+    if soul:
+        system_prompt += f"\n\n{soul}"
+
+    return SubagentConfig(
+        name=agent_config.name,
+        description=agent_config.description or f"Custom agent '{agent_config.name}' loaded from agents directory.",
+        system_prompt=system_prompt,
+        model=agent_config.model or "inherit",
+    )
+
+
+def _get_registered_subagent_config(name: str) -> SubagentConfig | None:
+    """Return the base config before timeout overrides are applied."""
+    builtin = BUILTIN_SUBAGENTS.get(name)
+    if builtin is not None:
+        return builtin
+
+    return _build_custom_subagent_config(name)
+
+
 def get_subagent_config(name: str) -> SubagentConfig | None:
     """Get a subagent configuration by name, with config.yaml overrides applied.
 
@@ -18,7 +54,7 @@ def get_subagent_config(name: str) -> SubagentConfig | None:
     Returns:
         SubagentConfig if found (with any config.yaml overrides applied), None otherwise.
     """
-    config = BUILTIN_SUBAGENTS.get(name)
+    config = _get_registered_subagent_config(name)
     if config is None:
         return None
 
@@ -40,7 +76,7 @@ def list_subagents() -> list[SubagentConfig]:
     Returns:
         List of all registered SubagentConfig instances.
     """
-    return [get_subagent_config(name) for name in BUILTIN_SUBAGENTS]
+    return [config for name in get_subagent_names() if (config := get_subagent_config(name)) is not None]
 
 
 def get_subagent_names() -> list[str]:

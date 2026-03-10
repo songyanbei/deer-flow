@@ -4,6 +4,21 @@ from src.config.agents_config import load_agent_soul
 from src.skills import load_skills
 
 
+def _get_subagent_listing() -> str:
+    """Return a formatted list of available subagents for the prompt."""
+    try:
+        from src.subagents.registry import list_subagents
+
+        subagents = list_subagents()
+    except Exception:
+        subagents = []
+
+    if not subagents:
+        return "- **general-purpose**: For complex multi-step work\n- **bash**: For command execution"
+
+    return "\n".join(f"- **{subagent.name}**: {subagent.description}" for subagent in subagents)
+
+
 def _build_subagent_section(max_concurrent: int) -> str:
     """Build the subagent system prompt section with dynamic concurrency limit.
 
@@ -14,6 +29,7 @@ def _build_subagent_section(max_concurrent: int) -> str:
         Formatted subagent section string.
     """
     n = max_concurrent
+    available_subagents = _get_subagent_listing()
     return f"""<subagent_system>
 **🚀 SUBAGENT MODE ACTIVE - DECOMPOSE, DELEGATE, SYNTHESIZE**
 
@@ -37,8 +53,13 @@ You are running with subagent capabilities enabled. Your role is to be a **task 
 - **Example thinking pattern**: "I identified 6 sub-tasks. Since the limit is {n} per turn, I will launch the first {n} now, and the rest in the next turn."
 
 **Available Subagents:**
-- **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.
-- **bash**: For command execution (git, build, test, deploy operations)
+{available_subagents}
+
+**Mandatory Delegation Rules:**
+- Meeting booking, cancellation, room search, attendee lookup, and calendar-style scheduling requests MUST be delegated to `agent_meeting_01`.
+- Employee directory, openId, contact info, org structure, and department lookup requests MUST be delegated to `agent_contacts_01`.
+- Attendance, leave, and HR status lookup requests MUST be delegated to `agent_hr_01`.
+- Do NOT attempt to handle the domains above with direct tool calls. Use `task` to delegate them to the matching subagent first, then synthesize the result for the user.
 
 **Your Orchestration Strategy:**
 

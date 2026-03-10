@@ -1,5 +1,6 @@
 """Subagent execution engine."""
 
+import asyncio
 import logging
 import threading
 import uuid
@@ -15,6 +16,7 @@ from langchain.tools import BaseTool
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
+from src.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from src.agents.thread_state import SandboxState, ThreadDataState, ThreadState
 from src.models import create_chat_model
 from src.subagents.config import SubagentConfig
@@ -173,6 +175,7 @@ class SubagentExecutor:
         middlewares = [
             ThreadDataMiddleware(lazy_init=True),  # Compute thread paths
             SandboxMiddleware(lazy_init=True),  # Reuse parent's sandbox (no re-acquisition)
+            ClarificationMiddleware(),
         ]
 
         return create_agent(
@@ -203,6 +206,48 @@ class SubagentExecutor:
             state["thread_data"] = self.thread_data
 
         return state
+
+    async def _execute_stream(
+        self,
+        agent: Any,
+        state: dict[str, Any],
+        run_config: RunnableConfig,
+        context: dict[str, Any],
+        result: SubagentResult,
+    ) -> dict[str, Any] | None:
+        """Run the subagent with async streaming so async-only tools can execute."""
+        final_state = None
+
+        async for chunk in agent.astream(  # type: ignore[arg-type]
+            state,
+            config=run_config,
+            context=context,
+            stream_mode="values",
+        ):
+            final_state = chunk
+
+            messages = chunk.get("messages", [])
+            if not messages:
+                continue
+
+            last_message = messages[-1]
+            if not isinstance(last_message, AIMessage):
+                continue
+
+            message_dict = last_message.model_dump()
+            message_id = message_dict.get("id")
+            if message_id:
+                is_duplicate = any(msg.get("id") == message_id for msg in result.ai_messages)
+            else:
+                is_duplicate = message_dict in result.ai_messages
+
+            if not is_duplicate:
+                result.ai_messages.append(message_dict)
+                logger.info(
+                    f"[trace={self.trace_id}] Subagent {self.config.name} captured AI message #{len(result.ai_messages)}"
+                )
+
+        return final_state
 
     def execute(self, task: str, result_holder: SubagentResult | None = None) -> SubagentResult:
         """Execute a task synchronously.
@@ -242,32 +287,15 @@ class SubagentExecutor:
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} starting execution with max_turns={self.config.max_turns}")
 
-            # Use stream instead of invoke to get real-time updates
-            # This allows us to collect AI messages as they are generated
-            final_state = None
-            for chunk in agent.stream(state, config=run_config, context=context, stream_mode="values"):  # type: ignore[arg-type]
-                final_state = chunk
-
-                # Extract AI messages from the current state
-                messages = chunk.get("messages", [])
-                if messages:
-                    last_message = messages[-1]
-                    # Check if this is a new AI message
-                    if isinstance(last_message, AIMessage):
-                        # Convert message to dict for serialization
-                        message_dict = last_message.model_dump()
-                        # Only add if it's not already in the list (avoid duplicates)
-                        # Check by comparing message IDs if available, otherwise compare full dict
-                        message_id = message_dict.get("id")
-                        is_duplicate = False
-                        if message_id:
-                            is_duplicate = any(msg.get("id") == message_id for msg in result.ai_messages)
-                        else:
-                            is_duplicate = message_dict in result.ai_messages
-
-                        if not is_duplicate:
-                            result.ai_messages.append(message_dict)
-                            logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} captured AI message #{len(result.ai_messages)}")
+            final_state = asyncio.run(
+                self._execute_stream(
+                    agent=agent,
+                    state=state,
+                    run_config=run_config,
+                    context=context,
+                    result=result,
+                )
+            )
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} completed execution")
 
@@ -310,6 +338,29 @@ class SubagentExecutor:
                 else:
                     logger.warning(f"[trace={self.trace_id}] Subagent {self.config.name} no messages in final state")
                     result.result = "No response generated"
+
+                if not result.result or not str(result.result).strip():
+                    for msg in reversed(messages):
+                        content = getattr(msg, "content", None)
+                        if isinstance(content, str) and content.strip():
+                            result.result = content
+                            logger.info(
+                                f"[trace={self.trace_id}] Subagent {self.config.name} fell back to non-empty message content from {type(msg).__name__}"
+                            )
+                            break
+                        if isinstance(content, list):
+                            text_parts = []
+                            for block in content:
+                                if isinstance(block, str) and block.strip():
+                                    text_parts.append(block)
+                                elif isinstance(block, dict) and str(block.get("text", "")).strip():
+                                    text_parts.append(block["text"])
+                            if text_parts:
+                                result.result = "\n".join(text_parts)
+                                logger.info(
+                                    f"[trace={self.trace_id}] Subagent {self.config.name} fell back to text blocks from {type(msg).__name__}"
+                                )
+                                break
 
             result.status = SubagentStatus.COMPLETED
             result.completed_at = datetime.now()

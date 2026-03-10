@@ -63,6 +63,7 @@ def _make_result(
 
 def test_task_tool_returns_error_for_unknown_subagent(monkeypatch):
     monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _: None)
+    monkeypatch.setattr("src.subagents.registry.get_subagent_names", lambda: ["general-purpose", "bash", "payments"])
 
     result = task_tool_module.task_tool.func(
         runtime=None,
@@ -73,6 +74,7 @@ def test_task_tool_returns_error_for_unknown_subagent(monkeypatch):
     )
 
     assert result.startswith("Error: Unknown subagent type")
+    assert "payments" in result
 
 
 def test_task_tool_emits_running_and_completed_events(monkeypatch):

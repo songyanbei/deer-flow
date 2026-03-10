@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
@@ -22,18 +24,63 @@ import { useThreadStream } from "@/core/threads/hooks";
 import { textOfMessage } from "@/core/threads/utils";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
+import { getAPIClient } from "@/core/api";
 
-export default function ChatPage() {
+function ChatPageClient() {
   const { t } = useI18n();
   const [settings, setSettings] = useLocalSettings();
+  const router = useRouter();
 
-  const { threadId, isNewThread, setIsNewThread, isMock } = useThreadChat();
+  const {
+    threadId,
+    threadIdFromPath,
+    isNewThread,
+    setIsNewThread,
+    isMock,
+  } = useThreadChat();
   useSpecificChatMode();
+  const [isThreadReady, setIsThreadReady] = useState(isNewThread);
 
   const { showNotification } = useNotification();
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (isNewThread || !threadIdFromPath || threadIdFromPath === "new") {
+      setIsThreadReady(true);
+      return;
+    }
+
+    setIsThreadReady(false);
+    void getAPIClient(isMock)
+      .threads.get(threadIdFromPath)
+      .then(() => {
+        if (!cancelled) {
+          setIsThreadReady(true);
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+
+        const message =
+          error instanceof Error ? error.message.toLowerCase() : String(error);
+        if (message.includes("404") || message.includes("not found")) {
+          router.replace("/workspace/chats/new");
+          return;
+        }
+
+        setIsThreadReady(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMock, isNewThread, router, threadIdFromPath]);
+
   const [thread, sendMessage] = useThreadStream({
-    threadId: isNewThread ? undefined : threadId,
+    threadId: !isThreadReady || isNewThread ? undefined : threadId,
     context: settings.context,
     isMock,
     onStart: () => {
@@ -67,6 +114,14 @@ export default function ChatPage() {
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
+
+  if (!isThreadReady) {
+    return (
+      <div className="flex size-full items-center justify-center text-sm text-muted-foreground">
+        Loading conversation...
+      </div>
+    );
+  }
 
   return (
     <ThreadContext.Provider value={{ thread, isMock }}>
@@ -143,3 +198,9 @@ export default function ChatPage() {
     </ThreadContext.Provider>
   );
 }
+
+const ChatPage = dynamic(async () => ChatPageClient, {
+  ssr: false,
+});
+
+export default ChatPage;
