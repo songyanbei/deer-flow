@@ -55,3 +55,11 @@ def test_load_skills_skips_hidden_directories(tmp_path: Path):
 
     assert "ok-skill" in names
     assert "secret-skill" not in names
+
+
+def test_repo_custom_domain_skills_are_loadable():
+    """Checked-in custom subagent skills should all be discoverable by the loader."""
+    skills = load_skills(use_config=False, enabled_only=False)
+    names = {skill.name for skill in skills if skill.category == "custom"}
+
+    assert {"contacts", "hr", "meeting"} <= names

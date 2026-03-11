@@ -146,6 +146,13 @@ def _content_to_text(content) -> str:
     return str(content or "")
 
 
+def _planner_invocation_error_message(exc: Exception) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return f"Workflow planning failed: {detail}"
+    return "Workflow planning failed before tasks could be generated."
+
+
 def _is_human_message(message) -> bool:
     return getattr(message, "type", None) == "human" or message.__class__.__name__ == "HumanMessage"
 
@@ -234,7 +241,23 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Planner] Mode=validate, %d tasks done", len(task_pool))
 
     llm = create_chat_model(name=_resolve_model(config), thinking_enabled=False)
-    response = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_message)])
+    try:
+        response = await llm.ainvoke(
+            [SystemMessage(content=system_prompt), HumanMessage(content=user_message)]
+        )
+    except Exception as exc:
+        error_message = _planner_invocation_error_message(exc)
+        logger.exception("[Planner] Model invocation failed: %s", error_message)
+        return {
+            "execution_state": "ERROR",
+            "final_result": error_message,
+            "messages": [AIMessage(content=error_message)],
+            "original_input": original_input,
+            "run_id": run_id,
+            "planner_goal": planner_goal,
+            **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
+        }
+
     parsed = _parse_planner_output(response.content)
 
     if parsed.get("parse_error"):

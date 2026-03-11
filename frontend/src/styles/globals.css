@@ -348,6 +348,7 @@
     border-radius: 10px;
     z-index: -1;
     animation: ambilight 40s ease-in-out infinite;
+    opacity: 0.2;
   }
 
   .ambilight.enabled {
@@ -356,7 +357,7 @@
 
   .dark .ambilight:before,
   .dark .ambilight:after {
-    opacity: 0.85;
+    opacity: 0.3;
   }
 
   @keyframes ambilight {
@@ -372,7 +373,7 @@
   }
 
   .ambilight:after {
-    filter: blur(60px);
+    filter: blur(36px);
   }
 
   .golden-text {

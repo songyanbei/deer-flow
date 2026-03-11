@@ -276,6 +276,16 @@ export const enUS: Translations = {
     failed: "Subtask failed",
   },
 
+  workflowStatus: {
+    planning: "Workflow is planning steps",
+    resuming: "Workflow is resuming previous tasks",
+    processing: "Workflow is processing",
+    summarizing: "Workflow is summarizing results",
+    waitingClarification: "Workflow is waiting for your clarification",
+    running: (count: number) =>
+      `Workflow is running ${count} subtask${count === 1 ? "" : "s"}`,
+  },
+
   // Settings
   settings: {
     title: "Settings",

@@ -17,6 +17,7 @@ import { TaskPanel } from "@/components/workspace/task-panel";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { Tooltip } from "@/components/workspace/tooltip";
+import { useFooterPadding } from "@/components/workspace/use-footer-padding";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 import { useNotification } from "@/core/notification/hooks";
@@ -40,6 +41,12 @@ export default function AgentChatPage() {
   const { threadId, isNewThread, setIsNewThread } = useThreadChat();
 
   const { showNotification } = useNotification();
+  const {
+    footerContainerRef,
+    footerOverlayRef,
+    inputShellRef,
+    paddingBottom,
+  } = useFooterPadding();
   const [thread, sendMessage] = useThreadStream({
     assistantId: "entry_graph",
     threadId: isNewThread ? undefined : threadId,
@@ -80,6 +87,11 @@ export default function AgentChatPage() {
   const handleStop = useCallback(async () => {
     await thread.stop();
   }, [thread]);
+  const shouldDockWorkflowFooter =
+    thread.values.resolved_orchestration_mode === "workflow" &&
+    (thread.isLoading ||
+      (thread.values.task_pool?.length ?? 0) > 0 ||
+      (thread.values.todos?.length ?? 0) > 0);
 
   return (
     <ThreadContext.Provider value={{ thread }}>
@@ -127,10 +139,14 @@ export default function AgentChatPage() {
                 className={cn("size-full", !isNewThread && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                paddingBottom={paddingBottom}
               />
             </div>
 
-            <div className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4">
+            <div
+              ref={footerContainerRef}
+              className="absolute right-0 bottom-0 left-0 z-30 flex justify-center px-4"
+            >
               <div
                 className={cn(
                   "relative w-full",
@@ -140,8 +156,11 @@ export default function AgentChatPage() {
                     : "max-w-(--container-width-md)",
                 )}
               >
-                <div className="absolute -top-4 right-0 left-0 z-0">
-                  <div className="absolute right-0 bottom-0 left-0 flex flex-col gap-2">
+                <div
+                  ref={footerOverlayRef}
+                  className="absolute right-0 bottom-full left-0 z-0 pb-0.5"
+                >
+                  <div className="flex flex-col gap-0.5">
                     <TaskPanel thread={thread} />
                     <TodoList
                       className="bg-background/5"
@@ -153,22 +172,28 @@ export default function AgentChatPage() {
                   </div>
                 </div>
 
-                <InputBox
-                  className={cn("bg-background/5 w-full -translate-y-4")}
-                  isNewThread={isNewThread}
-                  autoFocus={isNewThread}
-                  status={thread.isLoading ? "streaming" : "ready"}
-                  context={settings.context}
-                  extraHeader={
-                    isNewThread && (
-                      <AgentWelcome agent={agent} agentName={agent_name} />
-                    )
-                  }
-                  disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
-                  onContextChange={(context) => setSettings("context", context)}
-                  onSubmit={handleSubmit}
-                  onStop={handleStop}
-                />
+                <div ref={inputShellRef}>
+                  <InputBox
+                    className={cn(
+                      "bg-background/5 w-full",
+                      shouldDockWorkflowFooter &&
+                        "rounded-t-none border-t-0 *:data-[slot='input-group']:rounded-t-none",
+                    )}
+                    isNewThread={isNewThread}
+                    autoFocus={isNewThread}
+                    status={thread.isLoading ? "streaming" : "ready"}
+                    context={settings.context}
+                    extraHeader={
+                      isNewThread && (
+                        <AgentWelcome agent={agent} agentName={agent_name} />
+                      )
+                    }
+                    disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
+                    onContextChange={(context) => setSettings("context", context)}
+                    onSubmit={handleSubmit}
+                    onStop={handleStop}
+                  />
+                </div>
                 {env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" && (
                   <div className="text-muted-foreground/67 w-full translate-y-12 text-center text-xs">
                     {t.common.notAvailableInDemoMode}

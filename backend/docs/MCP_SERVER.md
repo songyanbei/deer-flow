@@ -45,6 +45,38 @@ Example:
 }
 ```
 
+## Playwright MCP Example
+
+To enable browser automation for frontend validation, add a stdio MCP server using the official Playwright MCP package:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--isolated",
+        "--output-dir",
+        "/path/to/project/logs/playwright-mcp"
+      ],
+      "description": "Official Playwright MCP server for browser automation and frontend UI validation"
+    }
+  }
+}
+```
+
+Notes:
+
+- `--headless` is the pragmatic default for agent-driven runs.
+- `--isolated` avoids reusing a persistent browser profile between sessions.
+- `--output-dir` gives Playwright MCP a stable place to write artifacts such as traces or snapshots if you enable them later.
+- If the target machine does not already have a compatible browser installed, install one with `npx playwright install chromium`.
+
 ## How It Works
 
 MCP servers expose tools that are automatically discovered and integrated into DeerFlow’s agent system at runtime. Once enabled, these tools become available to agents without additional code changes.

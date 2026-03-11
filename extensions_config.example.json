@@ -18,6 +18,21 @@
       },
       "description": "GitHub MCP server for repository operations"
     },
+    "playwright": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless",
+        "--isolated",
+        "--output-dir",
+        "/path/to/project/logs/playwright-mcp"
+      ],
+      "env": {},
+      "description": "Official Playwright MCP server for browser automation and frontend UI validation"
+    },
     "postgres": {
       "enabled": false,
       "type": "stdio",

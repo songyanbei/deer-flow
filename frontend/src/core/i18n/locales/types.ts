@@ -211,6 +211,15 @@ export interface Translations {
     failed: string;
   };
 
+  workflowStatus: {
+    planning: string;
+    resuming: string;
+    processing: string;
+    summarizing: string;
+    waitingClarification: string;
+    running: (count: number) => string;
+  };
+
   // Settings
   settings: {
     title: string;

@@ -15,7 +15,6 @@ import {
 } from "@/components/ai-elements/chain-of-thought";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
-import { ShineBorder } from "@/components/ui/shine-border";
 import { useI18n } from "@/core/i18n/hooks";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
@@ -56,6 +55,29 @@ function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeo
   return t.subtasks.failed;
 }
 
+function getCollapsedStatusLabel(
+  task: ReturnType<typeof useSubtask>,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  if (!task) {
+    return "";
+  }
+
+  if (task.status === "pending") {
+    return t.subtasks.pending;
+  }
+  if (task.status === "waiting_clarification") {
+    return t.subtasks.waiting_clarification;
+  }
+  if (task.status === "in_progress") {
+    return t.subtasks.in_progress;
+  }
+  if (task.status === "completed") {
+    return t.subtasks.completed;
+  }
+  return t.subtasks.failed;
+}
+
 export function SubtaskCard({
   className,
   taskId,
@@ -85,29 +107,27 @@ export function SubtaskCard({
   }
 
   const progressLabel = getStatusLabel(task, t);
+  const collapsedStatusLabel = getCollapsedStatusLabel(task, t);
   const isActive =
     task.status === "in_progress" || task.status === "waiting_clarification";
 
   return (
     <ChainOfThought
-      className={cn("relative w-full gap-2 rounded-lg border py-0", className)}
+      className={cn(
+        "relative w-full gap-2 rounded-lg border py-0 transition-shadow",
+        isActive &&
+          "border-[#c8a8ff] shadow-[0_0_0_1px_rgba(200,168,255,0.24),0_14px_32px_rgba(160,124,254,0.12)]",
+        className,
+      )}
       open={!collapsed}
     >
       <div
         className={cn(
-          "ambilight z-[-1]",
+          "ambilight absolute inset-0 rounded-[inherit]",
           isActive ? "enabled" : "",
         )}
       ></div>
-      {isActive && (
-        <>
-          <ShineBorder
-            borderWidth={1.5}
-            shineColor={["#A07CFE", "#FE8FB5", "#FFBE7B"]}
-          />
-        </>
-      )}
-      <div className="bg-background/95 flex w-full flex-col rounded-lg">
+      <div className="bg-background flex w-full flex-col rounded-lg">
         <div className="flex w-full items-center justify-between p-0.5">
           <Button
             className="w-full items-start justify-start text-left"
@@ -138,10 +158,10 @@ export function SubtaskCard({
                   >
                     {icon}
                     <FlipDisplay
-                      className="max-w-[420px] truncate pb-1"
+                      className="max-w-[180px] min-h-4 truncate pb-1"
                       uniqueKey={task.latestMessage?.id ?? task.latestUpdate ?? task.status}
                     >
-                      {progressLabel}
+                      {collapsedStatusLabel}
                     </FlipDisplay>
                   </div>
                 )}

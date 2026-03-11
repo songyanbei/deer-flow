@@ -218,6 +218,8 @@ The lead agent can spawn sub-agents on the fly — each with its own scoped cont
 
 This is how DeerFlow handles tasks that take minutes to hours: a research task might fan out into a dozen sub-agents, each exploring a different angle, then converge into a single report — or a website — or a slide deck with generated visuals. One harness, many hands.
 
+The Workflow chat UI also surfaces planning, execution, resume, and clarification progress inline so long-running runs are not reduced to an unexplained typing indicator, while filtering nested sub-agent transcript noise out of the main chat history and keeping live subtask cards inside the dedicated workflow task panel.
+
 ### Sandbox & File System
 
 DeerFlow doesn't just *talk* about doing things. It has its own computer.

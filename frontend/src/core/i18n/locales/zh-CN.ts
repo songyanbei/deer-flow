@@ -261,6 +261,15 @@ export const zhCN: Translations = {
     failed: "子任务失败",
   },
 
+  workflowStatus: {
+    planning: "Workflow 正在规划步骤",
+    resuming: "Workflow 正在恢复上一次任务",
+    processing: "Workflow 正在处理中",
+    summarizing: "Workflow 正在汇总结果",
+    waitingClarification: "Workflow 正在等待你的澄清",
+    running: (count: number) => `Workflow 正在执行 ${count} 个子任务`,
+  },
+
   // Settings
   settings: {
     title: "设置",

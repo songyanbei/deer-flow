@@ -17,10 +17,11 @@ DeerFlow Frontend is a Next.js 16 web interface for an AI agent system. It commu
 | `pnpm check` | Lint + type check (run before committing) |
 | `pnpm lint` | ESLint only |
 | `pnpm lint:fix` | ESLint with auto-fix |
+| `pnpm test:unit` | Run Vitest unit tests |
 | `pnpm typecheck` | TypeScript type check (`tsc --noEmit`) |
 | `pnpm start` | Start production server |
 
-No test framework is configured.
+Vitest is configured for unit tests under `src/**/*.test.ts?(x)`.
 
 ## Architecture
 
@@ -68,6 +69,9 @@ The frontend is a stateful chat application. Users create **threads** (conversat
 - **Server Components by default**, `"use client"` only for interactive components
 - **Thread hooks** (`useThreadStream`, `useSubmitThread`, `useThreads`) are the primary API interface
 - **LangGraph client** is a singleton obtained via `getAPIClient()` in `core/api/`
+- **Workflow progress UI** is derived from streamed thread state plus live multi-agent task events (`components/workspace/workflow-progress.ts`)
+- **Workflow chat streams** must keep nested executor prompts/results out of the main transcript and keep live subtask cards in the dedicated task panel; the current frontend does this with `messages/workflow-message-filter.ts` plus `task-panel.tsx`
+- **Chat footer clearance** is measured from the real visible footer stack (`components/workspace/use-footer-padding.ts`) so workflow task/todo panels do not cover the last messages when they expand
 - **Environment validation** uses `@t3-oss/env-nextjs` with Zod schemas (`src/env.js`). Skip with `SKIP_ENV_VALIDATION=1`
 
 ## Code Style

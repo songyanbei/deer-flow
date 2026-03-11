@@ -1,5 +1,6 @@
 """Middleware for intercepting clarification requests and presenting them to the user."""
 
+import json
 from collections.abc import Callable
 from typing import override
 
@@ -55,7 +56,7 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         question = args.get("question", "")
         clarification_type = args.get("clarification_type", "missing_info")
         context = args.get("context")
-        options = args.get("options", [])
+        options = self._normalize_options(args.get("options"))
 
         # Type-specific icons
         type_icons = {
@@ -87,6 +88,40 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
                 message_parts.append(f"  {i}. {option}")
 
         return "\n".join(message_parts)
+
+    def _normalize_options(self, options: object) -> list[str]:
+        """Normalize clarification options into a printable list.
+
+        Some models return the `options` argument as a JSON string instead of a
+        structured list. When that happens, iterating over the raw value would
+        render one character per line in the UI.
+        """
+        if options is None:
+            return []
+
+        if isinstance(options, list):
+            return [str(option).strip() for option in options if str(option).strip()]
+
+        if isinstance(options, str):
+            text = options.strip()
+            if not text:
+                return []
+
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [
+                        str(option).strip()
+                        for option in parsed
+                        if str(option).strip()
+                    ]
+
+            return [text]
+
+        return [str(options).strip()] if str(options).strip() else []
 
     def _handle_clarification(self, request: ToolCallRequest) -> Command:
         """Handle clarification request and return command to interrupt execution.

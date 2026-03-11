@@ -1030,6 +1030,7 @@ export const PromptInputSubmit = ({
   size = "icon-sm",
   status,
   children,
+  onClick,
   ...props
 }: PromptInputSubmitProps) => {
   let Icon = <ArrowUpIcon className="size-4" />;
@@ -1046,8 +1047,15 @@ export const PromptInputSubmit = ({
     <InputGroupButton
       aria-label="Submit"
       className={cn(className)}
+      onClick={(event) => {
+        onClick?.(event);
+        if (event.defaultPrevented) {
+          return;
+        }
+        event.currentTarget.form?.requestSubmit();
+      }}
       size={size}
-      type="submit"
+      type="button"
       variant={variant}
       {...props}
     >
