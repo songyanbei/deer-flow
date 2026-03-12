@@ -218,9 +218,13 @@ export interface Translations {
 
   workflowStatus: {
     initializing: string;
+    queued: string;
+    acknowledged: string;
     planning: string;
+    routing: string;
     resuming: string;
     processing: string;
+    executing: string;
     summarizing: string;
     waitingDependency: string;
     waitingClarification: string;

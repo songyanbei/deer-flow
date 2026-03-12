@@ -93,8 +93,10 @@ export default function AgentChatPage() {
     await thread.stop();
   }, [thread]);
   const shouldDockWorkflowFooter =
-    thread.values.resolved_orchestration_mode === "workflow" &&
+    (thread.values.resolved_orchestration_mode === "workflow" ||
+      thread.values.workflow_stage != null) &&
     (thread.isLoading ||
+      thread.values.workflow_stage != null ||
       (thread.values.task_pool?.length ?? 0) > 0 ||
       (thread.values.todos?.length ?? 0) > 0);
 

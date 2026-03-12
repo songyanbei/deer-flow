@@ -8,9 +8,10 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 
 from src.agents.planner.prompt import DECOMPOSE_SYSTEM_PROMPT, VALIDATE_SYSTEM_PROMPT
-from src.agents.thread_state import TaskStatus, ThreadState, VerifiedFact
+from src.agents.thread_state import TaskStatus, ThreadState, VerifiedFact, WorkflowStage
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 
@@ -100,6 +101,39 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _get_event_writer():
+    try:
+        return get_stream_writer()
+    except Exception:
+        return lambda _event: None
+
+
+def _build_workflow_stage_update(
+    stage: WorkflowStage | None,
+    detail: str | None = None,
+) -> dict:
+    return {
+        "workflow_stage": stage,
+        "workflow_stage_detail": detail,
+        "workflow_stage_updated_at": _utc_now_iso(),
+    }
+
+
+def _emit_workflow_stage(
+    writer,
+    stage: WorkflowStage,
+    detail: str | None = None,
+    *,
+    run_id: str | None = None,
+) -> None:
+    payload = {
+        "type": "workflow_stage_changed",
+        "run_id": run_id,
+        **_build_workflow_stage_update(stage, detail),
+    }
+    writer(payload)
+
+
 def _new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:12]}"
 
@@ -181,6 +215,67 @@ def _planner_invocation_error_message(exc: Exception) -> str:
     return "Workflow planning failed before tasks could be generated."
 
 
+def _pick_first_non_empty(*values: Any) -> str | None:
+    for value in values:
+        normalized = _normalize_text_value(value)
+        if normalized:
+            return normalized
+    return None
+
+
+def _describe_active_stage(task_pool: list[TaskStatus]) -> tuple[WorkflowStage, str | None] | None:
+    running_task = next((task for task in task_pool if task["status"] == "RUNNING"), None)
+    if running_task is not None:
+        return (
+            "executing",
+            _pick_first_non_empty(
+                running_task.get("status_detail"),
+                running_task.get("description"),
+            ),
+        )
+
+    waiting_task = next(
+        (task for task in task_pool if task["status"] == "WAITING_DEPENDENCY"),
+        None,
+    )
+    if waiting_task is not None:
+        return (
+            "executing",
+            _pick_first_non_empty(
+                waiting_task.get("blocked_reason"),
+                waiting_task.get("status_detail"),
+                waiting_task.get("description"),
+            ),
+        )
+
+    pending_task = next((task for task in task_pool if task["status"] == "PENDING"), None)
+    if pending_task is not None:
+        return (
+            "routing",
+            _pick_first_non_empty(
+                pending_task.get("status_detail"),
+                pending_task.get("description"),
+            ),
+        )
+
+    return None
+
+
+def _build_summarizing_detail(task_pool: list[TaskStatus], planner_goal: str) -> str | None:
+    completed_task = next(
+        (task for task in reversed(task_pool) if task.get("status") == "DONE"),
+        None,
+    )
+    if completed_task is None:
+        return _normalize_text_value(planner_goal) or None
+    return _pick_first_non_empty(
+        completed_task.get("result"),
+        completed_task.get("status_detail"),
+        completed_task.get("description"),
+        planner_goal,
+    )
+
+
 def _is_human_message(message) -> bool:
     return getattr(message, "type", None) == "human" or message.__class__.__name__ == "HumanMessage"
 
@@ -222,6 +317,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     latest_user_input = _extract_latest_user_input(state)
     is_clarification_answer = _latest_user_message_is_clarification_answer(state)
     run_id = _resolve_run_id(task_pool, current_run_id)
+    writer = _get_event_writer()
     normalized_task_pool, task_pool_changed = _normalize_task_pool(task_pool, run_id)
     task_pool = normalized_task_pool
     pending = [t for t in task_pool if t["status"] == "PENDING"]
@@ -240,6 +336,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "route_count": 0,
             "final_result": None,
             "execution_state": "PLANNING_RESET",
+            **_build_workflow_stage_update("planning", latest_user_input),
         }
 
     if pending or running or waiting:
@@ -250,6 +347,9 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             len(waiting),
         )
         result = {"execution_state": "RESUMING", "run_id": run_id}
+        active_stage = _describe_active_stage(task_pool)
+        if active_stage is not None:
+            result.update(_build_workflow_stage_update(*active_stage))
         if task_pool_changed or current_run_id != run_id:
             result["task_pool"] = task_pool
         return result
@@ -262,6 +362,8 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         system_prompt = DECOMPOSE_SYSTEM_PROMPT.format(agent_descriptions=agent_descriptions)
         user_message = original_input
         logger.info("[Planner] Mode=decompose, input=%r", original_input[:100])
+        stage_name: WorkflowStage = "planning"
+        stage_detail = _pick_first_non_empty(original_input, planner_goal)
     else:
         tasks_summary = _build_tasks_summary(task_pool)
         facts_summary = _build_facts_summary(state.get("verified_facts") or {})
@@ -275,6 +377,10 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Planner] Mode=validate, %d tasks done", len(task_pool))
         logger.info("[Planner] Validate task summary: %s", tasks_summary[:2000])
         logger.info("[Planner] Validate facts summary: %s", facts_summary[:2000])
+        stage_name = "summarizing"
+        stage_detail = _build_summarizing_detail(task_pool, planner_goal)
+
+    _emit_workflow_stage(writer, stage_name, stage_detail, run_id=run_id)
 
     llm = create_chat_model(name=_resolve_model(config), thinking_enabled=False)
     try:
@@ -291,6 +397,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
+            **_build_workflow_stage_update(None),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
@@ -308,6 +415,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
+            **_build_workflow_stage_update(None),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
@@ -321,6 +429,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
+            **_build_workflow_stage_update(None),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
@@ -336,10 +445,17 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
+            **_build_workflow_stage_update(None),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
     logger.info("[Planner] Generated %d task(s): %s", len(new_tasks), _summarize_tasks_for_log(new_tasks))
+    _emit_workflow_stage(
+        writer,
+        "routing",
+        _pick_first_non_empty(new_tasks[0].get("description"), planner_goal),
+        run_id=run_id,
+    )
     return {
         "task_pool": new_tasks,
         "execution_state": "PLANNING_DONE",
@@ -347,4 +463,8 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         "run_id": run_id,
         "planner_goal": planner_goal,
         "route_count": 0,
+        **_build_workflow_stage_update(
+            "routing",
+            _pick_first_non_empty(new_tasks[0].get("description"), planner_goal),
+        ),
     }

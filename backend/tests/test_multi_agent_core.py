@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from src.agents.executor.executor import _ensure_mcp_ready, _mcp_initialized, executor_node
 from src.agents.graph import route_after_workflow_executor, route_after_workflow_router
 from src.agents.middlewares.help_request_middleware import HelpRequestMiddleware
+from src.agents.orchestration.selector import orchestration_selector_node
 from src.agents.planner.node import planner_node
 from src.agents.router.semantic_router import router_node
 from src.tools.tools import get_available_tools
@@ -37,6 +38,25 @@ def test_planner_invalid_json_returns_error():
     asyncio.run(_run())
 
 
+def test_orchestration_selector_emits_acknowledged_stage_for_workflow():
+    events: list[dict] = []
+
+    with patch(
+        "src.agents.orchestration.selector.get_stream_writer",
+        return_value=events.append,
+    ):
+        result = orchestration_selector_node(
+            {"messages": [HumanMessage(content="Compare two plans and summarize the tradeoffs.")]},
+            {"configurable": {"requested_orchestration_mode": "workflow"}},
+        )
+
+    assert result["resolved_orchestration_mode"] == "workflow"
+    assert result["workflow_stage"] == "acknowledged"
+    assert events[0]["type"] == "orchestration_mode_resolved"
+    assert events[1]["type"] == "workflow_stage_changed"
+    assert events[1]["workflow_stage"] == "acknowledged"
+
+
 def test_planner_accepts_content_blocks_from_model():
     class BlockPlannerLLM:
         async def ainvoke(self, _messages):
@@ -58,6 +78,42 @@ def test_planner_accepts_content_blocks_from_model():
                 )
         assert result["execution_state"] == "PLANNING_DONE"
         assert result["task_pool"][0]["description"] == "check directory"
+
+    asyncio.run(_run())
+
+
+def test_planner_emits_planning_then_routing_stage_events():
+    class PlannerLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse(
+                '[{"description": "book meeting room", "assigned_agent": "meeting-agent"}]'
+            )
+
+    async def _run():
+        events: list[dict] = []
+        with patch("src.agents.planner.node.create_chat_model", return_value=PlannerLLM()):
+            with patch(
+                "src.agents.planner.node.list_domain_agents",
+                return_value=[SimpleNamespace(name="meeting-agent", description="Book meetings")],
+            ):
+                with patch(
+                    "src.agents.planner.node.get_stream_writer",
+                    return_value=events.append,
+                ):
+                    result = await planner_node(
+                        {"messages": [HumanMessage(content="Book the meeting room")]},
+                        {"configurable": {}},
+                    )
+
+        stage_events = [
+            event for event in events if event.get("type") == "workflow_stage_changed"
+        ]
+        assert [event["workflow_stage"] for event in stage_events] == [
+            "planning",
+            "routing",
+        ]
+        assert result["workflow_stage"] == "routing"
+        assert result["workflow_stage_detail"] == "book meeting room"
 
     asyncio.run(_run())
 
@@ -146,6 +202,47 @@ def test_planner_done_with_null_summary_falls_back_to_task_completed():
     asyncio.run(_run())
 
 
+def test_planner_emits_summarizing_stage_before_final_validation():
+    class DonePlannerLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse('{"done": true, "summary": "Room booked"}')
+
+    async def _run():
+        events: list[dict] = []
+        with patch("src.agents.planner.node.create_chat_model", return_value=DonePlannerLLM()):
+            with patch("src.agents.planner.node.list_domain_agents", return_value=[]):
+                with patch(
+                    "src.agents.planner.node.get_stream_writer",
+                    return_value=events.append,
+                ):
+                    result = await planner_node(
+                        {
+                            "messages": [HumanMessage(content="Book the meeting room")],
+                            "task_pool": [
+                                {
+                                    "task_id": "t1",
+                                    "description": "book the meeting room",
+                                    "status": "DONE",
+                                    "result": "Room booked",
+                                }
+                            ],
+                            "planner_goal": "Book the meeting room",
+                            "original_input": "Book the meeting room",
+                        },
+                        {"configurable": {}},
+                    )
+
+        stage_events = [
+            event for event in events if event.get("type") == "workflow_stage_changed"
+        ]
+        assert stage_events[0]["workflow_stage"] == "summarizing"
+        assert stage_events[0]["workflow_stage_detail"] == "Room booked"
+        assert result["workflow_stage"] is None
+        assert result["workflow_stage_detail"] is None
+
+    asyncio.run(_run())
+
+
 def test_planner_run_id_changes_on_new_user_turn_and_reuses_on_clarification():
     class PlannerLLM:
         async def ainvoke(self, _messages):
@@ -222,6 +319,41 @@ def test_planner_backfills_run_id_for_legacy_resumed_tasks():
         assert result["run_id"].startswith("run_")
         assert result["task_pool"][0]["run_id"] == result["run_id"]
         assert result["task_pool"][0]["updated_at"]
+
+    asyncio.run(_run())
+
+
+def test_router_sets_executing_stage_when_assigning_pending_task():
+    async def _run():
+        events: list[dict] = []
+        with patch(
+            "src.agents.router.semantic_router.list_domain_agents",
+            return_value=[SimpleNamespace(name="meeting-agent", description="Book meetings")],
+        ):
+            with patch(
+                "src.agents.router.semantic_router.get_stream_writer",
+                return_value=events.append,
+            ):
+                result = await router_node(
+                    {
+                        "task_pool": [
+                            {
+                                "task_id": "t1",
+                                "description": "book the meeting room",
+                                "assigned_agent": "meeting-agent",
+                                "status": "PENDING",
+                            }
+                        ]
+                    },
+                    {"configurable": {}},
+                )
+
+        stage_events = [
+            event for event in events if event.get("type") == "workflow_stage_changed"
+        ]
+        assert result["workflow_stage"] == "executing"
+        assert "meeting-agent" in (result["workflow_stage_detail"] or "")
+        assert stage_events[0]["workflow_stage"] == "executing"
 
     asyncio.run(_run())
 

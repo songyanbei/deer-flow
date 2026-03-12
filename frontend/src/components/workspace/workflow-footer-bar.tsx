@@ -171,11 +171,15 @@ export function WorkflowFooterBar({
     tasks: workflowTasks,
     t,
   });
+  const preferStageTitle =
+    progress?.workflowStage != null && progress.workflowStage !== "executing";
   const primaryTask = useMemo(
     () => pickPrimaryWorkflowTask(workflowTasks),
     [workflowTasks],
   );
-  const compactTitle = getCompactTaskTitle(primaryTask, progress?.detail ?? progress?.title);
+  const compactTitle = preferStageTitle
+    ? getCompactTaskTitle(undefined, progress?.title ?? progress?.detail)
+    : getCompactTaskTitle(primaryTask, progress?.title ?? progress?.detail);
   const completedCount = workflowTasks.filter(
     (task) => task.status === "completed",
   ).length;
@@ -189,7 +193,8 @@ export function WorkflowFooterBar({
   const headerTitle =
     compactTitle ?? progress?.title ?? t.workflowStatus.processing;
   const titleKey = primaryTask?.id ?? headerTitle;
-  const showShimmer = isActiveWorkflowTask(primaryTask);
+  const showShimmer =
+    isActiveWorkflowTask(primaryTask) || Boolean(progress && !primaryTask);
 
   if (workflowTasks.length === 0 && !progress) {
     return null;
@@ -257,7 +262,7 @@ export function WorkflowFooterBar({
               {progress && (
                 <div className="text-muted-foreground px-2 text-xs leading-4">
                   <span className="font-medium text-foreground">{progress.title}</span>
-                  {progress.detail ? ` · ${progress.detail}` : ""}
+                  {progress.detail ? ` - ${progress.detail}` : ""}
                 </div>
               )}
               <div className="flex max-h-[28vh] flex-col gap-1 overflow-y-auto">

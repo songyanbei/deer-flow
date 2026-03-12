@@ -27,7 +27,11 @@ function createTask(overrides: Partial<TaskViewModel>): TaskViewModel {
   };
 }
 
-function renderWorkflowFooter(tasks: TaskViewModel[]) {
+function renderWorkflowFooter(
+  tasks: TaskViewModel[],
+  threadValues?: Partial<AgentThreadState>,
+  isLoading = true,
+) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -38,8 +42,9 @@ function renderWorkflowFooter(tasks: TaskViewModel[]) {
       resolved_orchestration_mode: "workflow",
       execution_state: "RUNNING",
       run_id: "run-1",
+      ...threadValues,
     } satisfies Partial<AgentThreadState>,
-    isLoading: true,
+    isLoading,
   } as never;
 
   function Harness() {
@@ -107,6 +112,89 @@ describe("WorkflowFooterBar", () => {
       "Writing copy and tightening the headline",
     );
     expect(rendered.container.textContent).toContain("Prepare the support FAQ");
+
+    rendered.cleanup();
+  });
+
+  it("shows a queued workflow shell before subtasks exist", () => {
+    const rendered = renderWorkflowFooter([], {
+      workflow_stage: "queued",
+      workflow_stage_detail: "Book the meeting room",
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Queued and waiting to start...",
+    );
+
+    const trigger = rendered.container.querySelector("button");
+    if (!trigger) {
+      throw new Error("Workflow footer trigger not found.");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.container.textContent).toContain("Book the meeting room");
+
+    rendered.cleanup();
+  });
+
+  it("keeps the routing stage visible until execution starts", () => {
+    const rendered = renderWorkflowFooter(
+      [
+        createTask({
+          id: "task-routing",
+          status: "pending",
+          description: "Reserve conference room A",
+        }),
+      ],
+      {
+        workflow_stage: "routing",
+        workflow_stage_detail: "Reserve conference room A",
+      },
+    );
+
+    expect(rendered.container.textContent).toContain(
+      "Plan ready, dispatching subtasks...",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("shows summarizing detail after the last task completes", () => {
+    const rendered = renderWorkflowFooter(
+      [
+        createTask({
+          id: "task-done",
+          status: "completed",
+          description: "Reserve conference room A",
+          result: "Conference room A is booked",
+        }),
+      ],
+      {
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Conference room A is booked",
+        execution_state: "EXECUTING_DONE",
+      },
+    );
+
+    expect(rendered.container.textContent).toContain(
+      "Tasks done, summarizing results...",
+    );
+
+    const trigger = rendered.container.querySelector("button");
+    if (!trigger) {
+      throw new Error("Workflow footer trigger not found.");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Conference room A is booked",
+    );
 
     rendered.cleanup();
   });

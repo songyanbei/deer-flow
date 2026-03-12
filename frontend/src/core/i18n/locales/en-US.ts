@@ -283,9 +283,13 @@ export const enUS: Translations = {
 
   workflowStatus: {
     initializing: "Planning",
+    queued: "Queued and waiting to start...",
+    acknowledged: "Workflow started, understanding your request...",
     planning: "Understanding your request, planning steps…",
+    routing: "Plan ready, dispatching subtasks...",
     resuming: "Resuming previous progress…",
     processing: "Working on your request…",
+    executing: "Subtasks are underway...",
     summarizing: "Tasks done, summarizing results…",
     waitingDependency: "Waiting for a related task to finish…",
     waitingClarification: "Need more information from you",

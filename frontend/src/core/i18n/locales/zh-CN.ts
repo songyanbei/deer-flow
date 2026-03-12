@@ -268,9 +268,13 @@ export const zhCN: Translations = {
 
   workflowStatus: {
     initializing: "任务规划中",
+    queued: "已提交，正在排队启动...",
+    acknowledged: "已进入工作流，正在理解需求...",
     planning: "正在理解你的需求，规划执行步骤…",
+    routing: "计划已生成，正在分发子任务...",
     resuming: "正在恢复之前的任务进度…",
     processing: "正在处理你的请求…",
+    executing: "子任务已开始执行...",
     summarizing: "任务已完成，正在汇总结果…",
     waitingDependency: "正在等待相关任务完成…",
     waitingClarification: "需要你提供更多信息",

@@ -8,6 +8,8 @@ type WorkflowProgressInput = {
     AgentThreadState,
     | "resolved_orchestration_mode"
     | "orchestration_reason"
+    | "workflow_stage"
+    | "workflow_stage_detail"
     | "planner_goal"
     | "execution_state"
     | "run_id"
@@ -22,6 +24,7 @@ export type WorkflowProgressSummary = {
   activeTaskCount: number;
   totalTaskCount: number;
   isWaitingClarification: boolean;
+  workflowStage?: AgentThreadState["workflow_stage"];
 };
 
 export function filterWorkflowTasks(
@@ -67,6 +70,7 @@ export function getWorkflowProgressSummary({
   t,
 }: WorkflowProgressInput): WorkflowProgressSummary | null {
   const executionState = threadValues.execution_state?.trim() ?? "";
+  const workflowStage = threadValues.workflow_stage ?? null;
   const totalTaskCount = tasks.length;
   const activeTasks = tasks.filter(isActiveTask);
   const activeTaskCount = activeTasks.length;
@@ -76,14 +80,18 @@ export function getWorkflowProgressSummary({
   const dependencyTask = tasks.find(
     (task) => task.status === "waiting_dependency",
   );
+  const latestCompletedTask = [...tasks]
+    .reverse()
+    .find((task) => task.status === "completed");
   const shouldShow =
-    isLoading &&
-    (threadValues.resolved_orchestration_mode === "workflow" ||
-      totalTaskCount > 0 ||
-      executionState === "PLANNING_RESET" ||
-      executionState === "PLANNING_DONE" ||
-      executionState === "RESUMING" ||
-      executionState === "EXECUTING_DONE");
+    workflowStage !== null ||
+    (isLoading &&
+      (threadValues.resolved_orchestration_mode === "workflow" ||
+        totalTaskCount > 0 ||
+        executionState === "PLANNING_RESET" ||
+        executionState === "PLANNING_DONE" ||
+        executionState === "RESUMING" ||
+        executionState === "EXECUTING_DONE"));
 
   if (!shouldShow) {
     return null;
@@ -108,6 +116,32 @@ export function getWorkflowProgressSummary({
       dependencyTask.latestUpdate,
       dependencyTask.description,
     ]);
+  } else if (
+    workflowStage === "queued" ||
+    workflowStage === "acknowledged" ||
+    workflowStage === "planning" ||
+    workflowStage === "routing" ||
+    workflowStage === "summarizing"
+  ) {
+    if (workflowStage === "queued") {
+      title = t.workflowStatus.queued;
+    } else if (workflowStage === "acknowledged") {
+      title = t.workflowStatus.acknowledged;
+    } else if (workflowStage === "planning") {
+      title = t.workflowStatus.planning;
+    } else if (workflowStage === "routing") {
+      title = t.workflowStatus.routing;
+    } else {
+      title = t.workflowStatus.summarizing;
+    }
+    detail = pickFirstNonEmpty([
+      threadValues.workflow_stage_detail,
+      latestCompletedTask?.latestUpdate,
+      latestCompletedTask?.result,
+      latestCompletedTask?.description,
+      threadValues.planner_goal,
+      threadValues.orchestration_reason,
+    ]);
   } else if (activeTaskCount > 0) {
     title = t.workflowStatus.running(activeTaskCount);
     const activeTask = activeTasks[0];
@@ -115,6 +149,15 @@ export function getWorkflowProgressSummary({
       activeTask?.latestUpdate,
       activeTask?.statusDetail,
       activeTask?.description,
+    ]);
+  } else if (workflowStage === "executing") {
+    title = t.workflowStatus.executing;
+    detail = pickFirstNonEmpty([
+      threadValues.workflow_stage_detail,
+      latestCompletedTask?.latestUpdate,
+      latestCompletedTask?.description,
+      threadValues.planner_goal,
+      threadValues.orchestration_reason,
     ]);
   } else if (
     executionState === "PLANNING_RESET" ||
@@ -154,5 +197,6 @@ export function getWorkflowProgressSummary({
     activeTaskCount,
     totalTaskCount,
     isWaitingClarification: Boolean(clarificationTask),
+    workflowStage,
   };
 }

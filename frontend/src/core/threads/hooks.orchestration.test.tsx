@@ -49,6 +49,7 @@ type HarnessProps = {
   threadValues?: Record<string, unknown>;
   isLoading?: boolean;
   requestedOrchestrationMode?: "auto" | "leader" | "workflow";
+  submitImpl?: ReturnType<typeof vi.fn>;
 };
 
 let lastStreamOptions: Record<string, unknown> = {};
@@ -86,7 +87,8 @@ function renderHook(initialProps: HarnessProps) {
 
   useStreamMock.mockImplementation((options: unknown) => {
     lastStreamOptions = options as Record<string, unknown>;
-    const submit = vi.fn().mockResolvedValue(undefined);
+    const submit =
+      currentProps.submitImpl ?? vi.fn().mockResolvedValue(undefined);
     return {
       messages: [],
       values: currentProps.threadValues ?? {},
@@ -302,6 +304,44 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
+  it("syncs workflow stage from non-task stage events before values hydration catches up", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {},
+      isLoading: true,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        workflow_stage: "planning",
+        workflow_stage_detail: "Book the meeting room",
+      });
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("planning");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book the meeting room",
+    );
+
+    rendered.rerender({
+      assistantId: "entry_graph",
+      threadValues: {
+        workflow_stage: null,
+        workflow_stage_detail: null,
+      },
+      isLoading: false,
+    });
+
+    expect(latestThread?.values.workflow_stage).toBeNull();
+    expect(latestThread?.values.workflow_stage_detail).toBeNull();
+
+    rendered.cleanup();
+  });
+
   it("keeps workflow mode patched while loading if streamed values temporarily clear", () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
@@ -363,6 +403,43 @@ describe("useThreadStream orchestration hydration", () => {
         streamSubgraphs: false,
       }),
     );
+
+    rendered.cleanup();
+  });
+
+  it("shows an optimistic workflow shell immediately for explicit workflow submissions", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+    });
+
+    let sendPromise: Promise<void> | undefined;
+    await act(async () => {
+      sendPromise = latestSendMessage?.("thread-1", {
+        text: "Book the meeting room",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
+    expect(latestThread?.values.workflow_stage).toBe("queued");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book the meeting room",
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await sendPromise;
+    });
 
     rendered.cleanup();
   });

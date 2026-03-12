@@ -67,6 +67,14 @@ class TaskStatus(TypedDict):
 
 RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
 ResolvedOrchestrationMode = Literal["leader", "workflow"]
+WorkflowStage = Literal[
+    "queued",
+    "acknowledged",
+    "planning",
+    "routing",
+    "executing",
+    "summarizing",
+]
 
 
 VerifiedFact = dict[str, VerifiedFactEntry]
@@ -155,6 +163,9 @@ class ThreadState(AgentState):
     requested_orchestration_mode: NotRequired[RequestedOrchestrationMode | None]
     resolved_orchestration_mode: NotRequired[ResolvedOrchestrationMode | None]
     orchestration_reason: NotRequired[str | None]
+    workflow_stage: NotRequired[WorkflowStage | None]
+    workflow_stage_detail: NotRequired[str | None]
+    workflow_stage_updated_at: NotRequired[str | None]
     run_id: NotRequired[str | None]
     planner_goal: NotRequired[str | None]
     task_pool: Annotated[list[TaskStatus], merge_task_pool]

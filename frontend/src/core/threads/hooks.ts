@@ -69,12 +69,54 @@ type MultiAgentTaskEvent = Omit<BaseTaskEvent, "source"> & {
   clarification_prompt?: string;
   resolved_orchestration_mode?: AgentThreadState["resolved_orchestration_mode"];
   orchestration_reason?: AgentThreadState["orchestration_reason"];
+  workflow_stage?: AgentThreadState["workflow_stage"];
+  workflow_stage_detail?: AgentThreadState["workflow_stage_detail"];
+  workflow_stage_updated_at?: AgentThreadState["workflow_stage_updated_at"];
 };
 
 type ThreadEventPatch = Pick<
   AgentThreadState,
-  "resolved_orchestration_mode" | "orchestration_reason" | "run_id"
+  | "resolved_orchestration_mode"
+  | "orchestration_reason"
+  | "workflow_stage"
+  | "workflow_stage_detail"
+  | "workflow_stage_updated_at"
+  | "run_id"
 >;
+
+type LocalWorkflowShell = {
+  stage: NonNullable<AgentThreadState["workflow_stage"]>;
+  detail?: string;
+  updatedAt: string;
+};
+
+const WORKFLOW_STAGES = new Set<NonNullable<AgentThreadState["workflow_stage"]>>([
+  "queued",
+  "acknowledged",
+  "planning",
+  "routing",
+  "executing",
+  "summarizing",
+]);
+
+function isWorkflowStage(
+  value: unknown,
+): value is NonNullable<AgentThreadState["workflow_stage"]> {
+  return (
+    typeof value === "string" &&
+    WORKFLOW_STAGES.has(
+      value as NonNullable<AgentThreadState["workflow_stage"]>,
+    )
+  );
+}
+
+function createLocalWorkflowShell(detail?: string): LocalWorkflowShell {
+  return {
+    stage: "queued",
+    detail: detail?.trim() || undefined,
+    updatedAt: new Date().toISOString(),
+  };
+}
 
 function mergePatchedThreadValue<T>(
   value: T | null | undefined,
@@ -126,6 +168,8 @@ export function useThreadStream({
   const queryClient = useQueryClient();
   const { hydrateTasks, resetTasksBySource, upsertTask } = useTaskActions();
   const [eventPatch, setEventPatch] = useState<ThreadEventPatch>({});
+  const [localWorkflowShell, setLocalWorkflowShell] =
+    useState<LocalWorkflowShell | null>(null);
   const hadWorkflowHydrationRef = useRef(false);
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
@@ -157,6 +201,12 @@ export function useThreadStream({
             current.resolved_orchestration_mode,
           orchestration_reason:
             patch.orchestration_reason ?? current.orchestration_reason,
+          workflow_stage: patch.workflow_stage ?? current.workflow_stage,
+          workflow_stage_detail:
+            patch.workflow_stage_detail ?? current.workflow_stage_detail,
+          workflow_stage_updated_at:
+            patch.workflow_stage_updated_at ??
+            current.workflow_stage_updated_at,
           run_id: patch.run_id ?? current.run_id,
         }));
       }
@@ -178,6 +228,7 @@ export function useThreadStream({
       upsertTask(fromLegacyTaskEvent(taskEvent.event));
     },
     onFinish(state) {
+      setLocalWorkflowShell(null);
       onFinish?.(state.values);
       void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
     },
@@ -185,9 +236,32 @@ export function useThreadStream({
 
   useEffect(() => {
     setEventPatch({});
+    setLocalWorkflowShell(null);
     hadWorkflowHydrationRef.current = false;
     hydratedRunIdRef.current = null;
   }, [_threadId]);
+
+  useEffect(() => {
+    if (!localWorkflowShell) {
+      return;
+    }
+
+    const hasAuthoritativeWorkflow =
+      thread.values.resolved_orchestration_mode === "workflow" ||
+      eventPatch.resolved_orchestration_mode === "workflow" ||
+      thread.values.workflow_stage != null ||
+      eventPatch.workflow_stage != null;
+
+    if (hasAuthoritativeWorkflow) {
+      setLocalWorkflowShell(null);
+    }
+  }, [
+    eventPatch.resolved_orchestration_mode,
+    eventPatch.workflow_stage,
+    localWorkflowShell,
+    thread.values.resolved_orchestration_mode,
+    thread.values.workflow_stage,
+  ]);
 
   const mergedValues = useMemo<AgentThreadState>(
     () => ({
@@ -197,13 +271,38 @@ export function useThreadStream({
           thread.values.resolved_orchestration_mode,
           eventPatch.resolved_orchestration_mode,
           thread.isLoading,
-        ) ?? null,
+        ) ??
+        (localWorkflowShell ? "workflow" : null),
       orchestration_reason:
         mergePatchedThreadValue(
           thread.values.orchestration_reason,
           eventPatch.orchestration_reason,
           thread.isLoading,
         ) ?? null,
+      workflow_stage:
+        mergePatchedThreadValue(
+          thread.values.workflow_stage,
+          eventPatch.workflow_stage,
+          thread.isLoading,
+        ) ??
+        localWorkflowShell?.stage ??
+        null,
+      workflow_stage_detail:
+        mergePatchedThreadValue(
+          thread.values.workflow_stage_detail,
+          eventPatch.workflow_stage_detail,
+          thread.isLoading,
+        ) ??
+        localWorkflowShell?.detail ??
+        null,
+      workflow_stage_updated_at:
+        mergePatchedThreadValue(
+          thread.values.workflow_stage_updated_at,
+          eventPatch.workflow_stage_updated_at,
+          thread.isLoading,
+        ) ??
+        localWorkflowShell?.updatedAt ??
+        null,
       run_id:
         mergePatchedThreadValue(
           thread.values.run_id,
@@ -211,7 +310,7 @@ export function useThreadStream({
           thread.isLoading,
         ) ?? null,
     }),
-    [eventPatch, thread.isLoading, thread.values],
+    [eventPatch, localWorkflowShell, thread.isLoading, thread.values],
   );
 
   useEffect(() => {
@@ -219,6 +318,7 @@ export function useThreadStream({
     const taskPool = mergedValues.task_pool ?? [];
     const shouldHydrateWorkflow =
       mergedValues.resolved_orchestration_mode === "workflow" ||
+      mergedValues.workflow_stage != null ||
       taskPool.length > 0;
 
     if (!shouldHydrateWorkflow) {
@@ -255,6 +355,7 @@ export function useThreadStream({
     _threadId,
     hydrateTasks,
     mergedValues.resolved_orchestration_mode,
+    mergedValues.workflow_stage,
     mergedValues.run_id,
     mergedValues.task_pool,
     resetTasksBySource,
@@ -279,10 +380,15 @@ export function useThreadStream({
       extraContext?: Record<string, unknown>,
     ) => {
       const text = message.text.trim();
-      const shouldStreamSubgraphs =
-        context.requested_orchestration_mode !== "workflow";
+      const explicitWorkflowRequest =
+        context.requested_orchestration_mode === "workflow";
+      const shouldStreamSubgraphs = !explicitWorkflowRequest;
 
       prevMsgCountRef.current = thread.messages.length;
+
+      if (explicitWorkflowRequest) {
+        setLocalWorkflowShell(createLocalWorkflowShell(text));
+      }
 
       const optimisticFiles: FileInMessage[] = (message.files ?? []).map(
         (f) => ({
@@ -440,6 +546,7 @@ export function useThreadStream({
         );
         void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
       } catch (error) {
+        setLocalWorkflowShell(null);
         setOptimisticMessages([]);
         throw error;
       }
@@ -529,7 +636,12 @@ function extractThreadEventPatch(event: unknown): ThreadEventPatch | null {
   const candidate = event as Partial<
     Pick<
       MultiAgentTaskEvent,
-      "resolved_orchestration_mode" | "orchestration_reason" | "run_id"
+      | "resolved_orchestration_mode"
+      | "orchestration_reason"
+      | "workflow_stage"
+      | "workflow_stage_detail"
+      | "workflow_stage_updated_at"
+      | "run_id"
     >
   >;
   const patch: ThreadEventPatch = {};
@@ -543,6 +655,21 @@ function extractThreadEventPatch(event: unknown): ThreadEventPatch | null {
 
   if (typeof candidate.orchestration_reason === "string") {
     patch.orchestration_reason = candidate.orchestration_reason;
+  }
+
+  if (isWorkflowStage(candidate.workflow_stage)) {
+    patch.workflow_stage = candidate.workflow_stage;
+  }
+
+  if (typeof candidate.workflow_stage_detail === "string") {
+    patch.workflow_stage_detail = candidate.workflow_stage_detail;
+  }
+
+  if (
+    typeof candidate.workflow_stage_updated_at === "string" &&
+    candidate.workflow_stage_updated_at
+  ) {
+    patch.workflow_stage_updated_at = candidate.workflow_stage_updated_at;
   }
 
   if (typeof candidate.run_id === "string" && candidate.run_id) {

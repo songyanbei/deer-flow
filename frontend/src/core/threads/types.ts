@@ -4,6 +4,13 @@ import type { Todo } from "../todos";
 
 export type RequestedOrchestrationMode = "auto" | "leader" | "workflow";
 export type ResolvedOrchestrationMode = "leader" | "workflow";
+export type WorkflowStage =
+  | "queued"
+  | "acknowledged"
+  | "planning"
+  | "routing"
+  | "executing"
+  | "summarizing";
 
 export interface ThreadTaskState {
   task_id: string;
@@ -42,6 +49,9 @@ export interface AgentThreadState extends Record<string, unknown> {
   requested_orchestration_mode?: RequestedOrchestrationMode | null;
   resolved_orchestration_mode?: ResolvedOrchestrationMode | null;
   orchestration_reason?: string | null;
+  workflow_stage?: WorkflowStage | null;
+  workflow_stage_detail?: string | null;
+  workflow_stage_updated_at?: string | null;
   run_id?: string | null;
   planner_goal?: string | null;
   task_pool?: ThreadTaskState[];

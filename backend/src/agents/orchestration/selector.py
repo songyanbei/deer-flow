@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -10,6 +11,7 @@ from src.agents.thread_state import (
     RequestedOrchestrationMode,
     ResolvedOrchestrationMode,
     ThreadState,
+    WorkflowStage,
 )
 from src.config.agents_config import load_agent_config
 
@@ -163,6 +165,34 @@ def _load_agent_default_mode(
     return None
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _build_workflow_stage_update(
+    stage: WorkflowStage | None,
+    detail: str | None = None,
+) -> dict:
+    return {
+        "workflow_stage": stage,
+        "workflow_stage_detail": detail,
+        "workflow_stage_updated_at": _utc_now_iso(),
+    }
+
+
+def _emit_workflow_stage(
+    writer,
+    stage: WorkflowStage,
+    detail: str | None = None,
+) -> None:
+    writer(
+        {
+            "type": "workflow_stage_changed",
+            **_build_workflow_stage_update(stage, detail),
+        }
+    )
+
+
 def decide_orchestration(
     state: ThreadState,
     config: RunnableConfig,
@@ -256,8 +286,20 @@ def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> d
                 "orchestration_reason": decision["reason"],
             }
         )
-    return {
+        if decision["resolved_mode"] == "workflow":
+            _emit_workflow_stage(
+                writer,
+                "acknowledged",
+                decision["reason"],
+            )
+
+    result = {
         "requested_orchestration_mode": decision["requested_mode"],
         "resolved_orchestration_mode": decision["resolved_mode"],
         "orchestration_reason": decision["reason"],
     }
+    if decision["resolved_mode"] == "workflow":
+        result.update(_build_workflow_stage_update("acknowledged", decision["reason"]))
+    else:
+        result.update(_build_workflow_stage_update(None))
+    return result

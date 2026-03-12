@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
-from src.agents.thread_state import HelpRequestPayload, TaskStatus, ThreadState
+from src.agents.thread_state import HelpRequestPayload, TaskStatus, ThreadState, WorkflowStage
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 
@@ -114,6 +114,33 @@ def _get_event_writer():
         return lambda _event: None
 
 
+def _build_workflow_stage_update(
+    stage: WorkflowStage | None,
+    detail: str | None = None,
+) -> dict:
+    return {
+        "workflow_stage": stage,
+        "workflow_stage_detail": detail,
+        "workflow_stage_updated_at": _utc_now_iso(),
+    }
+
+
+def _emit_workflow_stage(
+    writer,
+    stage: WorkflowStage,
+    detail: str | None = None,
+    *,
+    run_id: str | None = None,
+) -> None:
+    writer(
+        {
+            "type": "workflow_stage_changed",
+            "run_id": run_id,
+            **_build_workflow_stage_update(stage, detail),
+        }
+    )
+
+
 def _emit_task_event(writer, event_type: str, task: TaskStatus, agent_name: str, **extra: Any) -> None:
     payload = {
         "type": event_type,
@@ -125,6 +152,27 @@ def _emit_task_event(writer, event_type: str, task: TaskStatus, agent_name: str,
     }
     payload.update({key: value for key, value in extra.items() if value is not None})
     writer(payload)
+
+
+def _pick_first_non_empty(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+        elif value is not None:
+            normalized = str(value).strip()
+            if normalized:
+                return normalized
+    return None
+
+
+def _build_executing_detail(task: TaskStatus) -> str | None:
+    return _pick_first_non_empty(
+        task.get("status_detail"),
+        task.get("blocked_reason"),
+        task.get("description"),
+    )
 
 
 def _build_helper_description(help_request: HelpRequestPayload) -> str:
@@ -504,18 +552,24 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         }
 
     task_pool: list[TaskStatus] = state.get("task_pool") or []
+    writer = _get_event_writer()
     running = [t for t in task_pool if t["status"] == "RUNNING"]
 
     if running:
         logger.info("[Router] Found RUNNING task, forwarding to executor.")
+        running_task = running[0]
+        run_id = _resolve_run_id(state, running_task)
+        detail = _build_executing_detail(running_task)
+        _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
         return {
             "execution_state": "ROUTING_DONE",
             "route_count": route_count,
+            "run_id": run_id,
+            **_build_workflow_stage_update("executing", detail),
         }
 
     waiting = [t for t in task_pool if t["status"] == "WAITING_DEPENDENCY"]
     verified_facts = state.get("verified_facts") or {}
-    writer = _get_event_writer()
     for waiting_task in waiting:
         dependency_ids = waiting_task.get("depends_on_task_ids") or []
         if dependency_ids:
@@ -582,6 +636,11 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "task_pool": [resumed_task],
                     "execution_state": "ROUTING_DONE",
                     "route_count": route_count,
+                    "run_id": resumed_task.get("run_id"),
+                    **_build_workflow_stage_update(
+                        "executing",
+                        _build_executing_detail(resumed_task),
+                    ),
                 }
 
     pending = [t for t in task_pool if t["status"] == "PENDING"]
@@ -623,9 +682,12 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         "clarification_prompt": None,
         "updated_at": _utc_now_iso(),
     }
+    detail = _build_executing_detail(updated_task)
+    _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
     return {
         "task_pool": [updated_task],
         "run_id": run_id,
         "execution_state": "ROUTING_DONE",
         "route_count": route_count,
+        **_build_workflow_stage_update("executing", detail),
     }
