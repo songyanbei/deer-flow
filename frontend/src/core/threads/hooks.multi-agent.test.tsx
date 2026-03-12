@@ -164,4 +164,48 @@ describe("useThreadStream multi-agent compatibility", () => {
 
     rendered.cleanup();
   });
+
+  it("maps multi-agent dependency events into workflow task state", () => {
+    const rendered = renderHook({
+      assistantId: "multi_agent",
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "task_waiting_dependency",
+        source: "multi_agent",
+        task_id: "task-42",
+        run_id: "run-42",
+        description: "Book the meeting room",
+        requested_by_agent: "meeting-agent",
+        blocked_reason: "Need organizer openId before booking",
+        request_help: {
+          problem: "Missing organizer openId",
+          required_capability: "contact lookup",
+          reason: "Meeting API requires an openId",
+          expected_output: "Organizer openId and city",
+          candidate_agents: ["contacts-agent"],
+        },
+      });
+    });
+
+    expect(upsertTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "task-42",
+        source: "multi_agent",
+        runId: "run-42",
+        status: "waiting_dependency",
+        requestedByAgent: "meeting-agent",
+        blockedReason: "Need organizer openId before booking",
+        requestHelp: expect.objectContaining({
+          requiredCapability: "contact lookup",
+        }),
+      }),
+    );
+
+    rendered.cleanup();
+  });
 });

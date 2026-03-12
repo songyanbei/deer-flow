@@ -206,18 +206,26 @@ export interface Translations {
     executing: (count: number) => string;
     pending: string;
     in_progress: string;
+    waiting_dependency: string;
     waiting_clarification: string;
     completed: string;
     failed: string;
+    needCapability?: (capability: string) => string;
+    requestedBy?: (agent: string) => string;
+    resolvedInputs?: string;
+    resumed?: string;
   };
 
   workflowStatus: {
+    initializing: string;
     planning: string;
     resuming: string;
     processing: string;
     summarizing: string;
+    waitingDependency: string;
     waitingClarification: string;
     running: (count: number) => string;
+    completedSummary: (completed: number, total: number) => string;
   };
 
   // Settings

@@ -18,14 +18,45 @@ class ViewedImageData(TypedDict):
     mime_type: str
 
 
+class HelpRequestPayload(TypedDict):
+    problem: str
+    required_capability: str
+    reason: str
+    expected_output: str
+    resolution_strategy: NotRequired[str | None]
+    clarification_question: NotRequired[str | None]
+    clarification_options: NotRequired[list[str] | None]
+    clarification_context: NotRequired[str | None]
+    context_payload: NotRequired[dict[str, Any] | None]
+    candidate_agents: NotRequired[list[str] | None]
+
+
+class VerifiedFactEntry(TypedDict):
+    agent: str
+    task: str
+    summary: str
+    payload: NotRequired[dict[str, Any] | None]
+    fact_type: NotRequired[str | None]
+    source_task_id: NotRequired[str | None]
+    updated_at: NotRequired[str | None]
+
+
 class TaskStatus(TypedDict):
     """Status of a single sub-task in the shared task pool."""
 
     task_id: str
     description: str
     run_id: NotRequired[str | None]
+    parent_task_id: NotRequired[str | None]
+    depends_on_task_ids: NotRequired[list[str] | None]
     assigned_agent: NotRequired[str | None]
-    status: Literal["PENDING", "RUNNING", "DONE", "FAILED"]
+    requested_by_agent: NotRequired[str | None]
+    request_help: NotRequired[HelpRequestPayload | None]
+    resolved_inputs: NotRequired[dict[str, Any] | None]
+    blocked_reason: NotRequired[str | None]
+    resume_count: NotRequired[int | None]
+    help_depth: NotRequired[int | None]
+    status: Literal["PENDING", "RUNNING", "WAITING_DEPENDENCY", "DONE", "FAILED"]
     status_detail: NotRequired[str | None]
     clarification_prompt: NotRequired[str | None]
     updated_at: NotRequired[str | None]
@@ -37,7 +68,7 @@ RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
 ResolvedOrchestrationMode = Literal["leader", "workflow"]
 
 
-VerifiedFact = dict[str, Any]
+VerifiedFact = dict[str, VerifiedFactEntry]
 
 
 def _is_valid_status_transition(old_status: str, new_status: str) -> bool:
@@ -47,7 +78,8 @@ def _is_valid_status_transition(old_status: str, new_status: str) -> bool:
 
     allowed_transitions = {
         "PENDING": {"RUNNING", "FAILED"},
-        "RUNNING": {"DONE", "FAILED"},
+        "RUNNING": {"WAITING_DEPENDENCY", "DONE", "FAILED"},
+        "WAITING_DEPENDENCY": {"PENDING", "RUNNING", "FAILED"},
         "DONE": set(),
         "FAILED": set(),
     }
@@ -67,7 +99,7 @@ def merge_task_pool(existing: list[TaskStatus] | None, new: list[TaskStatus] | N
     for task in new:
         tid = task["task_id"]
         if tid in mapping:
-            updates = {k: v for k, v in task.items() if v is not None}
+            updates = dict(task)
             old_status = mapping[tid].get("status")
             new_status = updates.get("status")
             if old_status and new_status and not _is_valid_status_transition(str(old_status), str(new_status)):

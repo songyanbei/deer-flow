@@ -120,3 +120,99 @@ def test_multi_agent_graph_end_to_end():
             assert len([event for event in events if event["type"] == "task_completed"]) == 2
 
     asyncio.run(_run())
+
+
+def test_multi_agent_graph_request_help_round_trip():
+    class PlannerLLMWithDependency:
+        def __init__(self):
+            self.call_count = 0
+
+        async def ainvoke(self, _messages):
+            self.call_count += 1
+            if self.call_count == 1:
+                return DummyResponse('[{"description": "book a meeting room", "assigned_agent": "meeting-agent"}]')
+            return DummyResponse('{"done": true, "summary": "Meeting booked for Wang Xing in Shanghai."}')
+
+    class DomainAgentStubWithHelp:
+        def __init__(self):
+            self.calls: dict[str, int] = {}
+
+        async def ainvoke(self, payload, config=None):
+            agent_name = config.get("configurable", {}).get("agent_name")
+            self.calls[agent_name] = self.calls.get(agent_name, 0) + 1
+            context = payload["messages"][0].content
+
+            if agent_name == "meeting-agent":
+                if self.calls[agent_name] == 1:
+                    return {
+                        "messages": [
+                            ToolMessage(
+                                content='{"problem":"Missing organizer openId","required_capability":"contact lookup","reason":"Meeting API requires organizer identity","expected_output":"Organizer openId and city","candidate_agents":["contacts-agent"]}',
+                                tool_call_id="help-1",
+                                name="request_help",
+                            )
+                        ]
+                    }
+                assert "Resolved dependency inputs" in context
+                assert "ou_123" in context
+                return {"messages": [AIMessage(content="Meeting booked for Wang Xing in Shanghai.")]}
+
+            if agent_name == "contacts-agent":
+                return {
+                    "messages": [
+                        AIMessage(content='{"openId":"ou_123","city":"Shanghai","personName":"Wang Xing"}')
+                    ]
+                }
+
+            raise AssertionError(f"Unexpected agent: {agent_name}")
+
+    async def _run():
+        from src.agents.graph import build_multi_agent_graph_for_test
+
+        planner_llm = PlannerLLMWithDependency()
+        domain_stub = DomainAgentStubWithHelp()
+        checkpointer = MemorySaver()
+        events: list[dict] = []
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("src.agents.planner.node.create_chat_model", return_value=planner_llm))
+            stack.enter_context(
+                patch(
+                    "src.agents.router.semantic_router.list_domain_agents",
+                    return_value=[
+                        type("Agent", (), {"name": "meeting-agent", "description": "Book meetings"})(),
+                        type("Agent", (), {"name": "contacts-agent", "description": "Lookup contacts"})(),
+                    ],
+                )
+            )
+            stack.enter_context(patch("src.agents.executor.executor._ensure_mcp_ready", return_value=None))
+            stack.enter_context(patch("src.agents.executor.executor.make_lead_agent", create=True, new=make_lead_agent_stub(domain_stub)))
+            stack.enter_context(patch("src.agents.lead_agent.agent.make_lead_agent", new=make_lead_agent_stub(domain_stub)))
+            stack.enter_context(patch("src.agents.executor.executor.get_stream_writer", return_value=events.append))
+            stack.enter_context(patch("src.agents.router.semantic_router.get_stream_writer", return_value=events.append))
+
+            graph = build_multi_agent_graph_for_test(checkpointer=checkpointer)
+            thread_id = str(uuid.uuid4())
+            config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+
+            final_state = await graph.ainvoke(
+                {"messages": [HumanMessage(content="Book a meeting room for Wang Xing tomorrow morning.")]},
+                config=config,
+            )
+
+            assert final_state.get("execution_state") == "DONE"
+            assert final_state.get("final_result") == "Meeting booked for Wang Xing in Shanghai."
+            assert len(final_state.get("verified_facts", {})) == 2
+            parent_task = next(task for task in final_state["task_pool"] if task["assigned_agent"] == "meeting-agent")
+            helper_task = next(task for task in final_state["task_pool"] if task["assigned_agent"] == "contacts-agent")
+            assert parent_task["status"] == "DONE"
+            assert helper_task["status"] == "DONE"
+            assert parent_task["resolved_inputs"][helper_task["task_id"]]["openId"] == "ou_123"
+            assert {event["type"] for event in events} >= {
+                "task_waiting_dependency",
+                "task_help_requested",
+                "task_resumed",
+                "task_completed",
+            }
+
+    asyncio.run(_run())

@@ -15,6 +15,9 @@ type BaseTaskEvent = {
   type:
     | "task_started"
     | "task_running"
+    | "task_waiting_dependency"
+    | "task_help_requested"
+    | "task_resumed"
     | "task_completed"
     | "task_failed"
     | "task_timed_out";
@@ -29,6 +32,19 @@ export type MultiAgentTaskEvent = BaseTaskEvent & {
   run_id?: string;
   agent_name?: string;
   description?: string;
+  parent_task_id?: string;
+  requested_by_agent?: string;
+  request_help?: {
+    problem: string;
+    required_capability: string;
+    reason: string;
+    expected_output: string;
+    context_payload?: Record<string, unknown> | null;
+    candidate_agents?: string[] | null;
+  };
+  resolved_inputs?: Record<string, unknown>;
+  blocked_reason?: string;
+  resume_count?: number;
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
@@ -49,6 +65,9 @@ function mapThreadTaskStatus(
   if (status === "PENDING") {
     return "pending";
   }
+  if (status === "WAITING_DEPENDENCY") {
+    return "waiting_dependency";
+  }
   if (status === "RUNNING" && clarificationPrompt) {
     return "waiting_clarification";
   }
@@ -64,6 +83,13 @@ function mapThreadTaskStatus(
 function mapEventStatus(event: MultiAgentTaskEvent): TaskStatus {
   if (event.status === "waiting_clarification") {
     return "waiting_clarification";
+  }
+  if (
+    event.type === "task_waiting_dependency" ||
+    event.type === "task_help_requested" ||
+    event.status === "waiting_dependency"
+  ) {
+    return "waiting_dependency";
   }
   if (event.type === "task_completed") {
     return "completed";
@@ -155,6 +181,21 @@ export function fromMultiAgentTaskState(
     description: task.description,
     prompt: task.description,
     agentName: task.assigned_agent ?? undefined,
+    parentTaskId: task.parent_task_id ?? undefined,
+    requestedByAgent: task.requested_by_agent ?? undefined,
+    requestHelp: task.request_help
+      ? {
+          problem: task.request_help.problem,
+          requiredCapability: task.request_help.required_capability,
+          reason: task.request_help.reason,
+          expectedOutput: task.request_help.expected_output,
+          contextPayload: task.request_help.context_payload ?? undefined,
+          candidateAgents: task.request_help.candidate_agents ?? undefined,
+        }
+      : undefined,
+    resolvedInputs: task.resolved_inputs ?? undefined,
+    blockedReason: task.blocked_reason ?? undefined,
+    resumeCount: task.resume_count ?? undefined,
     subagentType: "domain-agent",
     status,
     statusDetail: task.status_detail ?? undefined,
@@ -179,6 +220,21 @@ export function fromMultiAgentTaskEvent(
     description: event.description ?? "",
     prompt: event.description ?? "",
     agentName: event.agent_name ?? undefined,
+    parentTaskId: event.parent_task_id ?? undefined,
+    requestedByAgent: event.requested_by_agent ?? undefined,
+    requestHelp: event.request_help
+      ? {
+          problem: event.request_help.problem,
+          requiredCapability: event.request_help.required_capability,
+          reason: event.request_help.reason,
+          expectedOutput: event.request_help.expected_output,
+          contextPayload: event.request_help.context_payload ?? undefined,
+          candidateAgents: event.request_help.candidate_agents ?? undefined,
+        }
+      : undefined,
+    resolvedInputs: event.resolved_inputs ?? undefined,
+    blockedReason: event.blocked_reason ?? undefined,
+    resumeCount: event.resume_count ?? undefined,
     subagentType: "domain-agent",
     status: mapEventStatus(event),
     statusDetail: event.status_detail ?? getTaskUpdateText(event.message),

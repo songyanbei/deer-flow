@@ -38,6 +38,15 @@ def _build_tasks_summary(task_pool: list[TaskStatus]) -> str:
     return "\n".join(lines) if lines else "(none)"
 
 
+def _summarize_tasks_for_log(tasks: list[TaskStatus]) -> str:
+    if not tasks:
+        return "(none)"
+    return " | ".join(
+        f"{task['task_id']}:{task.get('assigned_agent') or '?'}:{task['status']}:{task['description'][:120]}"
+        for task in tasks
+    )
+
+
 def _fact_value_to_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -198,6 +207,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool = normalized_task_pool
     pending = [t for t in task_pool if t["status"] == "PENDING"]
     running = [t for t in task_pool if t["status"] == "RUNNING"]
+    waiting = [t for t in task_pool if t["status"] == "WAITING_DEPENDENCY"]
 
     if stored_original_input and latest_user_input and latest_user_input != stored_original_input and not is_clarification_answer:
         next_run_id = _new_run_id()
@@ -213,8 +223,13 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "execution_state": "PLANNING_RESET",
         }
 
-    if pending or running:
-        logger.info("[Planner] Active tasks detected (pending=%d, running=%d), resuming.", len(pending), len(running))
+    if pending or running or waiting:
+        logger.info(
+            "[Planner] Active tasks detected (pending=%d, running=%d, waiting=%d), resuming.",
+            len(pending),
+            len(running),
+            len(waiting),
+        )
         result = {"execution_state": "RESUMING", "run_id": run_id}
         if task_pool_changed or current_run_id != run_id:
             result["task_pool"] = task_pool
@@ -239,6 +254,8 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         )
         user_message = "Please evaluate whether the goal has been achieved."
         logger.info("[Planner] Mode=validate, %d tasks done", len(task_pool))
+        logger.info("[Planner] Validate task summary: %s", tasks_summary[:2000])
+        logger.info("[Planner] Validate facts summary: %s", facts_summary[:2000])
 
     llm = create_chat_model(name=_resolve_model(config), thinking_enabled=False)
     try:
@@ -258,6 +275,8 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
+    raw_response_text = _content_to_text(response.content)
+    logger.info("[Planner] Raw model output: %s", raw_response_text[:2000])
     parsed = _parse_planner_output(response.content)
 
     if parsed.get("parse_error"):
@@ -286,6 +305,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
+    logger.info("[Planner] Parsed task payload: %s", json.dumps(parsed.get("tasks", []), ensure_ascii=False)[:2000])
     new_tasks = _make_tasks(parsed.get("tasks", []), run_id=run_id)
     if not new_tasks:
         logger.error("[Planner] No tasks generated for unfinished goal; stopping to avoid false completion.")
@@ -300,7 +320,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
-    logger.info("[Planner] Generated %d task(s).", len(new_tasks))
+    logger.info("[Planner] Generated %d task(s): %s", len(new_tasks), _summarize_tasks_for_log(new_tasks))
     return {
         "task_pool": new_tasks,
         "execution_state": "PLANNING_DONE",

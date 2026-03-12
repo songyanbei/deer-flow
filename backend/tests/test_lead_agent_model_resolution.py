@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.agents.lead_agent import agent as lead_agent_module
+from src.agents.lead_agent.engine_registry import resolve_engine_behavior
+from src.agents.lead_agent.prompt import apply_prompt_template
 from src.config.app_config import AppConfig
 from src.config.model_config import ModelConfig
 from src.config.sandbox_config import SandboxConfig
@@ -135,3 +139,194 @@ def test_build_middlewares_uses_resolved_model_name_for_vision(monkeypatch):
     )
 
     assert any(isinstance(m, lead_agent_module.ViewImageMiddleware) for m in middlewares)
+
+
+def test_make_lead_agent_disables_global_mcp_for_domain_agents(monkeypatch):
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+
+    import src.tools as tools_module
+
+    captured_tool_kwargs: dict[str, object] = {}
+
+    def _fake_get_available_tools(**kwargs):
+        captured_tool_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(tools_module, "get_available_tools", _fake_get_available_tools)
+    monkeypatch.setattr(lead_agent_module, "_build_middlewares", lambda config, model_name, agent_name=None: [])
+    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(
+        lead_agent_module,
+        "load_agent_config",
+        lambda _name: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=None,
+            engine_type=None,
+        ),
+    )
+    monkeypatch.setattr("src.execution.mcp_pool.mcp_pool", SimpleNamespace(get_agent_tools_sync=lambda _name: []))
+    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
+
+    result = lead_agent_module.make_lead_agent(
+        {
+            "configurable": {
+                "agent_name": "contacts-agent",
+                "is_domain_agent": True,
+                "model_name": "safe-model",
+                "thinking_enabled": False,
+            }
+        }
+    )
+
+    assert captured_tool_kwargs["include_mcp"] is False
+    assert captured_tool_kwargs["is_domain_agent"] is True
+    assert result["tools"] == []
+
+
+def test_make_lead_agent_filters_write_like_tools_for_read_only_explorer(monkeypatch):
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+
+    import src.tools as tools_module
+
+    class DummyTool:
+        def __init__(self, name: str):
+            self.name = name
+
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
+    monkeypatch.setattr(lead_agent_module, "_build_middlewares", lambda config, model_name, agent_name=None: [])
+    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(
+        lead_agent_module,
+        "load_agent_config",
+        lambda _name: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=None,
+            engine_type="ReadOnly_Explorer",
+        ),
+    )
+    monkeypatch.setattr(
+        "src.execution.mcp_pool.mcp_pool",
+        SimpleNamespace(
+            get_agent_tools_sync=lambda _name: [
+                DummyTool("lookup_employee"),
+                DummyTool("create_contact"),
+                DummyTool("update_employee_record"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
+
+    result = lead_agent_module.make_lead_agent(
+        {
+            "configurable": {
+                "agent_name": "contacts-agent",
+                "is_domain_agent": True,
+                "model_name": "safe-model",
+                "thinking_enabled": False,
+            }
+        }
+    )
+
+    assert [tool.name for tool in result["tools"]] == ["lookup_employee"]
+
+
+@pytest.mark.parametrize(
+    ("configured_engine_type", "expected_engine_mode"),
+    [
+        (None, "default"),
+        ("ReAct", "react"),
+        ("SOP", "sop"),
+    ],
+)
+def test_make_lead_agent_resolves_engine_mode_from_config(monkeypatch, configured_engine_type, expected_engine_mode):
+    app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
+
+    import src.tools as tools_module
+
+    captured_prompt_kwargs: dict[str, object] = {}
+
+    def _fake_apply_prompt_template(**kwargs):
+        captured_prompt_kwargs.update(kwargs)
+        return "prompt"
+
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
+    monkeypatch.setattr(lead_agent_module, "_build_middlewares", lambda config, model_name, agent_name=None: [])
+    monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(
+        lead_agent_module,
+        "load_agent_config",
+        lambda _name: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=None,
+            engine_type=configured_engine_type,
+            name="meeting-agent",
+        ),
+    )
+    monkeypatch.setattr("src.execution.mcp_pool.mcp_pool", SimpleNamespace(get_agent_tools_sync=lambda _name: []))
+    monkeypatch.setattr(lead_agent_module, "apply_prompt_template", _fake_apply_prompt_template)
+    monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
+
+    lead_agent_module.make_lead_agent(
+        {
+            "configurable": {
+                "agent_name": "meeting-agent",
+                "is_domain_agent": True,
+                "model_name": "safe-model",
+                "thinking_enabled": False,
+            }
+        }
+    )
+
+    assert captured_prompt_kwargs["engine_mode"] == expected_engine_mode
+
+
+def test_resolve_engine_behavior_falls_back_to_default_for_unknown_engine():
+    behavior = resolve_engine_behavior(
+        SimpleNamespace(name="demo-agent", engine_type="UnknownEngine"),
+    )
+
+    assert behavior.mode == "default"
+    assert behavior.filter_read_only_tools is False
+
+
+def test_apply_prompt_template_adds_read_only_explorer_rules():
+    prompt = apply_prompt_template(
+        agent_name="contacts-agent",
+        is_domain_agent=True,
+        engine_mode="read_only_explorer",
+    )
+
+    assert "Read-Only Explorer" in prompt
+    assert "ReadOnly_Explorer" in prompt
+    assert "execute the lookup directly instead of calling `request_help`" in prompt
+
+
+def test_apply_prompt_template_adds_react_engine_rules():
+    prompt = apply_prompt_template(
+        agent_name="meeting-agent",
+        is_domain_agent=True,
+        engine_mode="react",
+    )
+
+    assert "explicit `ReAct` mode" in prompt
+    assert "short think-act-observe loops" in prompt
+
+
+def test_apply_prompt_template_adds_sop_engine_rules():
+    prompt = apply_prompt_template(
+        agent_name="meeting-agent",
+        is_domain_agent=True,
+        engine_mode="sop",
+    )
+
+    assert "explicit `SOP` mode" in prompt
+    assert "Follow the domain procedure step by step" in prompt

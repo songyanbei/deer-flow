@@ -33,6 +33,9 @@ type BaseTaskEvent = {
   type:
     | "task_started"
     | "task_running"
+    | "task_waiting_dependency"
+    | "task_help_requested"
+    | "task_resumed"
     | "task_completed"
     | "task_failed"
     | "task_timed_out";
@@ -48,6 +51,19 @@ type MultiAgentTaskEvent = Omit<BaseTaskEvent, "source"> & {
   run_id?: string;
   agent_name?: string;
   description?: string;
+  parent_task_id?: string;
+  requested_by_agent?: string;
+  request_help?: {
+    problem: string;
+    required_capability: string;
+    reason: string;
+    expected_output: string;
+    context_payload?: Record<string, unknown> | null;
+    candidate_agents?: string[] | null;
+  };
+  resolved_inputs?: Record<string, unknown>;
+  blocked_reason?: string;
+  resume_count?: number;
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
@@ -459,6 +475,9 @@ export type ClassifiedTaskEvent =
 const TASK_EVENT_TYPES = new Set<BaseTaskEvent["type"]>([
   "task_started",
   "task_running",
+  "task_waiting_dependency",
+  "task_help_requested",
+  "task_resumed",
   "task_completed",
   "task_failed",
   "task_timed_out",

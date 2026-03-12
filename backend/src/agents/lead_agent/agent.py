@@ -4,9 +4,11 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware, TodoListMiddleware
 from langchain_core.runnables import RunnableConfig
 
+from src.agents.lead_agent.engine_registry import resolve_engine_behavior
 from src.agents.lead_agent.prompt import apply_prompt_template
 from src.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from src.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
+from src.agents.middlewares.help_request_middleware import HelpRequestMiddleware
 from src.agents.middlewares.memory_middleware import MemoryMiddleware
 from src.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from src.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
@@ -22,6 +24,14 @@ from src.models import create_chat_model
 from src.sandbox.middleware import SandboxMiddleware
 
 logger = logging.getLogger(__name__)
+
+_READ_ONLY_WRITE_KEYWORDS = {"write", "create", "update", "cancel", "delete", "insert", "modify"}
+
+
+def _is_read_only_tool(tool) -> bool:
+    tool_name = getattr(tool, "name", "")
+    name_lower = str(tool_name).lower()
+    return not any(keyword in name_lower for keyword in _READ_ONLY_WRITE_KEYWORDS)
 
 
 def _resolve_model_name(requested_model_name: str | None = None) -> str:
@@ -252,6 +262,9 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
         max_concurrent_subagents = config.get("configurable", {}).get("max_concurrent_subagents", 3)
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents))
 
+    if is_domain_agent:
+        middlewares.append(HelpRequestMiddleware())
+
     # ClarificationMiddleware should always be last
     middlewares.append(ClarificationMiddleware())
     return middlewares
@@ -274,6 +287,7 @@ def make_lead_agent(config: RunnableConfig):
     agent_name = cfg.get("agent_name")
 
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
+    engine_behavior = resolve_engine_behavior(agent_config)
     # Custom agent model or fallback to global/default model resolution
     agent_model_name = agent_config.model if agent_config and agent_config.model else _resolve_model_name()
 
@@ -324,11 +338,11 @@ def make_lead_agent(config: RunnableConfig):
 
         return create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled) + [setup_agent],
-            middleware=_build_middlewares(config, model_name=model_name),
-            system_prompt=system_prompt,
-            state_schema=ThreadState,
-        )
+        tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False) + [setup_agent],
+        middleware=_build_middlewares(config, model_name=model_name),
+        system_prompt=system_prompt,
+        state_schema=ThreadState,
+    )
 
     # Resolve available_skills from agent config (domain agents may restrict which skills are exposed)
     available_skills: set[str] | None = None
@@ -343,6 +357,8 @@ def make_lead_agent(config: RunnableConfig):
         try:
             from src.execution.mcp_pool import mcp_pool
             extra_tools = mcp_pool.get_agent_tools_sync(agent_name)
+            if engine_behavior.filter_read_only_tools:
+                extra_tools = [tool for tool in extra_tools if _is_read_only_tool(tool)]
             if extra_tools:
                 logger.info("Injecting %d MCP tool(s) for agent '%s'.", len(extra_tools), agent_name)
         except Exception as e:
@@ -351,9 +367,22 @@ def make_lead_agent(config: RunnableConfig):
     # Default lead agent (unchanged behavior)
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
-        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled) + extra_tools,
+        tools=get_available_tools(
+            model_name=model_name,
+            groups=agent_config.tool_groups if agent_config else None,
+            include_mcp=not bool(cfg.get("is_domain_agent", False)),
+            subagent_enabled=subagent_enabled,
+            is_domain_agent=bool(cfg.get("is_domain_agent", False)),
+        )
+        + extra_tools,
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),
-        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name, available_skills=available_skills),
+        system_prompt=apply_prompt_template(
+            subagent_enabled=subagent_enabled,
+            max_concurrent_subagents=max_concurrent_subagents,
+            agent_name=agent_name,
+            available_skills=available_skills,
+            is_domain_agent=bool(cfg.get("is_domain_agent", False)),
+            engine_mode=engine_behavior.mode,
+        ),
         state_schema=ThreadState,
     )
-

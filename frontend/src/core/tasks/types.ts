@@ -5,6 +5,7 @@ export type TaskSource = "legacy_subagent" | "multi_agent";
 export type TaskStatus =
   | "pending"
   | "in_progress"
+  | "waiting_dependency"
   | "waiting_clarification"
   | "completed"
   | "failed";
@@ -17,6 +18,19 @@ export interface TaskViewModel {
   description: string;
   prompt?: string;
   agentName?: string;
+  parentTaskId?: string;
+  requestedByAgent?: string;
+  requestHelp?: {
+    problem: string;
+    requiredCapability: string;
+    reason: string;
+    expectedOutput: string;
+    contextPayload?: Record<string, unknown>;
+    candidateAgents?: string[];
+  };
+  resolvedInputs?: Record<string, unknown>;
+  blockedReason?: string;
+  resumeCount?: number;
   subagentType?: string;
   status: TaskStatus;
   statusDetail?: string;

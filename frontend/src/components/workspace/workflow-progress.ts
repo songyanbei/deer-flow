@@ -45,6 +45,7 @@ export function filterWorkflowTasks(
 function isActiveTask(task: TaskViewModel) {
   return (
     task.status === "pending" ||
+    task.status === "waiting_dependency" ||
     task.status === "in_progress" ||
     task.status === "waiting_clarification"
   );
@@ -72,6 +73,9 @@ export function getWorkflowProgressSummary({
   const clarificationTask = tasks.find(
     (task) => task.status === "waiting_clarification",
   );
+  const dependencyTask = tasks.find(
+    (task) => task.status === "waiting_dependency",
+  );
   const shouldShow =
     isLoading &&
     (threadValues.resolved_orchestration_mode === "workflow" ||
@@ -95,6 +99,14 @@ export function getWorkflowProgressSummary({
       clarificationTask.statusDetail,
       clarificationTask.latestUpdate,
       clarificationTask.description,
+    ]);
+  } else if (dependencyTask) {
+    title = t.workflowStatus.waitingDependency;
+    detail = pickFirstNonEmpty([
+      dependencyTask.blockedReason,
+      dependencyTask.statusDetail,
+      dependencyTask.latestUpdate,
+      dependencyTask.description,
     ]);
   } else if (activeTaskCount > 0) {
     title = t.workflowStatus.running(activeTaskCount);

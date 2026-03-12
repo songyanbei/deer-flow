@@ -9,8 +9,23 @@ export interface ThreadTaskState {
   task_id: string;
   description: string;
   run_id?: string | null;
+  parent_task_id?: string | null;
+  depends_on_task_ids?: string[] | null;
   assigned_agent?: string | null;
-  status: "PENDING" | "RUNNING" | "DONE" | "FAILED";
+  requested_by_agent?: string | null;
+  request_help?: {
+    problem: string;
+    required_capability: string;
+    reason: string;
+    expected_output: string;
+    context_payload?: Record<string, unknown> | null;
+    candidate_agents?: string[] | null;
+  } | null;
+  resolved_inputs?: Record<string, unknown> | null;
+  blocked_reason?: string | null;
+  resume_count?: number | null;
+  help_depth?: number | null;
+  status: "PENDING" | "RUNNING" | "WAITING_DEPENDENCY" | "DONE" | "FAILED";
   status_detail?: string | null;
   clarification_prompt?: string | null;
   updated_at?: string | null;

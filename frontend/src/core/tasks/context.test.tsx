@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   SubtasksProvider,
+  mergeHydratedTask,
   useSubtaskContext,
 } from "./context";
 import type { TaskViewModel } from "./types";
@@ -165,5 +166,65 @@ describe("SubtasksProvider", () => {
     expect(context.tasksById["legacy-1"]?.source).toBe("legacy_subagent");
 
     rendered.cleanup();
+  });
+
+  it("preserves dependency metadata when a stale hydration snapshot omits it", () => {
+    const merged = mergeHydratedTask(
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_dependency",
+        requestedByAgent: "meeting-agent",
+        blockedReason: "Need organizer openId",
+        requestHelp: {
+          problem: "Missing organizer openId",
+          requiredCapability: "contact lookup",
+          reason: "Meeting API requires an openId",
+          expectedOutput: "Organizer openId and city",
+        },
+        resumeCount: 1,
+        resolvedInputs: {
+          "helper-1": {
+            openId: "ou_123",
+          },
+        },
+      }),
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_dependency",
+        updatedAt: "2026-03-09T10:00:00Z",
+      }),
+    );
+
+    expect(merged.requestedByAgent).toBe("meeting-agent");
+    expect(merged.blockedReason).toBe("Need organizer openId");
+    expect(merged.requestHelp?.requiredCapability).toBe("contact lookup");
+    expect(merged.resumeCount).toBe(1);
+    expect(merged.resolvedInputs).toEqual({
+      "helper-1": {
+        openId: "ou_123",
+      },
+    });
+  });
+
+  it("keeps a newer live status when hydration regresses to an older workflow state", () => {
+    const merged = mergeHydratedTask(
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_clarification",
+        clarificationPrompt: "Please choose the booking city.",
+      }),
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_dependency",
+        blockedReason: "Need city selection",
+      }),
+    );
+
+    expect(merged.status).toBe("waiting_clarification");
+    expect(merged.clarificationPrompt).toBe("Please choose the booking city.");
   });
 });

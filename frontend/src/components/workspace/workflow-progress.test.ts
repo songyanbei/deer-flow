@@ -10,13 +10,15 @@ import {
 
 const t = {
   workflowStatus: {
-    planning: "Workflow is planning steps",
-    resuming: "Workflow is resuming previous tasks",
-    processing: "Workflow is processing",
-    summarizing: "Workflow is summarizing results",
-    waitingClarification: "Workflow is waiting for your clarification",
+    initializing: "Planning",
+    planning: "Understanding your request, planning steps…",
+    resuming: "Resuming previous progress…",
+    processing: "Working on your request…",
+    summarizing: "Tasks done, summarizing results…",
+    waitingClarification: "Need more information from you",
+    waitingDependency: "Waiting for a related task to finish…",
     running: (count: number) =>
-      `Workflow is running ${count} subtask${count === 1 ? "" : "s"}`,
+      `Running ${count} subtask${count === 1 ? "" : "s"}`,
   },
 } as Pick<Translations, "workflowStatus"> as Translations;
 
@@ -58,7 +60,7 @@ describe("workflow progress helpers", () => {
     });
 
     expect(summary).toEqual({
-      title: "Workflow is planning steps",
+      title: "Understanding your request, planning steps…",
       detail: "Compare three vendors and summarize tradeoffs",
       activeTaskCount: 0,
       totalTaskCount: 0,
@@ -87,7 +89,7 @@ describe("workflow progress helpers", () => {
       t,
     });
 
-    expect(summary?.title).toBe("Workflow is running 2 subtasks");
+    expect(summary?.title).toBe("Running 2 subtasks");
     expect(summary?.detail).toBe("Dispatching task to domain agent");
   });
 
@@ -107,9 +109,32 @@ describe("workflow progress helpers", () => {
       t,
     });
 
-    expect(summary?.title).toBe("Workflow is waiting for your clarification");
+    expect(summary?.title).toBe("Need more information from you");
     expect(summary?.detail).toBe("Which data source should I use?");
     expect(summary?.isWaitingClarification).toBe(true);
+  });
+
+  it("surfaces dependency waiting state with blocked reason", () => {
+    const summary = getWorkflowProgressSummary({
+      isLoading: true,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+      },
+      tasks: [
+        createTask({
+          id: "task-1",
+          status: "waiting_dependency",
+          blockedReason: "Need contact lookup for the meeting organizer",
+        }),
+      ],
+      t,
+    });
+
+    expect(summary?.title).toBe("Waiting for a related task to finish…");
+    expect(summary?.detail).toBe(
+      "Need contact lookup for the meeting organizer",
+    );
+    expect(summary?.isWaitingClarification).toBe(false);
   });
 
   it("stays hidden for non-workflow streams", () => {

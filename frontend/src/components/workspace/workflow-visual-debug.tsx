@@ -8,9 +8,9 @@ import { Button } from "@/components/ui/button";
 import { InputBox } from "@/components/workspace/input-box";
 import { MessageList } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
-import { TaskPanel } from "@/components/workspace/task-panel";
 import { TodoList } from "@/components/workspace/todo-list";
 import { useFooterPadding } from "@/components/workspace/use-footer-padding";
+import { WorkflowFooterBar } from "@/components/workspace/workflow-footer-bar";
 import { fromMultiAgentTaskState } from "@/core/tasks/adapters";
 import { useTaskActions } from "@/core/tasks/context";
 import type { AgentThreadContext, AgentThreadState } from "@/core/threads";
@@ -408,7 +408,7 @@ export function WorkflowVisualDebug({ threadId }: { threadId: string }) {
                 className="absolute right-0 bottom-full left-0 z-0 pb-0.5"
               >
                 <div className="flex flex-col gap-0.5">
-                  <TaskPanel thread={thread} />
+                  <WorkflowFooterBar thread={thread} />
                   <TodoList
                     className="bg-background/5"
                     todos={thread.values.todos ?? []}

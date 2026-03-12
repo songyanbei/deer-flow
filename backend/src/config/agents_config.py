@@ -31,6 +31,7 @@ class AgentConfig(BaseModel):
     name: str
     description: str = ""
     model: str | None = None
+    engine_type: str | None = None
     tool_groups: list[str] | None = None
 
     # Multi-agent orchestration fields

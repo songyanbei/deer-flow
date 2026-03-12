@@ -4,7 +4,7 @@ from langchain.tools import BaseTool
 
 from src.config import get_app_config
 from src.reflection import resolve_variable
-from src.tools.builtins import ask_clarification_tool, present_file_tool, task_tool, view_image_tool
+from src.tools.builtins import ask_clarification_tool, present_file_tool, request_help_tool, task_tool, view_image_tool
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ def get_available_tools(
     include_mcp: bool = True,
     model_name: str | None = None,
     subagent_enabled: bool = False,
+    is_domain_agent: bool = False,
 ) -> list[BaseTool]:
     """Get all available tools from config.
 
@@ -35,6 +36,7 @@ def get_available_tools(
         include_mcp: Whether to include tools from MCP servers (default: True).
         model_name: Optional model name to determine if vision tools should be included.
         subagent_enabled: Whether to include subagent tools (task, task_status).
+        is_domain_agent: Whether the caller is a workflow domain agent.
 
     Returns:
         List of available tools.
@@ -64,7 +66,12 @@ def get_available_tools(
             logger.error(f"Failed to get cached MCP tools: {e}")
 
     # Conditionally add tools based on config
-    builtin_tools = BUILTIN_TOOLS.copy()
+    builtin_tools = [present_file_tool]
+
+    if not is_domain_agent:
+        builtin_tools.append(ask_clarification_tool)
+    else:
+        builtin_tools.append(request_help_tool)
 
     # Add subagent tools only if enabled via runtime parameter
     if subagent_enabled:

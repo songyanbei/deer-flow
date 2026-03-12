@@ -256,18 +256,27 @@ export const zhCN: Translations = {
       `${count > 1 ? "并行" : ""}执行 ${count} 个子任务`,
     pending: "待处理",
     in_progress: "子任务运行中",
+    waiting_dependency: "等待依赖",
     waiting_clarification: "等待澄清",
     completed: "子任务已完成",
     failed: "子任务失败",
+    needCapability: (capability: string) => `所需能力：${capability}`,
+    requestedBy: (agent: string) => `求助来源：${agent}`,
+    resolvedInputs: "已解析的依赖结果",
+    resumed: "依赖已解析，任务继续执行",
   },
 
   workflowStatus: {
-    planning: "Workflow 正在规划步骤",
-    resuming: "Workflow 正在恢复上一次任务",
-    processing: "Workflow 正在处理中",
-    summarizing: "Workflow 正在汇总结果",
-    waitingClarification: "Workflow 正在等待你的澄清",
-    running: (count: number) => `Workflow 正在执行 ${count} 个子任务`,
+    initializing: "任务规划中",
+    planning: "正在理解你的需求，规划执行步骤…",
+    resuming: "正在恢复之前的任务进度…",
+    processing: "正在处理你的请求…",
+    summarizing: "任务已完成，正在汇总结果…",
+    waitingDependency: "正在等待相关任务完成…",
+    waitingClarification: "需要你提供更多信息",
+    running: (count: number) => `正在执行 ${count} 个子任务`,
+    completedSummary: (completed: number, total: number) =>
+      `已完成 ${completed} / ${total}`,
   },
 
   // Settings

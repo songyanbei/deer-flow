@@ -26,9 +26,10 @@ const noop = () => {
 const TASK_STATUS_PRIORITY: Record<TaskViewModel["status"], number> = {
   pending: 0,
   in_progress: 1,
-  waiting_clarification: 2,
-  completed: 3,
-  failed: 4,
+  waiting_dependency: 2,
+  waiting_clarification: 3,
+  completed: 4,
+  failed: 5,
 };
 
 export const SubtaskContext = createContext<SubtaskContextValue>({
@@ -108,6 +109,21 @@ export function mergeHydratedTask(
   const richFields = {
     latestMessage: selectRichField(existing.latestMessage, hydrated.latestMessage),
     latestUpdate: selectRichField(existing.latestUpdate, hydrated.latestUpdate),
+    parentTaskId: selectRichField(existing.parentTaskId, hydrated.parentTaskId),
+    requestedByAgent: selectRichField(
+      existing.requestedByAgent,
+      hydrated.requestedByAgent,
+    ),
+    requestHelp: selectRichField(existing.requestHelp, hydrated.requestHelp),
+    resolvedInputs: selectRichField(
+      existing.resolvedInputs,
+      hydrated.resolvedInputs,
+    ),
+    blockedReason: selectRichField(
+      existing.blockedReason,
+      hydrated.blockedReason,
+    ),
+    resumeCount: selectRichField(existing.resumeCount, hydrated.resumeCount),
     clarificationPrompt: selectRichField(
       existing.clarificationPrompt,
       hydrated.clarificationPrompt,
@@ -118,6 +134,7 @@ export function mergeHydratedTask(
   return {
     ...existing,
     ...hydrated,
+    status: preferHydrated ? hydrated.status : existing.status,
     ...richFields,
   };
 }

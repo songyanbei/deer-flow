@@ -13,11 +13,11 @@ import { InputBox } from "@/components/workspace/input-box";
 import { MessageList } from "@/components/workspace/messages";
 import { ThreadContext } from "@/components/workspace/messages/context";
 import { OrchestrationSummary } from "@/components/workspace/orchestration-summary";
-import { TaskPanel } from "@/components/workspace/task-panel";
 import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { Tooltip } from "@/components/workspace/tooltip";
 import { useFooterPadding } from "@/components/workspace/use-footer-padding";
+import { WorkflowFooterBar } from "@/components/workspace/workflow-footer-bar";
 import { useAgent } from "@/core/agents";
 import { useI18n } from "@/core/i18n/hooks";
 import { useNotification } from "@/core/notification/hooks";
@@ -161,7 +161,7 @@ export default function AgentChatPage() {
                   className="absolute right-0 bottom-full left-0 z-0 pb-0.5"
                 >
                   <div className="flex flex-col gap-0.5">
-                    <TaskPanel thread={thread} />
+                    <WorkflowFooterBar thread={thread} />
                     <TodoList
                       className="bg-background/5"
                       todos={thread.values.todos ?? []}

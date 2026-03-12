@@ -13,13 +13,16 @@ export function FlipDisplay({
 }) {
   return (
     <div className={cn("relative overflow-hidden", className)}>
-      <AnimatePresence mode="wait">
+      <AnimatePresence initial={false} mode="popLayout">
         <motion.div
           key={uniqueKey}
-          initial={{ y: 8, opacity: 0 }}
-          animate={{ y: 2, opacity: 1 }}
-          exit={{ y: -8, opacity: 0 }}
-          transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+          initial={{ y: "100%", opacity: 0, filter: "blur(2px)" }}
+          animate={{ y: 0, opacity: 1, filter: "blur(0px)" }}
+          exit={{ y: "-100%", opacity: 0, filter: "blur(2px)" }}
+          transition={{
+            duration: 0.35,
+            ease: [0.32, 0.72, 0, 1],
+          }}
         >
           {children}
         </motion.div>

@@ -53,6 +53,7 @@ export function filterWorkflowMessages(
 
       if (
         content.includes("Known facts (do not re-check):") ||
+        content.includes("Resolved dependency inputs:") ||
         content.includes("User clarification answer:")
       ) {
         return false;

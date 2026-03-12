@@ -107,6 +107,26 @@ describe("filterWorkflowMessages", () => {
     expect(filtered.map((message) => message.id)).toEqual(["user-2"]);
   });
 
+  it("removes workflow executor context messages with resolved dependency inputs", () => {
+    const filtered = filterWorkflowMessages(
+      [
+        humanMessage(
+          [
+            "Book the meeting room.",
+            "",
+            "Resolved dependency inputs:",
+            '{"helper-1":{"openId":"ou_123"}}',
+          ].join("\n"),
+          "internal-1",
+        ),
+        humanMessage("Please use the Shanghai office.", "user-2"),
+      ],
+      [{ description: "Book the meeting room." }],
+    );
+
+    expect(filtered.map((message) => message.id)).toEqual(["user-2"]);
+  });
+
   it("keeps normal user follow-up messages that do not match workflow executor patterns", () => {
     const filtered = filterWorkflowMessages(
       [

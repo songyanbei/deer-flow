@@ -53,6 +53,16 @@ The single LangGraph agent (`lead_agent`) is the runtime entry point, created vi
 - **Subagent delegation** for parallel task execution
 - **System prompt** with skills injection, memory context, and working directory guidance
 
+Custom workflow domain agents reuse the same factory with stricter boundaries:
+
+- **Domain agents use agent-scoped MCP tools only**; they do not inherit the globally cached MCP toolset.
+- **`engine_type` is configuration-driven**; when omitted, agents stay on the current default domain-agent mode used by `meeting-agent`.
+- **Supported explicit engine types are `ReadOnly_Explorer`, `ReAct`, and `SOP`**.
+- **`ReadOnly_Explorer`** enables a read-only execution mode for query agents such as `contacts-agent`.
+- **`ReAct`** keeps the standard tool-calling workflow but is now explicitly selectable from config.
+- **`SOP`** enables a procedure-oriented prompt mode for stepwise domain execution.
+- **Read-only explorers filter out write-like MCP tools** by tool name and are prompted to resolve in-domain lookups directly before escalating.
+
 ### Middleware Chain
 
 Middlewares execute in strict order, each handling a specific concern:
@@ -104,7 +114,7 @@ LLM-powered persistent context retention across conversations:
 | Category | Tools |
 |----------|-------|
 | **Sandbox** | `bash`, `ls`, `read_file`, `write_file`, `str_replace` |
-| **Built-in** | `present_files`, `ask_clarification`, `view_image`, `task` (subagent) |
+| **Built-in** | `present_files`, `ask_clarification`, `request_help` (domain agents), `view_image`, `task` (subagent) |
 | **Community** | Tavily (web search), Jina AI (web fetch), Firecrawl (scraping), DuckDuckGo (image search) |
 | **MCP** | Any Model Context Protocol server (stdio, SSE, HTTP transports) |
 | **Skills** | Domain-specific workflows injected via system prompt |

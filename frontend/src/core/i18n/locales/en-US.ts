@@ -271,19 +271,28 @@ export const enUS: Translations = {
       `Executing ${count === 1 ? "" : count + " "}subtask${count === 1 ? "" : "s in parallel"}`,
     pending: "Pending",
     in_progress: "Running subtask",
+    waiting_dependency: "Waiting for dependency",
     waiting_clarification: "Waiting for clarification",
     completed: "Subtask completed",
     failed: "Subtask failed",
+    needCapability: (capability: string) => `Need capability: ${capability}`,
+    requestedBy: (agent: string) => `Requested by: ${agent}`,
+    resolvedInputs: "Resolved inputs",
+    resumed: "Dependency resolved; resumed execution",
   },
 
   workflowStatus: {
-    planning: "Workflow is planning steps",
-    resuming: "Workflow is resuming previous tasks",
-    processing: "Workflow is processing",
-    summarizing: "Workflow is summarizing results",
-    waitingClarification: "Workflow is waiting for your clarification",
+    initializing: "Planning",
+    planning: "Understanding your request, planning steps…",
+    resuming: "Resuming previous progress…",
+    processing: "Working on your request…",
+    summarizing: "Tasks done, summarizing results…",
+    waitingDependency: "Waiting for a related task to finish…",
+    waitingClarification: "Need more information from you",
     running: (count: number) =>
-      `Workflow is running ${count} subtask${count === 1 ? "" : "s"}`,
+      `Running ${count} subtask${count === 1 ? "" : "s"}`,
+    completedSummary: (completed: number, total: number) =>
+      `${completed} of ${total} done`,
   },
 
   // Settings

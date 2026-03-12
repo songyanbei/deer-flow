@@ -9,6 +9,7 @@ import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
 import { Shimmer } from "../ai-elements/shimmer";
+
 import { SubtaskCard } from "./messages/subtask-card";
 import {
   filterWorkflowTasks,
@@ -18,6 +19,7 @@ import {
 function pickPrimaryWorkflowTask(tasks: TaskViewModel[]) {
   return (
     tasks.find((task) => task.status === "waiting_clarification") ??
+    tasks.find((task) => task.status === "waiting_dependency") ??
     tasks.find((task) => task.status === "in_progress") ??
     tasks.find((task) => task.status === "pending") ??
     tasks.find((task) => task.status === "failed") ??
@@ -35,6 +37,7 @@ function getCompactTaskTitle(task: TaskViewModel | undefined, fallback?: string)
 
 function isActiveWorkflowTask(task: TaskViewModel | undefined) {
   return (
+    task?.status === "waiting_dependency" ||
     task?.status === "in_progress" || task?.status === "waiting_clarification"
   );
 }

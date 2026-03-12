@@ -36,6 +36,14 @@ function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeo
   if (task.status === "pending") {
     return task.statusDetail ?? t.subtasks.pending;
   }
+  if (task.status === "waiting_dependency") {
+    return (
+      task.blockedReason ??
+      task.statusDetail ??
+      task.latestUpdate ??
+      t.subtasks.waiting_dependency
+    );
+  }
   if (task.status === "waiting_clarification") {
     return (
       task.clarificationPrompt ??
@@ -66,6 +74,9 @@ function getCollapsedStatusLabel(
   if (task.status === "pending") {
     return t.subtasks.pending;
   }
+  if (task.status === "waiting_dependency") {
+    return t.subtasks.waiting_dependency;
+  }
   if (task.status === "waiting_clarification") {
     return t.subtasks.waiting_clarification;
   }
@@ -95,11 +106,17 @@ export function SubtaskCard({
     return null;
   }
   let icon = <ClipboardListIcon className="size-3" />;
+  const hasResolvedInputs =
+    !!task.resolvedInputs && Object.keys(task.resolvedInputs).length > 0;
+  const wasResumed =
+    (task.resumeCount ?? 0) > 0 ||
+    (task.status !== "waiting_dependency" && hasResolvedInputs);
   if (task.status === "completed") {
     icon = <CheckCircleIcon className="size-3" />;
   } else if (task.status === "failed") {
     icon = <XCircleIcon className="size-3 text-red-500" />;
   } else if (
+    task.status === "waiting_dependency" ||
     task.status === "in_progress" ||
     task.status === "waiting_clarification"
   ) {
@@ -109,7 +126,9 @@ export function SubtaskCard({
   const progressLabel = getStatusLabel(task, t);
   const collapsedStatusLabel = getCollapsedStatusLabel(task, t);
   const isActive =
-    task.status === "in_progress" || task.status === "waiting_clarification";
+    task.status === "in_progress" ||
+    task.status === "waiting_clarification" ||
+    task.status === "waiting_dependency";
 
   return (
     <ChainOfThought
@@ -189,6 +208,7 @@ export function SubtaskCard({
             ></ChainOfThoughtStep>
           )}
           {(task.status === "in_progress" ||
+            task.status === "waiting_dependency" ||
             task.status === "waiting_clarification" ||
             task.status === "pending") &&
             progressLabel && (
@@ -197,12 +217,52 @@ export function SubtaskCard({
               icon={
                 task.status === "pending" ? (
                   <ClipboardListIcon className="size-4" />
+                ) : task.status === "waiting_dependency" ? (
+                  <Loader2Icon className="size-4 animate-spin" />
                 ) : (
                   <Loader2Icon className="size-4 animate-spin" />
                 )
               }
             ></ChainOfThoughtStep>
             )}
+          {task.status === "waiting_dependency" && task.requestHelp && (
+            <ChainOfThoughtStep
+              label={
+                t.subtasks.needCapability?.(
+                  task.requestHelp.requiredCapability,
+                ) ?? `Need capability: ${task.requestHelp.requiredCapability}`
+              }
+            ></ChainOfThoughtStep>
+          )}
+          {task.status === "waiting_dependency" && task.requestedByAgent && (
+            <ChainOfThoughtStep
+              label={
+                t.subtasks.requestedBy?.(task.requestedByAgent) ??
+                `Requested by: ${task.requestedByAgent}`
+              }
+            ></ChainOfThoughtStep>
+          )}
+          {wasResumed && (
+            <ChainOfThoughtStep
+              label={t.subtasks.resumed ?? "Dependency resolved; resumed execution"}
+            ></ChainOfThoughtStep>
+          )}
+          {hasResolvedInputs && task.resolvedInputs && (
+            <ChainOfThoughtStep
+              label={
+                <div className="space-y-2">
+                  <div className="text-muted-foreground text-sm">
+                    {t.subtasks.resolvedInputs ?? "Resolved inputs"}
+                  </div>
+                  <MarkdownContent
+                    content={`\`\`\`json\n${JSON.stringify(task.resolvedInputs, null, 2)}\n\`\`\``}
+                    isLoading={false}
+                    rehypePlugins={rehypePlugins}
+                  />
+                </div>
+              }
+            ></ChainOfThoughtStep>
+          )}
           {task.status === "completed" && (
             <>
               <ChainOfThoughtStep

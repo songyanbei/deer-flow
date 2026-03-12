@@ -1,5 +1,6 @@
 """Domain Agent executor node for the multi-agent graph."""
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
-from src.agents.thread_state import TaskStatus, ThreadState, VerifiedFact
+from src.agents.thread_state import HelpRequestPayload, TaskStatus, ThreadState, VerifiedFact
 from src.config.agents_config import load_agent_config
 
 logger = logging.getLogger(__name__)
@@ -52,11 +53,20 @@ def _fact_value_to_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        if "summary" in value:
-            return str(value["summary"])
-        if "result" in value:
-            return str(value["result"])
+        summary = value.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary
+        result = value.get("result")
+        if isinstance(result, str) and result.strip():
+            return result
     return str(value)
+
+
+def _json_block(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    except Exception:
+        return str(value)
 
 
 def _build_context(task: TaskStatus, verified_facts: VerifiedFact, clarification_answer: str = "") -> str:
@@ -68,6 +78,10 @@ def _build_context(task: TaskStatus, verified_facts: VerifiedFact, clarification
             for i, (fact_key, fact_value) in enumerate(verified_facts.items())
         )
         context += f"\n\nKnown facts (do not re-check):\n{facts_block}"
+
+    resolved_inputs = task.get("resolved_inputs")
+    if resolved_inputs:
+        context += f"\n\nResolved dependency inputs:\n{_json_block(resolved_inputs)}"
 
     if clarification_answer:
         context += f"\n\nUser clarification answer:\n{clarification_answer}"
@@ -111,8 +125,10 @@ def _get_event_writer() -> Callable[[dict[str, Any]], None]:
 
 
 def _default_event_status(event_type: str) -> str:
-    if event_type in {"task_started", "task_running"}:
+    if event_type in {"task_started", "task_running", "task_resumed"}:
         return "in_progress"
+    if event_type in {"task_waiting_dependency", "task_help_requested"}:
+        return "waiting_dependency"
     if event_type == "task_completed":
         return "completed"
     if event_type == "task_failed":
@@ -135,9 +151,7 @@ def _emit_task_event(writer: Callable[[dict[str, Any]], None], event_type: str, 
         "status": _default_event_status(event_type),
     }
     payload.update({key: value for key, value in extra.items() if value is not None})
-    writer(
-        payload
-    )
+    writer(payload)
 
 
 def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState, writer: Callable[[dict[str, Any]], None]) -> dict:
@@ -149,8 +163,10 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
             "result": final,
             "status_detail": "Task completed by system shortcut",
             "clarification_prompt": None,
+            "request_help": None,
+            "blocked_reason": None,
             "updated_at": _utc_now_iso(),
-        }  # type: ignore[typeddict-item]
+        }
         _emit_task_event(writer, "task_completed", task, agent_name, result=final)
         return {"task_pool": [done_task], "execution_state": "EXECUTING_DONE", "final_result": final}
 
@@ -161,8 +177,10 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
         "error": fallback_msg,
         "status_detail": fallback_msg,
         "clarification_prompt": None,
+        "request_help": None,
+        "blocked_reason": None,
         "updated_at": _utc_now_iso(),
-    }  # type: ignore[typeddict-item]
+    }
     _emit_task_event(writer, "task_failed", task, agent_name, error=fallback_msg)
     return {"task_pool": [failed_task], "execution_state": "EXECUTING_DONE"}
 
@@ -179,6 +197,83 @@ def _extract_agent_output(messages: list[Any]) -> str:
     return ""
 
 
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _normalize_fact_payload(agent_output: str) -> dict[str, Any]:
+    parsed = _parse_json_object(agent_output)
+    if parsed is not None:
+        return parsed
+    return {"text": agent_output}
+
+
+def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | None:
+    raw_content = _content_to_text(message.content)
+    payload = _parse_json_object(raw_content)
+    if payload is None:
+        logger.error("[Executor] request_help payload is not a valid JSON object: %r", raw_content[:2000])
+        return None
+
+    problem = str(payload.get("problem", "")).strip()
+    required_capability = str(payload.get("required_capability", "")).strip()
+    reason = str(payload.get("reason", "")).strip()
+    expected_output = str(payload.get("expected_output", "")).strip()
+    if not (problem and required_capability and reason and expected_output):
+        logger.error(
+            "[Executor] request_help payload missing required fields: %s",
+            json.dumps(payload, ensure_ascii=False)[:2000],
+        )
+        return None
+
+    result: HelpRequestPayload = {
+        "problem": problem,
+        "required_capability": required_capability,
+        "reason": reason,
+        "expected_output": expected_output,
+    }
+    resolution_strategy = str(payload.get("resolution_strategy", "")).strip()
+    if resolution_strategy:
+        result["resolution_strategy"] = resolution_strategy
+    clarification_question = str(payload.get("clarification_question", "")).strip()
+    if clarification_question:
+        result["clarification_question"] = clarification_question
+    clarification_context = str(payload.get("clarification_context", "")).strip()
+    if clarification_context:
+        result["clarification_context"] = clarification_context
+    clarification_options = payload.get("clarification_options")
+    if isinstance(clarification_options, str):
+        text = clarification_options.strip()
+        if text.startswith("["):
+            try:
+                clarification_options = json.loads(text)
+            except Exception:
+                clarification_options = clarification_options
+    if isinstance(clarification_options, list):
+        options = [str(item).strip() for item in clarification_options if str(item).strip()]
+        if options:
+            result["clarification_options"] = options
+    context_payload = payload.get("context_payload")
+    if isinstance(context_payload, dict):
+        result["context_payload"] = context_payload
+    candidate_agents = payload.get("candidate_agents")
+    if isinstance(candidate_agents, str):
+        text = candidate_agents.strip()
+        if text.startswith("["):
+            try:
+                candidate_agents = json.loads(text)
+            except Exception:
+                candidate_agents = candidate_agents
+    if isinstance(candidate_agents, list):
+        result["candidate_agents"] = [str(item) for item in candidate_agents if str(item).strip()]
+    logger.info("[Executor] Parsed request_help payload: %s", json.dumps(result, ensure_ascii=False)[:2000])
+    return result
+
+
 async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     running = [t for t in task_pool if t["status"] == "RUNNING"]
@@ -193,7 +288,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         **task,
         "run_id": task_run_id,
         "updated_at": task.get("updated_at") or _utc_now_iso(),
-    }  # type: ignore[typeddict-item]
+    }
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
     writer = _get_event_writer()
     logger.info("[Executor] Executing task '%s' via agent '%s'.", task["task_id"], agent_name)
@@ -234,6 +329,59 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             config=agent_config_override,
         )
         messages = result.get("messages") or []
+        logger.info(
+            "[Executor] Agent '%s' returned %d message(s); last_type=%s last_name=%s",
+            agent_name,
+            len(messages),
+            messages[-1].__class__.__name__ if messages else None,
+            getattr(messages[-1], "name", None) if messages else None,
+        )
+
+        if messages and isinstance(messages[-1], ToolMessage) and messages[-1].name == "request_help":
+            logger.info(
+                "[Executor] Agent '%s' emitted request_help raw content: %s",
+                agent_name,
+                _content_to_text(messages[-1].content)[:2000],
+            )
+            help_request = _parse_request_help_message(messages[-1])
+            if help_request is None:
+                raise RuntimeError("request_help returned invalid structured payload.")
+
+            next_help_depth = int(task.get("help_depth") or 0) + 1
+            waiting_task: TaskStatus = {
+                **task,
+                "status": "WAITING_DEPENDENCY",
+                "requested_by_agent": agent_name,
+                "request_help": help_request,
+                "blocked_reason": help_request["reason"],
+                "help_depth": next_help_depth,
+                "clarification_prompt": None,
+                "status_detail": "Waiting for router to resolve dependency",
+                "updated_at": _utc_now_iso(),
+            }
+            _emit_task_event(
+                writer,
+                "task_waiting_dependency",
+                waiting_task,
+                agent_name,
+                blocked_reason=help_request["reason"],
+                request_help=help_request,
+                requested_by_agent=agent_name,
+                status_detail="Waiting for router to resolve dependency",
+            )
+            _emit_task_event(
+                writer,
+                "task_help_requested",
+                waiting_task,
+                agent_name,
+                request_help=help_request,
+                requested_by_agent=agent_name,
+                status_detail=help_request["required_capability"],
+            )
+            return {
+                "task_pool": [waiting_task],
+                "execution_state": "EXECUTING_DONE",
+            }
 
         if messages and isinstance(messages[-1], ToolMessage) and messages[-1].name == "ask_clarification":
             logger.info("[Executor] Task '%s' interrupted by ask_clarification.", task["task_id"])
@@ -243,8 +391,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "status": "RUNNING",
                 "status_detail": "Waiting for user clarification",
                 "clarification_prompt": clarification_prompt,
+                "request_help": None,
+                "blocked_reason": None,
                 "updated_at": _utc_now_iso(),
-            }  # type: ignore[typeddict-item]
+            }
             _emit_task_event(
                 writer,
                 "task_running",
@@ -266,14 +416,18 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             raise RuntimeError("Domain agent returned no final answer.")
 
         logger.info("[Executor] Task '%s' DONE. Output length=%d.", task["task_id"], len(agent_output))
+        logger.info("[Executor] Agent '%s' final output: %s", agent_name, agent_output[:2000])
+        payload = _normalize_fact_payload(agent_output)
         done_task: TaskStatus = {
             **task,
             "status": "DONE",
             "result": agent_output,
             "status_detail": "Task completed",
             "clarification_prompt": None,
+            "request_help": None,
+            "blocked_reason": None,
             "updated_at": _utc_now_iso(),
-        }  # type: ignore[typeddict-item]
+        }
         _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="Task completed")
         return {
             "task_pool": [done_task],
@@ -282,6 +436,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "agent": agent_name,
                     "task": task["description"],
                     "summary": agent_output,
+                    "payload": payload,
+                    "fact_type": "task_result",
+                    "source_task_id": task["task_id"],
+                    "updated_at": _utc_now_iso(),
                 }
             },
             "execution_state": "EXECUTING_DONE",
@@ -294,8 +452,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "error": str(e),
             "status_detail": str(e),
             "clarification_prompt": None,
+            "request_help": None,
+            "blocked_reason": None,
             "updated_at": _utc_now_iso(),
-        }  # type: ignore[typeddict-item]
+        }
         _emit_task_event(writer, "task_failed", task, agent_name, error=str(e), status_detail=str(e))
         return {
             "task_pool": [failed_task],
