@@ -131,6 +131,7 @@ export function InputBox({
   const searchParams = useSearchParams();
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const { models } = useModels();
+  const hideModeSelector = true;
 
   useEffect(() => {
     if (models.length === 0) {
@@ -289,7 +290,9 @@ export function InputBox({
                   : "flash"
               }
             >
-              <PromptInputActionMenuTrigger className="gap-1! px-2!">
+              <PromptInputActionMenuTrigger
+                className={cn("gap-1! px-2!", hideModeSelector ? "hidden" : "")}
+              >
                 <div>
                   {context.mode === "flash" && <ZapIcon className="size-3" />}
                   {context.mode === "thinking" && (
@@ -693,14 +696,14 @@ export function InputBox({
           />
         </PromptInputTools>
       </PromptInputFooter>
-      {isNewThread && searchParams.get("mode") !== "skill" && (
+      {/* {isNewThread && searchParams.get("mode") !== "skill" && (
         <div className="absolute right-0 -bottom-20 left-0 z-0 flex items-center justify-center">
           <SuggestionList />
         </div>
       )}
       {!isNewThread && (
         <div className="bg-background absolute right-0 -bottom-[17px] left-0 z-0 h-4"></div>
-      )}
+      )} */}
     </PromptInput>
   );
 }
