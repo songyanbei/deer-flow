@@ -15,6 +15,7 @@ from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 
 logger = logging.getLogger(__name__)
+_NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
 
 
 def _resolve_model(config: RunnableConfig) -> str | None:
@@ -69,8 +70,17 @@ def _build_facts_summary(verified_facts: VerifiedFact) -> str:
     return "\n".join(lines)
 
 
-def _parse_planner_output(raw: str) -> dict:
-    text = raw.strip()
+def _parse_planner_output(raw: Any) -> dict:
+    if isinstance(raw, str):
+        text = raw.strip()
+    elif isinstance(raw, list):
+        text = " ".join(
+            part.get("text", "")
+            for part in raw
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+    else:
+        text = str(raw).strip()
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:])
@@ -153,6 +163,15 @@ def _content_to_text(content) -> str:
     if isinstance(content, list):
         return " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
     return str(content or "")
+
+
+def _normalize_text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = value.strip() if isinstance(value, str) else str(value).strip()
+    if text.lower() in _NULLISH_TEXT_VALUES:
+        return ""
+    return text
 
 
 def _planner_invocation_error_message(exc: Exception) -> str:
@@ -293,7 +312,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         }
 
     if parsed.get("done"):
-        summary = str(parsed.get("summary", "")).strip()
+        summary = _normalize_text_value(parsed.get("summary", ""))
         logger.info("[Planner] Goal achieved. Summary length=%d", len(summary))
         return {
             "execution_state": "DONE",

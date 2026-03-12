@@ -7,7 +7,8 @@ from unittest.mock import patch
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.agents.executor.executor import _ensure_mcp_ready, _mcp_initialized, executor_node
-from src.agents.graph import route_after_workflow_executor
+from src.agents.graph import route_after_workflow_executor, route_after_workflow_router
+from src.agents.middlewares.help_request_middleware import HelpRequestMiddleware
 from src.agents.planner.node import planner_node
 from src.agents.router.semantic_router import router_node
 from src.tools.tools import get_available_tools
@@ -32,6 +33,31 @@ def test_planner_invalid_json_returns_error():
                 )
         assert result["execution_state"] == "ERROR"
         assert result["final_result"] == "Planner failed to produce valid structured output."
+
+    asyncio.run(_run())
+
+
+def test_planner_accepts_content_blocks_from_model():
+    class BlockPlannerLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse(
+                [
+                    {
+                        "type": "text",
+                        "text": '[{"description": "check directory", "assigned_agent": "contacts-agent"}]',
+                    }
+                ]
+            )
+
+    async def _run():
+        with patch("src.agents.planner.node.create_chat_model", return_value=BlockPlannerLLM()):
+            with patch("src.agents.planner.node.list_domain_agents", return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")]):
+                result = await planner_node(
+                    {"messages": [HumanMessage(content="Find Wang Mingtian's employee id")]},
+                    {"configurable": {}},
+                )
+        assert result["execution_state"] == "PLANNING_DONE"
+        assert result["task_pool"][0]["description"] == "check directory"
 
     asyncio.run(_run())
 
@@ -85,6 +111,37 @@ def test_planner_model_invocation_error_returns_visible_error_message():
         assert result["execution_state"] == "ERROR"
         assert result["final_result"] == "Workflow planning failed: Connection error."
         assert result["messages"][0].content == "Workflow planning failed: Connection error."
+
+    asyncio.run(_run())
+
+
+def test_planner_done_with_null_summary_falls_back_to_task_completed():
+    class NullSummaryPlannerLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse('{"done": true, "summary": null}')
+
+    async def _run():
+        with patch("src.agents.planner.node.create_chat_model", return_value=NullSummaryPlannerLLM()):
+            with patch("src.agents.planner.node.list_domain_agents", return_value=[]):
+                result = await planner_node(
+                    {
+                        "messages": [HumanMessage(content="Book the meeting room")],
+                        "task_pool": [
+                            {
+                                "task_id": "t1",
+                                "description": "book the meeting room",
+                                "status": "DONE",
+                                "result": "Room booked",
+                            }
+                        ],
+                        "planner_goal": "Book the meeting room",
+                        "original_input": "Book the meeting room",
+                    },
+                    {"configurable": {}},
+                )
+        assert result["execution_state"] == "DONE"
+        assert result["final_result"] == ""
+        assert result["messages"][0].content == "Task completed."
 
     asyncio.run(_run())
 
@@ -311,7 +368,7 @@ def test_executor_request_help_moves_task_to_waiting_dependency(monkeypatch):
             return {
                 "messages": [
                     ToolMessage(
-                        content='{"problem":"Missing organizer openId","required_capability":"contact lookup","reason":"Meeting API requires organizer identity","expected_output":"Organizer openId and city","candidate_agents":["contacts-agent"]}',
+                        content='{"problem":"Missing organizer openId","required_capability":"contact lookup","reason":"Meeting API requires organizer identity","expected_output":"Organizer openId and city","resolution_strategy":null,"clarification_question":null,"clarification_context":null,"candidate_agents":["contacts-agent"]}',
                         tool_call_id="help-1",
                         name="request_help",
                     )
@@ -354,6 +411,9 @@ def test_executor_request_help_moves_task_to_waiting_dependency(monkeypatch):
         assert waiting_task["blocked_reason"] == "Meeting API requires organizer identity"
         assert waiting_task["help_depth"] == 1
         assert waiting_task["request_help"]["required_capability"] == "contact lookup"
+        assert "resolution_strategy" not in waiting_task["request_help"]
+        assert "clarification_question" not in waiting_task["request_help"]
+        assert "clarification_context" not in waiting_task["request_help"]
         assert [event["type"] for event in events] == [
             "task_started",
             "task_running",
@@ -409,6 +469,29 @@ def test_executor_request_help_keeps_user_clarification_metadata(monkeypatch):
         assert request["clarification_context"] == "明天 9:00-10:00 时段济南无可用会议室。"
 
     asyncio.run(_run())
+
+
+def test_help_request_middleware_preserves_user_clarification_metadata():
+    middleware = HelpRequestMiddleware()
+
+    serialized = middleware._serialize_payload(
+        {
+            "problem": "No room available in Jinan",
+            "required_capability": "user preference confirmation",
+            "reason": "Need the user to choose another city before booking",
+            "expected_output": "Confirmed target city for booking",
+            "resolution_strategy": "user_clarification",
+            "clarification_question": "济南当前没有可用会议室，要改订哪个城市？",
+            "clarification_options": ["北京", "上海", "深圳"],
+            "clarification_context": "明天 9:00-10:00 时段济南无可用会议室。",
+            "candidate_agents": ["meeting-agent"],
+        }
+    )
+
+    assert '"resolution_strategy": "user_clarification"' in serialized
+    assert '"clarification_question": "济南当前没有可用会议室，要改订哪个城市？"' in serialized
+    assert '"clarification_options": ["北京", "上海", "深圳"]' in serialized
+    assert '"clarification_context": "明天 9:00-10:00 时段济南无可用会议室。"' in serialized
 
 
 def test_route_after_workflow_executor_sends_waiting_dependency_back_to_router():
@@ -616,6 +699,98 @@ def test_router_treats_candidate_agents_as_hints_not_hard_whitelist():
         asyncio.run(_run())
 
 
+def test_router_skips_llm_when_single_hinted_candidate_matches():
+    """When candidate_agents hint resolves to exactly one valid candidate, skip LLM routing."""
+
+    async def _run():
+        with patch(
+            "src.agents.router.semantic_router._llm_route",
+            side_effect=AssertionError("_llm_route should not be called when exactly one hinted candidate matches"),
+        ):
+            result = await router_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "parent-1",
+                            "description": "book a meeting room",
+                            "run_id": "run_hint",
+                            "assigned_agent": "meeting-agent",
+                            "requested_by_agent": "meeting-agent",
+                            "status": "WAITING_DEPENDENCY",
+                            "help_depth": 1,
+                            "request_help": {
+                                "problem": "Missing organizer openId",
+                                "required_capability": "contact lookup",
+                                "reason": "Meeting API requires organizer identity",
+                                "expected_output": "Organizer openId",
+                                "candidate_agents": ["contacts-agent"],
+                            },
+                        }
+                    ],
+                    "route_count": 0,
+                },
+                {"configurable": {}},
+            )
+
+        helper = next(task for task in result["task_pool"] if task["task_id"] != "parent-1")
+        assert helper["assigned_agent"] == "contacts-agent"
+
+    with patch(
+        "src.agents.router.semantic_router.list_domain_agents",
+        return_value=[
+            SimpleNamespace(name="contacts-agent", description="Lookup employees"),
+            SimpleNamespace(name="hr-agent", description="HR operations"),
+        ],
+    ):
+        asyncio.run(_run())
+
+
+def test_router_uses_llm_when_multiple_hinted_candidates_match():
+    async def _run():
+        with patch(
+            "src.agents.router.semantic_router._llm_route",
+            return_value="contacts-agent",
+        ) as llm_route:
+            result = await router_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "parent-1",
+                            "description": "book a meeting room",
+                            "run_id": "run_hint",
+                            "assigned_agent": "meeting-agent",
+                            "requested_by_agent": "meeting-agent",
+                            "status": "WAITING_DEPENDENCY",
+                            "help_depth": 1,
+                            "request_help": {
+                                "problem": "Missing organizer openId",
+                                "required_capability": "contact lookup",
+                                "reason": "Meeting API requires organizer identity",
+                                "expected_output": "Organizer openId",
+                                "candidate_agents": ["contacts-agent", "hr-agent"],
+                            },
+                        }
+                    ],
+                    "route_count": 0,
+                },
+                {"configurable": {}},
+            )
+
+        llm_route.assert_called_once()
+        helper = next(task for task in result["task_pool"] if task["task_id"] != "parent-1")
+        assert helper["assigned_agent"] == "contacts-agent"
+
+    with patch(
+        "src.agents.router.semantic_router.list_domain_agents",
+        return_value=[
+            SimpleNamespace(name="contacts-agent", description="Lookup employees"),
+            SimpleNamespace(name="hr-agent", description="HR operations"),
+            SimpleNamespace(name="finance-agent", description="Finance operations"),
+        ],
+    ):
+        asyncio.run(_run())
+
+
 def test_router_resumes_parent_after_helper_completion():
     async def _run():
         result = await router_node(
@@ -658,7 +833,7 @@ def test_router_resumes_parent_after_helper_completion():
         assert result["execution_state"] == "ROUTING_DONE"
         resumed = result["task_pool"][0]
         assert resumed["task_id"] == "parent-1"
-        assert resumed["status"] == "PENDING"
+        assert resumed["status"] == "RUNNING"
         assert resumed["request_help"] is None
         assert resumed["blocked_reason"] is None
         assert resumed["depends_on_task_ids"] == []
@@ -669,6 +844,22 @@ def test_router_resumes_parent_after_helper_completion():
         assert resumed["resume_count"] == 1
 
     asyncio.run(_run())
+
+
+def test_route_after_workflow_router_sends_resumed_running_task_to_executor():
+    assert route_after_workflow_router(
+        {
+            "execution_state": "ROUTING_DONE",
+            "task_pool": [
+                {
+                    "task_id": "parent-1",
+                    "description": "book a meeting room",
+                    "status": "RUNNING",
+                    "resolved_inputs": {"helper-1": {"openId": "ou_123"}},
+                }
+            ],
+        }
+    ) == "executor"
 
 
 def test_router_asks_for_clarification_after_excessive_resumes():
@@ -685,6 +876,7 @@ def test_router_asks_for_clarification_after_excessive_resumes():
                         "status": "WAITING_DEPENDENCY",
                         "help_depth": 1,
                         "resume_count": 2,
+                        "helper_retry_count": 1,
                         "request_help": {
                             "problem": "Missing organizer openId",
                             "required_capability": "contact lookup",
@@ -703,6 +895,49 @@ def test_router_asks_for_clarification_after_excessive_resumes():
         assert task["status"] == "RUNNING"
         assert task["clarification_prompt"]
         assert task["request_help"] is None
+        assert task["status_detail"] == "Waiting for user clarification after helper routing budget was exhausted"
+
+    with patch("src.agents.router.semantic_router.list_domain_agents", return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")]):
+        asyncio.run(_run())
+
+
+def test_router_retries_direct_helper_once_when_budget_is_exhausted():
+    async def _run():
+        result = await router_node(
+            {
+                "task_pool": [
+                    {
+                        "task_id": "parent-1",
+                        "description": "book a meeting room",
+                        "run_id": "run_help123",
+                        "assigned_agent": "meeting-agent",
+                        "requested_by_agent": "meeting-agent",
+                        "status": "WAITING_DEPENDENCY",
+                        "help_depth": 1,
+                        "resume_count": 2,
+                        "request_help": {
+                            "problem": "Missing organizer openId",
+                            "required_capability": "contact lookup",
+                            "reason": "Meeting API requires organizer identity",
+                            "expected_output": "Organizer openId and city",
+                            "candidate_agents": ["contacts-agent"],
+                        },
+                    }
+                ],
+                "route_count": 0,
+            },
+            {"configurable": {}},
+        )
+
+        assert result["execution_state"] == "ROUTING_DONE"
+        assert len(result["task_pool"]) == 2
+        parent = next(task for task in result["task_pool"] if task["task_id"] == "parent-1")
+        helper = next(task for task in result["task_pool"] if task["task_id"] != "parent-1")
+        assert parent["depends_on_task_ids"] == [helper["task_id"]]
+        assert parent["helper_retry_count"] == 1
+        assert parent["status_detail"] == "Retrying helper contacts-agent after previous routing budget exhaustion"
+        assert helper["assigned_agent"] == "contacts-agent"
+        assert helper["status"] == "RUNNING"
 
     with patch("src.agents.router.semantic_router.list_domain_agents", return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")]):
         asyncio.run(_run())
@@ -754,6 +989,55 @@ def test_router_interrupts_when_dependency_task_failed():
     asyncio.run(_run())
 
 
+def test_router_retries_failed_direct_helper_once_when_hint_is_unambiguous():
+    async def _run():
+        result = await router_node(
+            {
+                "task_pool": [
+                    {
+                        "task_id": "parent-1",
+                        "description": "book a meeting room",
+                        "run_id": "run_help123",
+                        "assigned_agent": "meeting-agent",
+                        "requested_by_agent": "meeting-agent",
+                        "status": "WAITING_DEPENDENCY",
+                        "depends_on_task_ids": ["helper-1"],
+                        "request_help": {
+                            "problem": "Missing organizer openId",
+                            "required_capability": "contact lookup",
+                            "reason": "Meeting API requires organizer identity",
+                            "expected_output": "Organizer openId and city",
+                            "candidate_agents": ["contacts-agent"],
+                        },
+                    },
+                    {
+                        "task_id": "helper-1",
+                        "description": "lookup organizer",
+                        "run_id": "run_help123",
+                        "assigned_agent": "contacts-agent",
+                        "status": "FAILED",
+                        "error": "Connection error.",
+                    },
+                ],
+                "route_count": 0,
+            },
+            {"configurable": {}},
+        )
+
+        assert result["execution_state"] == "ROUTING_DONE"
+        assert len(result["task_pool"]) == 2
+        parent = next(task for task in result["task_pool"] if task["task_id"] == "parent-1")
+        helper = next(task for task in result["task_pool"] if task["task_id"] != "parent-1")
+        assert parent["helper_retry_count"] == 1
+        assert parent["depends_on_task_ids"] == [helper["task_id"]]
+        assert parent["status_detail"] == "Retrying helper contacts-agent after dependency failure"
+        assert helper["assigned_agent"] == "contacts-agent"
+        assert helper["status"] == "RUNNING"
+
+    with patch("src.agents.router.semantic_router.list_domain_agents", return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")]):
+        asyncio.run(_run())
+
+
 def test_router_interrupts_when_help_loop_budget_is_exhausted():
     async def _run():
         result = await router_node(
@@ -768,6 +1052,7 @@ def test_router_interrupts_when_help_loop_budget_is_exhausted():
                         "status": "WAITING_DEPENDENCY",
                         "help_depth": 2,
                         "resume_count": 1,
+                        "helper_retry_count": 1,
                         "request_help": {
                             "problem": "Missing organizer openId",
                             "required_capability": "contact lookup",
@@ -881,3 +1166,71 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
         assert dummy_pool.calls == 2
 
     asyncio.run(_run())
+
+
+def test_router_accepts_content_blocks_from_model():
+    class BlockRouterLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse([{"type": "text", "text": "<route>contacts-agent</route>"}])
+
+    async def _run():
+        with patch("src.agents.router.semantic_router.create_chat_model", return_value=BlockRouterLLM()):
+            result = await router_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "lookup employee id",
+                            "status": "PENDING",
+                        }
+                    ]
+                },
+                {"configurable": {}},
+            )
+        assert result["execution_state"] == "ROUTING_DONE"
+        assert result["task_pool"][0]["assigned_agent"] == "contacts-agent"
+
+    with patch(
+        "src.agents.router.semantic_router.list_domain_agents",
+        return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")],
+    ):
+        asyncio.run(_run())
+
+
+def test_executor_mcp_init_failure_marks_task_failed(monkeypatch):
+    events: list[dict] = []
+
+    async def _boom(_agent_name):
+        raise RuntimeError("mcp init failed")
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=["dummy"]))
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor._ensure_mcp_ready", new=_boom):
+            with patch("src.agents.executor.executor.get_stream_writer", return_value=events.append):
+                result = await executor_node(
+                    {
+                        "task_pool": [
+                            {
+                                "task_id": "t1",
+                                "description": "lookup employee id",
+                                "assigned_agent": "contacts-agent",
+                                "status": "RUNNING",
+                            }
+                        ],
+                        "verified_facts": {},
+                    },
+                    {"configurable": {}},
+                )
+
+        assert result["execution_state"] == "EXECUTING_DONE"
+        assert result["task_pool"][0]["status"] == "FAILED"
+        assert result["task_pool"][0]["error"] == "mcp init failed"
+        assert events[-1]["type"] == "task_failed"
+
+    asyncio.run(_run())
+
+
+def test_route_after_workflow_executor_ends_on_error():
+    assert route_after_workflow_executor({"execution_state": "ERROR"}) == "__end__"

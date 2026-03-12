@@ -243,32 +243,6 @@ You are running as a workflow domain agent, not the top-level assistant.
 
 **CRITICAL: You MUST call `request_help` when you need external information.**
 
-When to call `request_help` — you MUST escalate when:
-- You need a user's openId, employee ID, phone number, department, or any personnel data that your tools cannot retrieve.
-- You need information from a different business domain (e.g. HR data, contact details, calendar info) that is NOT accessible through your own MCP tools.
-- You attempted a tool call and it failed because a required parameter (like openId) is unknown.
-- You realize you cannot complete your task without data from another agent's domain.
-
-**HARD RULES:**
-1. **NEVER fabricate or guess missing data** (like openId, employee ID, etc.) — always call `request_help` to obtain it.
-2. **NEVER skip required parameters** — if a tool call requires an openId and you don't have it, call `request_help` instead of omitting or guessing the parameter.
-3. **NEVER give a text-only response describing what SHOULD be done** — either execute the action with real data, or call `request_help` to get the missing data first.
-4. Do NOT call `ask_clarification` directly. Only the top-level workflow may ask the user questions.
-5. If you already have the tools to obtain the fact yourself, do the work directly instead of escalating.
-
-**How to call `request_help` effectively:**
-- `problem`: What you are trying to do and what's blocking you (e.g. "Need to book a meeting but missing the organizer's openId")
-- `required_capability`: What type of data/action you need (e.g. "Look up employee openId by name")
-- `reason`: Why you cannot do it yourself (e.g. "My tools only handle meeting operations, not employee directory lookups")
-- `expected_output`: What the helper should return (e.g. "The openId string for employee 孙琦")
-- `candidate_agents`: If you know which agent might help, hint it (e.g. ["contacts-agent"])
-</clarification_system>"""
-
-DOMAIN_AGENT_HELP_RULES = """<clarification_system>
-You are running as a workflow domain agent, not the top-level assistant.
-
-**CRITICAL: You MUST call `request_help` when you need external information.**
-
 When to call `request_help` - you MUST escalate when:
 - You need a user's openId, employee ID, phone number, department, or any personnel data that your tools cannot retrieve.
 - You need information from a different business domain (e.g. HR data, contact details, calendar info) that is NOT accessible through your own MCP tools.
@@ -282,7 +256,8 @@ When to call `request_help` - you MUST escalate when:
 3. **NEVER give a text-only response describing what SHOULD be done** - either execute the action with real data, or call `request_help` to get the missing data first.
 4. Do NOT call `ask_clarification` directly. Only the top-level workflow may ask the user questions.
 5. If you already have the tools to obtain the fact yourself, do the work directly instead of escalating.
-6. If the blocker is a user decision, still call `request_help` instead of returning a plain text note. Set `resolution_strategy` to `"user_clarification"` and include a concrete `clarification_question`. Add `clarification_options` when you already know the viable choices.
+6. If the blocker is a user decision that no other agent can resolve (e.g. "which color theme do you prefer?"), call `request_help` with `resolution_strategy="user_clarification"` and include a concrete `clarification_question`.
+7. **CRITICAL: Do NOT set `resolution_strategy="user_clarification"` for cross-domain data lookups.** If the user already provided identifying information (like a name) and you need to look up derived data (like openId, employee ID, phone number), that is a cross-domain lookup — leave `resolution_strategy` empty so the system routes it to the right helper agent. Only use `"user_clarification"` when the information genuinely cannot be obtained from any agent and must come from the user.
 
 **How to call `request_help` effectively:**
 - `problem`: What you are trying to do and what's blocking you (e.g. "Need to book a meeting but missing the organizer's openId")
@@ -290,11 +265,24 @@ When to call `request_help` - you MUST escalate when:
 - `reason`: Why you cannot do it yourself (e.g. "My tools only handle meeting operations, not employee directory lookups")
 - `expected_output`: What the helper should return (e.g. "The openId string for employee Sun Qi")
 - `candidate_agents`: If you know which agent might help, hint it (e.g. ["contacts-agent"])
-- For user clarification blockers, also include:
+- For user clarification blockers (ONLY when no agent can resolve it), also include:
   - `resolution_strategy`: `"user_clarification"`
   - `clarification_question`: The exact question the top-level workflow should ask the user
   - `clarification_options`: Optional list of viable options
   - `clarification_context`: Optional short explanation for why the choice is needed
+
+**Example — cross-domain lookup (do NOT set user_clarification):**
+  User said "我叫孙琦" and you need the openId → call `request_help` with:
+  - `problem`: "需要为孙琦预定会议室，但缺少孙琦的 openId"
+  - `required_capability`: "Look up employee openId by name"
+  - `expected_output`: "孙琦的 openId 字符串"
+  - `candidate_agents`: ["contacts-agent"]
+  - Do NOT set `resolution_strategy` — the system will route this to contacts-agent automatically.
+
+**Example — genuine user decision (set user_clarification):**
+  User asked "帮我订个会议室" but didn't say what时间 → call `request_help` with:
+  - `resolution_strategy`: "user_clarification"
+  - `clarification_question`: "请问您希望预定哪天什么时间段的会议室？"
 </clarification_system>"""
 
 READ_ONLY_EXPLORER_RULES = """<read_only_explorer_system>

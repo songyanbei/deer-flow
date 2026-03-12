@@ -27,6 +27,17 @@ Decomposition strategy:
 - When uncertain about domain-specific prerequisites, keep the task at a higher level instead of inventing lower-level preparation tasks.
 - If the remaining gap is user-owned information or a user decision, represent it as one direct clarification task assigned to "SYSTEM_FALLBACK".
 
+Anti-pattern examples — do NOT decompose like this:
+  ❌ User: "我叫孙琦，帮我预定明天上午9-10点的会议室，10个人左右，产品介绍会"
+     BAD decomposition (over-split into micro-steps):
+       1. "确认会议的具体日期（明天的年月日）"          → meeting-agent
+       2. "获取孙琦的 openId"                        → contacts-agent
+       3. "确认是否需要添加其他参会人到会议邀请中"       → SYSTEM_FALLBACK
+       4. "预定会议室"                                → meeting-agent
+     Why bad: Splits a single domain operation into speculative micro-steps. Date resolution, identity lookup, and attendee handling are execution-time domain details — the meeting-agent will handle them at runtime (and escalate via request_help if needed).
+  ✅ CORRECT decomposition (one coarse task):
+       1. "为孙琦预定明天上午9-10点的会议室，容纳10人左右，会议主题为产品介绍会" → meeting-agent
+
 Output format (JSON array):
 [
   {{
@@ -58,7 +69,8 @@ Rules:
    - one direct user-clarification task assigned to "SYSTEM_FALLBACK".
 8. **Never emit pseudo-business tasks for user-owned gaps**: If the real blocker is that the user must choose, confirm, or provide missing information, emit exactly one direct clarification task instead of fake execution tasks.
 9. **Prefer coarse corrective tasks over speculative decomposition**: If the remaining gap is domain-specific or execution-detail-heavy, emit one higher-level follow-up task instead of multiple fine-grained tasks.
-10. Output ONLY valid JSON — no markdown fences, no explanation text.
+10. **Do NOT create follow-up tasks for optional or speculative improvements**: If the core user goal was achieved (e.g. meeting booked), do NOT create tasks like "add more attendees", "confirm attendee list", or "send reminders" unless the user explicitly requested them.
+11. Output ONLY valid JSON — no markdown fences, no explanation text.
 
 Output format when done:
 {{"done": true, "summary": "<concise final answer to the user>"}}

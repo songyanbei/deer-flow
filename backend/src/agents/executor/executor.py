@@ -17,6 +17,7 @@ from src.config.agents_config import load_agent_config
 logger = logging.getLogger(__name__)
 
 _mcp_initialized: set[str] = set()
+_NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
 
 
 def _utc_now_iso() -> str:
@@ -29,6 +30,15 @@ def _content_to_text(content) -> str:
     if isinstance(content, list):
         return " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
     return str(content or "")
+
+
+def _normalize_text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    text = value.strip() if isinstance(value, str) else str(value).strip()
+    if text.lower() in _NULLISH_TEXT_VALUES:
+        return ""
+    return text
 
 
 def _extract_latest_clarification_answer(state: ThreadState) -> str:
@@ -219,10 +229,10 @@ def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | No
         logger.error("[Executor] request_help payload is not a valid JSON object: %r", raw_content[:2000])
         return None
 
-    problem = str(payload.get("problem", "")).strip()
-    required_capability = str(payload.get("required_capability", "")).strip()
-    reason = str(payload.get("reason", "")).strip()
-    expected_output = str(payload.get("expected_output", "")).strip()
+    problem = _normalize_text_value(payload.get("problem", ""))
+    required_capability = _normalize_text_value(payload.get("required_capability", ""))
+    reason = _normalize_text_value(payload.get("reason", ""))
+    expected_output = _normalize_text_value(payload.get("expected_output", ""))
     if not (problem and required_capability and reason and expected_output):
         logger.error(
             "[Executor] request_help payload missing required fields: %s",
@@ -236,13 +246,13 @@ def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | No
         "reason": reason,
         "expected_output": expected_output,
     }
-    resolution_strategy = str(payload.get("resolution_strategy", "")).strip()
+    resolution_strategy = _normalize_text_value(payload.get("resolution_strategy"))
     if resolution_strategy:
         result["resolution_strategy"] = resolution_strategy
-    clarification_question = str(payload.get("clarification_question", "")).strip()
+    clarification_question = _normalize_text_value(payload.get("clarification_question"))
     if clarification_question:
         result["clarification_question"] = clarification_question
-    clarification_context = str(payload.get("clarification_context", "")).strip()
+    clarification_context = _normalize_text_value(payload.get("clarification_context"))
     if clarification_context:
         result["clarification_context"] = clarification_context
     clarification_options = payload.get("clarification_options")
@@ -254,7 +264,8 @@ def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | No
             except Exception:
                 clarification_options = clarification_options
     if isinstance(clarification_options, list):
-        options = [str(item).strip() for item in clarification_options if str(item).strip()]
+        options = [_normalize_text_value(item) for item in clarification_options]
+        options = [option for option in options if option]
         if options:
             result["clarification_options"] = options
     context_payload = payload.get("context_payload")
@@ -269,7 +280,10 @@ def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | No
             except Exception:
                 candidate_agents = candidate_agents
     if isinstance(candidate_agents, list):
-        result["candidate_agents"] = [str(item) for item in candidate_agents if str(item).strip()]
+        agents = [_normalize_text_value(item) for item in candidate_agents]
+        agents = [agent for agent in agents if agent]
+        if agents:
+            result["candidate_agents"] = agents
     logger.info("[Executor] Parsed request_help payload: %s", json.dumps(result, ensure_ascii=False)[:2000])
     return result
 
@@ -297,33 +311,33 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     if agent_name in ("SYSTEM_FINISH", "SYSTEM_FALLBACK"):
         return _handle_system_special(agent_name, task, state, writer)
 
-    await _ensure_mcp_ready(agent_name)
-
-    agent_config_override = RunnableConfig(
-        configurable={
-            **config.get("configurable", {}),
-            "agent_name": agent_name,
-            "subagent_enabled": False,
-            "is_domain_agent": True,
-        }
-    )
-
-    from src.agents.lead_agent.agent import make_lead_agent
-
-    domain_agent = make_lead_agent(agent_config_override)
-    clarification_answer = _extract_latest_clarification_answer(state)
-    context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
-    _emit_task_event(
-        writer,
-        "task_running",
-        task,
-        agent_name,
-        message="Dispatching task to domain agent",
-        status_detail="Dispatching task to domain agent",
-        clarification_answer=clarification_answer or None,
-    )
-
     try:
+        await _ensure_mcp_ready(agent_name)
+
+        agent_config_override = RunnableConfig(
+            configurable={
+                **config.get("configurable", {}),
+                "agent_name": agent_name,
+                "subagent_enabled": False,
+                "is_domain_agent": True,
+            }
+        )
+
+        from src.agents.lead_agent.agent import make_lead_agent
+
+        domain_agent = make_lead_agent(agent_config_override)
+        clarification_answer = _extract_latest_clarification_answer(state)
+        context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
+        _emit_task_event(
+            writer,
+            "task_running",
+            task,
+            agent_name,
+            message="Dispatching task to domain agent",
+            status_detail="Dispatching task to domain agent",
+            clarification_answer=clarification_answer or None,
+        )
+
         result = await domain_agent.ainvoke(
             {"messages": [HumanMessage(content=context)]},
             config=agent_config_override,

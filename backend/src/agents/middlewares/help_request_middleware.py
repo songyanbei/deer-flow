@@ -29,6 +29,10 @@ class HelpRequestMiddleware(AgentMiddleware[HelpRequestMiddlewareState]):
             "required_capability": str(args.get("required_capability", "")).strip(),
             "reason": str(args.get("reason", "")).strip(),
             "expected_output": str(args.get("expected_output", "")).strip(),
+            "resolution_strategy": str(args.get("resolution_strategy", "")).strip() or None,
+            "clarification_question": str(args.get("clarification_question", "")).strip() or None,
+            "clarification_options": args.get("clarification_options"),
+            "clarification_context": str(args.get("clarification_context", "")).strip() or None,
             "context_payload": args.get("context_payload"),
             "candidate_agents": args.get("candidate_agents"),
         }

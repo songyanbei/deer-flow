@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MAX_ROUTE_COUNT = 12
 MAX_HELP_DEPTH = 2
 MAX_RESUME_COUNT = 2
+MAX_HELPER_RETRY_COUNT = 1
 
 
 def _utc_now_iso() -> str:
@@ -36,6 +37,18 @@ def _resolve_model(config: RunnableConfig) -> str | None:
 
 def _build_agent_profiles(agents) -> str:
     return "\n".join(f"- {a.name}: {a.description}" for a in agents)
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content or "")
 
 
 def _fact_value_to_text(value: Any) -> str:
@@ -71,7 +84,7 @@ async def _llm_route(task_description: str, agent_profiles: str, valid_agent_nam
     ]
     try:
         response = await llm.ainvoke(messages)
-        output = response.content
+        output = _content_to_text(response.content)
 
         match = re.search(r"<route>(.*?)</route>", output, re.DOTALL | re.IGNORECASE)
         if match:
@@ -128,6 +141,73 @@ def _append_candidate_hints(task_description: str, hinted_agents: list[str]) -> 
         return task_description
     hinted = ", ".join(hinted_agents)
     return f"{task_description}\nPreferred helper candidates (hint only): {hinted}"
+
+
+def _get_helper_candidates(help_request: HelpRequestPayload, requester: str | None) -> tuple[list, list[str], list[str]]:
+    domain_agents = list_domain_agents()
+    candidate_names = [agent.name for agent in domain_agents if agent.name != requester]
+    hinted = [name for name in (help_request.get("candidate_agents") or []) if name in candidate_names]
+    filtered_agents = [agent for agent in domain_agents if agent.name in candidate_names]
+    return filtered_agents, candidate_names, hinted
+
+
+def _pick_direct_helper_candidate(candidate_names: list[str], hinted: list[str]) -> str | None:
+    if len(hinted) == 1:
+        return hinted[0]
+    if len(candidate_names) == 1:
+        return candidate_names[0]
+    return None
+
+
+def _can_retry_helper(parent_task: TaskStatus) -> bool:
+    return int(parent_task.get("helper_retry_count") or 0) < MAX_HELPER_RETRY_COUNT
+
+
+def _route_to_helper(
+    parent_task: TaskStatus,
+    state: ThreadState,
+    route_count: int,
+    assigned: str,
+    *,
+    status_detail: str | None = None,
+    helper_retry_count: int | None = None,
+) -> dict:
+    run_id = _resolve_run_id(state, parent_task)
+    help_depth = int(parent_task.get("help_depth") or 0)
+    helper_task_id = str(uuid.uuid4())[:8]
+    helper_task: TaskStatus = {
+        "task_id": helper_task_id,
+        "description": _build_helper_description(parent_task["request_help"]),
+        "run_id": run_id,
+        "parent_task_id": parent_task["task_id"],
+        "assigned_agent": assigned,
+        "status": "RUNNING",
+        "status_detail": f"Assigned to {assigned}",
+        "requested_by_agent": parent_task.get("requested_by_agent"),
+        "help_depth": help_depth,
+        "updated_at": _utc_now_iso(),
+    }
+    updated_parent: TaskStatus = {
+        **parent_task,
+        "depends_on_task_ids": [helper_task_id],
+        "status_detail": status_detail or f"Waiting for helper {assigned}",
+        "updated_at": _utc_now_iso(),
+    }
+    if helper_retry_count is not None:
+        updated_parent["helper_retry_count"] = helper_retry_count
+    logger.info(
+        "[Router] Created helper task helper_task=%s assigned_agent=%s parent_task=%s helper_retry_count=%s",
+        helper_task_id,
+        assigned,
+        parent_task["task_id"],
+        updated_parent.get("helper_retry_count"),
+    )
+    return {
+        "task_pool": [updated_parent, helper_task],
+        "run_id": run_id,
+        "execution_state": "ROUTING_DONE",
+        "route_count": route_count,
+    }
 
 
 def _normalize_clarification_options(options: Any) -> list[str]:
@@ -191,6 +271,21 @@ def _build_dependency_failure_prompt(parent_task: TaskStatus, dependency_tasks: 
     if expected:
         return f"依赖任务未能完成（{failure_summary}）。请补充所需信息或指定下一步处理方式：{expected}"
     return f"依赖任务未能完成（{failure_summary}）。请补充所需信息或指定下一步处理方式。"
+
+
+def _summarize_dependency_failures(dependency_tasks: list[TaskStatus]) -> str:
+    failures: list[str] = []
+    for dependency_task in dependency_tasks:
+        if dependency_task.get("status") != "FAILED":
+            continue
+        helper_name = dependency_task.get("assigned_agent") or dependency_task["task_id"]
+        reason = (
+            dependency_task.get("error")
+            or dependency_task.get("status_detail")
+            or "依赖任务执行失败"
+        )
+        failures.append(f"{helper_name}: {reason}")
+    return "；".join(failures) if failures else "依赖任务执行失败"
 
 
 def _interrupt_for_clarification(
@@ -260,12 +355,12 @@ def _resume_parent_from_helper(
 
     return {
         **parent,
-        "status": "PENDING",
+        "status": "RUNNING",
         "request_help": None,
         "depends_on_task_ids": [],
         "blocked_reason": None,
         "clarification_prompt": None,
-        "status_detail": "Dependency resolved; ready to resume",
+        "status_detail": "Dependency resolved; resuming execution",
         "resolved_inputs": resolved_inputs,
         "resume_count": int(parent.get("resume_count") or 0) + 1,
         "updated_at": _utc_now_iso(),
@@ -297,6 +392,11 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             status_detail="Waiting for user clarification",
         )
 
+    requester = parent_task.get("requested_by_agent")
+    domain_agents, candidate_names, hinted = _get_helper_candidates(help_request, requester)
+    direct_candidate = _pick_direct_helper_candidate(candidate_names, hinted)
+    helper_retry_count = int(parent_task.get("helper_retry_count") or 0)
+
     help_depth = int(parent_task.get("help_depth") or 0)
     resume_count = int(parent_task.get("resume_count") or 0)
     help_loop_budget = route_count + help_depth + resume_count
@@ -305,6 +405,29 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
         or resume_count >= MAX_RESUME_COUNT
         or help_loop_budget >= MAX_ROUTE_COUNT
     ):
+        budget_reason = (
+            f"helper routing budget exhausted "
+            f"(help_depth={help_depth}, resume_count={resume_count}, route_count={route_count})"
+        )
+        if direct_candidate and _can_retry_helper(parent_task):
+            next_retry_count = helper_retry_count + 1
+            logger.warning(
+                "[Router] %s for parent_task=%s, retrying direct helper '%s' once (retry=%d/%d)",
+                budget_reason,
+                parent_task["task_id"],
+                direct_candidate,
+                next_retry_count,
+                MAX_HELPER_RETRY_COUNT,
+            )
+            return _route_to_helper(
+                parent_task,
+                state,
+                route_count,
+                direct_candidate,
+                status_detail=f"Retrying helper {direct_candidate} after previous routing budget exhaustion",
+                helper_retry_count=next_retry_count,
+            )
+        logger.info("[Router] %s for parent_task=%s", budget_reason, parent_task["task_id"])
         prompt = _build_clarification_prompt(parent_task, help_request)
         return _interrupt_for_clarification(
             parent_task,
@@ -312,18 +435,8 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name=parent_task.get("assigned_agent") or "workflow-router",
-            status_detail="Waiting for user clarification",
+            status_detail="Waiting for user clarification after helper routing budget was exhausted",
         )
-
-    domain_agents = list_domain_agents()
-    requester = parent_task.get("requested_by_agent")
-    candidate_names = [
-        agent.name
-        for agent in domain_agents
-        if agent.name != requester
-    ]
-    hinted = [name for name in (help_request.get("candidate_agents") or []) if name in candidate_names]
-    domain_agents = [agent for agent in domain_agents if agent.name in candidate_names]
 
     if not candidate_names:
         logger.info("[Router] No candidate helper agents available for parent_task=%s", parent_task["task_id"])
@@ -334,11 +447,14 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name="workflow-router",
-            status_detail="Waiting for user clarification",
+            status_detail="Waiting for user clarification because no helper agent was available",
         )
 
     if len(candidate_names) == 1:
         assigned = candidate_names[0]
+    elif len(hinted) == 1:
+        assigned = hinted[0]
+        logger.info("[Router] Fast path via candidate_agents hint: parent_task=%s -> %s", parent_task["task_id"], assigned)
     else:
         logger.info(
             "[Router] Helper routing candidates parent_task=%s requester=%s candidates=%s hinted=%s",
@@ -355,7 +471,12 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
         )
 
     if assigned == "SYSTEM_FALLBACK":
-        logger.info("[Router] Helper routing fell back to clarification for parent_task=%s", parent_task["task_id"])
+        logger.info(
+            "[Router] Helper routing fell back to clarification for parent_task=%s candidates=%s hinted=%s",
+            parent_task["task_id"],
+            candidate_names,
+            hinted,
+        )
         prompt = _build_clarification_prompt(parent_task, help_request)
         return _interrupt_for_clarification(
             parent_task,
@@ -363,41 +484,10 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name="workflow-router",
-            status_detail="Waiting for user clarification",
+            status_detail="Waiting for user clarification because no helper agent matched the request",
         )
 
-    run_id = _resolve_run_id(state, parent_task)
-    helper_task_id = str(uuid.uuid4())[:8]
-    helper_task: TaskStatus = {
-        "task_id": helper_task_id,
-        "description": _build_helper_description(help_request),
-        "run_id": run_id,
-        "parent_task_id": parent_task["task_id"],
-        "assigned_agent": assigned,
-        "status": "RUNNING",
-        "status_detail": f"Assigned to {assigned}",
-        "requested_by_agent": parent_task.get("requested_by_agent"),
-        "help_depth": help_depth,
-        "updated_at": _utc_now_iso(),
-    }
-    updated_parent: TaskStatus = {
-        **parent_task,
-        "depends_on_task_ids": [helper_task_id],
-        "status_detail": f"Waiting for helper {assigned}",
-        "updated_at": _utc_now_iso(),
-    }
-    logger.info(
-        "[Router] Created helper task helper_task=%s assigned_agent=%s parent_task=%s",
-        helper_task_id,
-        assigned,
-        parent_task["task_id"],
-    )
-    return {
-        "task_pool": [updated_parent, helper_task],
-        "run_id": run_id,
-        "execution_state": "ROUTING_DONE",
-        "route_count": route_count,
-    }
+    return _route_to_helper(parent_task, state, route_count, assigned)
 
 
 async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
@@ -432,6 +522,36 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             logger.info("[Router] Waiting task '%s' depends_on=%s", waiting_task["task_id"], dependency_ids)
             dependency_tasks = [task for task in task_pool if task["task_id"] in dependency_ids]
             if dependency_tasks and any(task["status"] == "FAILED" for task in dependency_tasks):
+                failure_summary = _summarize_dependency_failures(dependency_tasks)
+                help_request = waiting_task.get("request_help")
+                if help_request:
+                    requester = waiting_task.get("requested_by_agent")
+                    _, candidate_names, hinted = _get_helper_candidates(help_request, requester)
+                    direct_candidate = _pick_direct_helper_candidate(candidate_names, hinted)
+                    helper_retry_count = int(waiting_task.get("helper_retry_count") or 0)
+                    if direct_candidate and _can_retry_helper(waiting_task):
+                        next_retry_count = helper_retry_count + 1
+                        logger.warning(
+                            "[Router] Dependency helper failed for parent_task=%s (%s), retrying direct helper '%s' once (retry=%d/%d)",
+                            waiting_task["task_id"],
+                            failure_summary,
+                            direct_candidate,
+                            next_retry_count,
+                            MAX_HELPER_RETRY_COUNT,
+                        )
+                        return _route_to_helper(
+                            waiting_task,
+                            state,
+                            route_count,
+                            direct_candidate,
+                            status_detail=f"Retrying helper {direct_candidate} after dependency failure",
+                            helper_retry_count=next_retry_count,
+                        )
+                logger.info(
+                    "[Router] Dependency helper failed for parent_task=%s and will be escalated to user clarification: %s",
+                    waiting_task["task_id"],
+                    failure_summary,
+                )
                 prompt = _build_dependency_failure_prompt(waiting_task, dependency_tasks)
                 return _interrupt_for_clarification(
                     waiting_task,
@@ -439,7 +559,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     route_count,
                     writer,
                     agent_name=waiting_task.get("assigned_agent") or "workflow-router",
-                    status_detail="Dependency resolution failed; waiting for user clarification",
+                    status_detail=f"Dependency resolution failed; waiting for user clarification ({failure_summary})",
                 )
             resumed_task = _resume_parent_from_helper(waiting_task, dependency_ids, task_pool, verified_facts)
             if resumed_task is not None:

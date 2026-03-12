@@ -2,7 +2,7 @@
 
 import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 export default function AgentChatPage() {
   const { t } = useI18n();
   const [settings, setSettings] = useLocalSettings();
+  const [hydrated, setHydrated] = useState(false);
   const router = useRouter();
 
   const { agent_name } = useParams<{
@@ -39,6 +40,10 @@ export default function AgentChatPage() {
   const { agent } = useAgent(agent_name);
 
   const { threadId, isNewThread, setIsNewThread } = useThreadChat();
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   const { showNotification } = useNotification();
   const {
@@ -92,6 +97,20 @@ export default function AgentChatPage() {
     (thread.isLoading ||
       (thread.values.task_pool?.length ?? 0) > 0 ||
       (thread.values.todos?.length ?? 0) > 0);
+
+  if (!hydrated) {
+    return (
+      <div className="bg-background flex size-full min-h-0 flex-col">
+        <div className="border-border/60 bg-background/80 h-12 shrink-0 border-b" />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex-1" />
+          <div className="p-4">
+            <div className="border-border/60 bg-background/70 h-32 w-full rounded-2xl border" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <ThreadContext.Provider value={{ thread }}>

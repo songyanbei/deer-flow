@@ -93,7 +93,7 @@ describe("WorkflowFooterBar", () => {
       }),
     ]);
 
-    expect(rendered.container.textContent).toContain("1 of 3 tasks completed");
+    expect(rendered.container.textContent).toContain("1 of 3 done");
     const trigger = rendered.container.querySelector("button");
     if (!trigger) {
       throw new Error("Workflow footer trigger not found.");

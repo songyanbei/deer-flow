@@ -53,6 +53,9 @@ def route_after_workflow_router(state: ThreadState) -> str:
 def route_after_workflow_executor(state: ThreadState) -> str:
     """Decide where to go after executor_node runs."""
     exec_state = state.get("execution_state") or ""
+    if exec_state in _TERMINAL_STATES:
+        logger.debug("[Graph] executor -> END (execution_state=%s)", exec_state)
+        return END
     if exec_state == "INTERRUPTED":
         logger.debug("[Graph] executor -> END (INTERRUPTED)")
         return END
