@@ -285,6 +285,7 @@ All dict-returning methods are validated against Gateway Pydantic response model
 
 ## Documentation
 
+- [Deployment Guide (ZH)](docs/部署与使用指南.md) - 面向开发者的完整部署、启动、验证与排障说明
 - [Contributing Guide](CONTRIBUTING.md) - Development environment setup and workflow
 - [Configuration Guide](backend/docs/CONFIGURATION.md) - Setup and configuration instructions
 - [Architecture Overview](backend/CLAUDE.md) - Technical architecture details

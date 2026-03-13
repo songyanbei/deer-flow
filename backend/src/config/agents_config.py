@@ -1,6 +1,7 @@
 """Configuration and loaders for custom agents."""
 
 import logging
+import os
 import re
 from typing import Any
 from typing import Literal
@@ -14,6 +15,26 @@ logger = logging.getLogger(__name__)
 
 SOUL_FILENAME = "SOUL.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def _resolve_env_variables(value: Any) -> Any:
+    """Recursively resolve `$ENV_VAR` strings inside agent config values."""
+    if isinstance(value, str):
+        if value.startswith("$"):
+            env_name = value[1:]
+            env_value = os.getenv(env_name)
+            if env_value is None:
+                raise ValueError(f"Environment variable {env_name} not found for agent config value {value}")
+            return env_value
+        return value
+
+    if isinstance(value, dict):
+        return {k: _resolve_env_variables(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [_resolve_env_variables(item) for item in value]
+
+    return value
 
 
 class McpServerEntry(BaseModel):
@@ -65,6 +86,8 @@ def load_agent_config(name: str | None) -> AgentConfig | None:
             data: dict[str, Any] = yaml.safe_load(f) or {}
     except yaml.YAMLError as e:
         raise ValueError(f"Failed to parse agent config {config_file}: {e}") from e
+
+    data = _resolve_env_variables(data)
 
     if "name" not in data:
         data["name"] = name

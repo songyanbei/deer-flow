@@ -33,7 +33,7 @@ extensions_config.json
 # Coverage report
 coverage.xml
 coverage/
-.deer-flow/
+/.deer-flow/
 .claude/
 skills/custom/*
 logs/
@@ -45,6 +45,7 @@ log/
 # pnpm
 .pnpm-store
 sandbox_image_cache.tar
+backend/.deer-flow.rar
 
 # ignore the legacy `web` folder
 web/

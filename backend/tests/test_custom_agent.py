@@ -212,6 +212,43 @@ class TestLoadAgentConfig:
 
         assert cfg.name == "legacy-agent"
 
+    def test_load_config_resolves_env_vars_in_mcp_server(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_MCP_ENTRY", "./mcp/server.js")
+        monkeypatch.setenv("TEST_MCP_TOKEN", "secret-token")
+        config_dict = {
+            "name": "env-agent",
+            "mcp_servers": [
+                {
+                    "name": "env-mcp",
+                    "command": "node",
+                    "args": ["$TEST_MCP_ENTRY"],
+                    "env": {"API_TOKEN": "$TEST_MCP_TOKEN"},
+                }
+            ],
+        }
+        _write_agent(tmp_path, "env-agent", config_dict)
+
+        with patch("src.config.agents_config.get_paths", return_value=_make_paths(tmp_path)):
+            from src.config.agents_config import load_agent_config
+
+            cfg = load_agent_config("env-agent")
+
+        assert cfg.mcp_servers[0].args == ["./mcp/server.js"]
+        assert cfg.mcp_servers[0].env == {"API_TOKEN": "secret-token"}
+
+    def test_load_config_missing_env_var_raises(self, tmp_path):
+        config_dict = {
+            "name": "missing-env-agent",
+            "mcp_servers": [{"name": "env-mcp", "command": "node", "args": ["$MISSING_MCP_ENTRY"]}],
+        }
+        _write_agent(tmp_path, "missing-env-agent", config_dict)
+
+        with patch("src.config.agents_config.get_paths", return_value=_make_paths(tmp_path)):
+            from src.config.agents_config import load_agent_config
+
+            with pytest.raises(ValueError, match="Environment variable MISSING_MCP_ENTRY not found"):
+                load_agent_config("missing-env-agent")
+
 
 # ===========================================================================
 # 4. load_agent_soul
