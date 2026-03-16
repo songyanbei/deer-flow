@@ -78,7 +78,7 @@ def _build_facts_summary(verified_facts: VerifiedFact) -> str:
     return "\n".join(lines)
 
 
-def _try_repair_json(text: str) -> dict | None:
+def _try_repair_json(text: str) -> Any | None:
     """Attempt to repair JSON with unescaped double quotes inside string values.
 
     When an LLM produces JSON like {"summary": "主题为"产品介绍""},
@@ -102,6 +102,53 @@ def _try_repair_json(text: str) -> dict | None:
     return None
 
 
+def _extract_json_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+
+    for match in _FENCED_BLOCK_RE.finditer(text):
+        fenced = match.group(1).strip()
+        if fenced:
+            candidates.append(fenced)
+
+    decoder = json.JSONDecoder()
+    for start_char in ("[", "{"):
+        start = 0
+        while True:
+            idx = text.find(start_char, start)
+            if idx < 0:
+                break
+            snippet = text[idx:].lstrip()
+            if not snippet:
+                break
+            try:
+                parsed, end = decoder.raw_decode(snippet)
+            except json.JSONDecodeError:
+                start = idx + 1
+                continue
+            if isinstance(parsed, (dict, list)) and end > 0:
+                if isinstance(parsed, dict) and not (
+                    "done" in parsed
+                    or "tasks" in parsed
+                    or "summary" in parsed
+                ):
+                    start = idx + 1
+                    continue
+                extracted = snippet[:end].strip()
+                if extracted:
+                    candidates.append(extracted)
+                break
+            start = idx + 1
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+    return deduped
+
+
 def _parse_planner_output(raw: Any) -> dict:
     if isinstance(raw, str):
         text = raw.strip()
@@ -121,6 +168,19 @@ def _parse_planner_output(raw: Any) -> dict:
             value.setdefault("parse_error", None)
             return value
         return {"done": False, "tasks": [], "parse_error": "Planner output was not a JSON object or array."}
+
+    # Prefer extracting JSON from common wrappers (e.g. ```json ...``` or leading prose).
+    candidates = [text, *_extract_json_candidates(text)]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return _normalize_parsed(json.loads(candidate))
+        except json.JSONDecodeError:
+            repaired = _try_repair_json(candidate)
+            if repaired is not None:
+                logger.info("[Planner] JSON repair succeeded")
+                return _normalize_parsed(repaired)
 
     # 1) Direct parse
     try:
@@ -228,7 +288,7 @@ def _make_tasks(raw_tasks: list[dict], run_id: str) -> list[TaskStatus]:
                 run_id=run_id,
                 assigned_agent=t.get("assigned_agent") or None,
                 status="PENDING",
-                status_detail="Planned and waiting for routing",
+                status_detail="已规划，等待分派",
                 clarification_prompt=None,
                 updated_at=now,
                 result=None,
@@ -455,7 +515,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     parsed = _parse_planner_output(response.content)
 
     if parsed.get("parse_error"):
-        error_message = "Planner failed to produce valid structured output."
+        error_message = "规划器输出格式异常，暂时无法继续执行。"
         logger.error("[Planner] %s Raw output=%r", error_message, response.content[:500])
         _emit_workflow_stage(writer, stage_name, error_message, run_id=run_id)
         return {
