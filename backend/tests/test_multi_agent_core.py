@@ -795,6 +795,53 @@ def test_executor_request_help_moves_task_to_waiting_dependency(monkeypatch):
     asyncio.run(_run())
 
 
+def test_executor_request_help_honors_non_terminal_tool_signal(monkeypatch):
+    class HelpingDomainAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {
+                "messages": [
+                    ToolMessage(
+                        content='{"problem":"Missing organizer openId","required_capability":"contact lookup","reason":"Meeting API requires organizer identity","expected_output":"Organizer openId","candidate_agents":["contacts-agent"]}',
+                        tool_call_id="help-1",
+                        name="request_help",
+                    ),
+                    AIMessage(content="I already asked contacts-agent to look up the organizer."),
+                ]
+            }
+
+    def _make_lead_agent(_config):
+        return HelpingDomainAgent()
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            result = await executor_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "book a meeting room",
+                            "assigned_agent": "meeting-agent",
+                            "status": "RUNNING",
+                        }
+                    ],
+                    "verified_facts": {},
+                },
+                {"configurable": {}},
+            )
+
+        task = result["task_pool"][0]
+        assert result["execution_state"] == "EXECUTING_DONE"
+        assert task["status"] == "WAITING_DEPENDENCY"
+        assert task["request_help"]["required_capability"] == "contact lookup"
+        assert task.get("result") is None
+
+    asyncio.run(_run())
+
+
 def test_executor_request_help_keeps_user_clarification_metadata(monkeypatch):
     class HelpingDomainAgent:
         async def ainvoke(self, *_args, **_kwargs):
@@ -837,6 +884,53 @@ def test_executor_request_help_keeps_user_clarification_metadata(monkeypatch):
         assert request["clarification_question"] == "济南当前没有可用会议室，要改订哪个城市？"
         assert request["clarification_options"] == ["北京", "上海", "深圳"]
         assert request["clarification_context"] == "明天 9:00-10:00 时段济南无可用会议室。"
+
+    asyncio.run(_run())
+
+
+def test_executor_clarification_honors_non_terminal_tool_signal(monkeypatch):
+    class ClarifyingDomainAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {
+                "messages": [
+                    ToolMessage(
+                        content="Please choose one of the available meeting rooms.",
+                        tool_call_id="clarify-1",
+                        name="ask_clarification",
+                    ),
+                    AIMessage(content="Waiting for the user's room selection."),
+                ]
+            }
+
+    def _make_lead_agent(_config):
+        return ClarifyingDomainAgent()
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            result = await executor_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "book a meeting room",
+                            "assigned_agent": "meeting-agent",
+                            "status": "RUNNING",
+                        }
+                    ],
+                    "verified_facts": {},
+                },
+                {"configurable": {}},
+            )
+
+        task = result["task_pool"][0]
+        assert result["execution_state"] == "INTERRUPTED"
+        assert task["status"] == "RUNNING"
+        assert task["clarification_prompt"] == "Please choose one of the available meeting rooms."
+        assert task.get("result") is None
 
     asyncio.run(_run())
 

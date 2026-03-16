@@ -76,6 +76,30 @@ def _build_facts_summary(verified_facts: VerifiedFact) -> str:
     return "\n".join(lines)
 
 
+def _try_repair_json(text: str) -> dict | None:
+    """Attempt to repair JSON with unescaped double quotes inside string values.
+
+    When an LLM produces JSON like {"summary": "主题为"产品介绍""},
+    the interior quotes break json.loads.  This function iteratively
+    finds the premature closing quote, escapes it, and retries.
+    """
+    max_attempts = 20
+    for _ in range(max_attempts):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            pos = e.pos
+            # Search backward from the error position for the unescaped quote
+            # that prematurely closed a JSON string value.
+            search_start = max(0, pos - 10)
+            quote_pos = text.rfind('"', search_start, pos)
+            if quote_pos > 0 and text[quote_pos - 1] != '\\':
+                text = text[:quote_pos] + '\\"' + text[quote_pos + 1:]
+            else:
+                return None
+    return None
+
+
 def _parse_planner_output(raw: Any) -> dict:
     if isinstance(raw, str):
         text = raw.strip()
@@ -98,6 +122,15 @@ def _parse_planner_output(raw: Any) -> dict:
             parsed.setdefault("parse_error", None)
         return parsed
     except json.JSONDecodeError as e:
+        logger.warning("[Planner] JSON parse error: %s — attempting repair", e)
+        repaired = _try_repair_json(text)
+        if repaired is not None:
+            logger.info("[Planner] JSON repair succeeded")
+            if isinstance(repaired, list):
+                return {"done": False, "tasks": repaired, "parse_error": None}
+            if isinstance(repaired, dict):
+                repaired.setdefault("parse_error", None)
+            return repaired
         logger.error("[Planner] JSON parse error: %s\nRaw output:\n%s", e, raw)
         return {"done": False, "tasks": [], "parse_error": str(e)}
 
@@ -463,6 +496,17 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             **_build_workflow_stage_update(stage_name, fallback),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
+
+    completed_tasks = [task for task in task_pool if task.get("status") == "DONE"]
+    if completed_tasks:
+        logger.warning(
+            "[Planner] Goal not yet achieved after %d completed task(s); generating %d follow-up task(s). "
+            "completed=%s follow_ups=%s",
+            len(completed_tasks),
+            len(new_tasks),
+            _summarize_tasks_for_log(completed_tasks),
+            _summarize_tasks_for_log(new_tasks),
+        )
 
     logger.info("[Planner] Generated %d task(s): %s", len(new_tasks), _summarize_tasks_for_log(new_tasks))
     _emit_workflow_stage(

@@ -268,6 +268,33 @@ def _normalize_fact_payload(agent_output: str) -> dict[str, Any]:
     return {"text": agent_output}
 
 
+def _summarize_messages_for_log(messages: list[Any], *, limit: int = 8) -> str:
+    if not messages:
+        return "[]"
+
+    tail = messages[-limit:]
+    parts: list[str] = []
+    start_index = max(len(messages) - len(tail), 0)
+    for offset, message in enumerate(tail, start=start_index):
+        message_type = message.__class__.__name__
+        message_name = getattr(message, "name", None) or "-"
+        preview = _content_to_text(getattr(message, "content", ""))[:120].replace("\n", "\\n")
+        parts.append(f"{offset}:{message_type}:{message_name}:{preview}")
+    if len(messages) > limit:
+        return f"[... {len(messages) - limit} earlier omitted ...; {' | '.join(parts)}]"
+    return f"[{' | '.join(parts)}]"
+
+
+def _find_last_terminal_tool_signal(messages: list[Any]) -> tuple[int, ToolMessage] | None:
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        if not isinstance(message, ToolMessage):
+            continue
+        if getattr(message, "name", None) in {"request_help", "ask_clarification"}:
+            return idx, message
+    return None
+
+
 def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | None:
     raw_content = _content_to_text(message.content)
     payload = _parse_json_object(raw_content)
@@ -396,14 +423,29 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             messages[-1].__class__.__name__ if messages else None,
             getattr(messages[-1], "name", None) if messages else None,
         )
+        logger.info(
+            "[Executor] Task '%s' message trace: %s",
+            task["task_id"],
+            _summarize_messages_for_log(messages),
+        )
 
-        if messages and isinstance(messages[-1], ToolMessage) and messages[-1].name == "request_help":
+        terminal_tool_signal = _find_last_terminal_tool_signal(messages)
+        if terminal_tool_signal and terminal_tool_signal[1].name == "request_help":
+            terminal_idx, terminal_message = terminal_tool_signal
+            if terminal_idx != len(messages) - 1:
+                logger.warning(
+                    "[Executor] Agent '%s' emitted request_help at index %d/%d; honoring it as the terminal signal "
+                    "even though trailing messages were present.",
+                    agent_name,
+                    terminal_idx,
+                    len(messages) - 1,
+                )
             logger.info(
                 "[Executor] Agent '%s' emitted request_help raw content: %s",
                 agent_name,
-                _content_to_text(messages[-1].content)[:2000],
+                _content_to_text(terminal_message.content)[:2000],
             )
-            help_request = _parse_request_help_message(messages[-1])
+            help_request = _parse_request_help_message(terminal_message)
             if help_request is None:
                 raise RuntimeError("request_help returned invalid structured payload.")
 
@@ -443,9 +485,18 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "execution_state": "EXECUTING_DONE",
             }
 
-        if messages and isinstance(messages[-1], ToolMessage) and messages[-1].name == "ask_clarification":
+        if terminal_tool_signal and terminal_tool_signal[1].name == "ask_clarification":
+            terminal_idx, terminal_message = terminal_tool_signal
+            if terminal_idx != len(messages) - 1:
+                logger.warning(
+                    "[Executor] Task '%s' emitted ask_clarification at index %d/%d; honoring it as the terminal signal "
+                    "even though trailing messages were present.",
+                    task["task_id"],
+                    terminal_idx,
+                    len(messages) - 1,
+                )
             logger.info("[Executor] Task '%s' interrupted by ask_clarification.", task["task_id"])
-            clarification_prompt = _content_to_text(messages[-1].content)
+            clarification_prompt = _content_to_text(terminal_message.content)
             interrupted_task: TaskStatus = {
                 **task,
                 "status": "RUNNING",
@@ -474,6 +525,14 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         agent_output = _extract_agent_output(messages)
         if not agent_output:
             raise RuntimeError("Domain agent returned no final answer.")
+
+        logger.info(
+            "[Executor] Task '%s' via agent '%s' has no terminal tool signal; treating latest AI text as final output. "
+            "output_preview=%r",
+            task["task_id"],
+            agent_name,
+            agent_output[:300],
+        )
 
         logger.info("[Executor] Task '%s' DONE. Output length=%d.", task["task_id"], len(agent_output))
         logger.info("[Executor] Agent '%s' final output: %s", agent_name, agent_output[:2000])

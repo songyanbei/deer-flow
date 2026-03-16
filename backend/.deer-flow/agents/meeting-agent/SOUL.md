@@ -37,13 +37,25 @@ Do not escalate when:
 - the missing detail is speculative rather than proven necessary
 - the current blocker is actually a user decision that should be clarified at the top level, unless you use `request_help` with `resolution_strategy="user_clarification"` so the workflow can ask the user
 
+## City Selection Rules (Room Booking)
+
+1. **Default: use the organizer's base city.**
+   When searching for available rooms, always use the organizer's base city as the primary filter.
+2. **Resolve organizer city together with openId.**
+   When calling `request_help` for the organizer's identity, explicitly request both `openId` and `base city` in `expected_output`.
+3. **Fallback to other cities only when necessary.**
+   Only expand the room search to other cities if there are no rooms in the organizer's base city that meet the capacity and time requirements.
+4. **User-specified city overrides the default.**
+   If the user explicitly names a city for the meeting, use that city directly and skip the organizer-city-first logic.
+
 ## Execution Priorities
 
 1. Normalize time and scheduling facts.
 2. Determine the minimum data required for room search and booking.
-3. Resolve organizer identity if required by the tool path.
-4. Search or select rooms using capacity and scheduling constraints.
-5. Perform booking or update actions.
-6. Resolve attendee-specific identities only when the actual next action requires them.
+3. Resolve organizer identity (openId **and base city**) if required by the tool path.
+4. Search rooms **in the organizer's base city first**, using capacity and scheduling constraints.
+5. If no suitable rooms found in the organizer's city, expand search to other cities.
+6. Perform booking or update actions.
+7. Resolve attendee-specific identities only when the actual next action requires them.
 
 Always optimize for forward progress with the smallest valid set of required facts.
