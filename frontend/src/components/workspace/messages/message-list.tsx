@@ -75,6 +75,13 @@ export function MessageList({
     () => groupMessages(visibleMessages, (group) => group),
     [visibleMessages],
   );
+  const lastGroupedMessageType = groupedMessages.length
+    ? groupedMessages[groupedMessages.length - 1]!.type
+    : null;
+  const shouldShowWorkflowInlineProgress =
+    isWorkflowMode &&
+    thread.isLoading &&
+    (lastGroupedMessageType === null || lastGroupedMessageType === "human");
   const legacySubagentGroups = useMemo(
     () =>
       groupedMessages.map((group) => {
@@ -229,9 +236,28 @@ export function MessageList({
           );
         })}
         {thread.isLoading &&
-          (isWorkflowMode ? null : workflowProgress ? (
-            <div className="bg-background/85 border-border/60 my-4 flex max-w-xl items-start gap-3 rounded-2xl border px-4 py-3 shadow-sm backdrop-blur-sm">
-              <StreamingIndicator className="mt-1 shrink-0" size="sm" />
+          (isWorkflowMode ? (
+            shouldShowWorkflowInlineProgress ? (
+              workflowProgress ? (
+                <div className="bg-background/85 border-border/60 my-4 flex max-w-xl flex-col gap-2 rounded-2xl border px-4 py-3 shadow-sm backdrop-blur-sm">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">
+                      {workflowProgress.title}
+                    </div>
+                    {workflowProgress.detail && (
+                      <div className="text-muted-foreground mt-1 truncate text-sm">
+                        {workflowProgress.detail}
+                      </div>
+                    )}
+                  </div>
+                  <StreamingIndicator className="shrink-0" size="sm" />
+                </div>
+              ) : (
+                <StreamingIndicator className="my-4" />
+              )
+            ) : null
+          ) : workflowProgress ? (
+            <div className="bg-background/85 border-border/60 my-4 flex max-w-xl flex-col gap-2 rounded-2xl border px-4 py-3 shadow-sm backdrop-blur-sm">
               <div className="min-w-0">
                 <div className="text-sm font-medium">
                   {workflowProgress.title}
@@ -242,6 +268,7 @@ export function MessageList({
                   </div>
                 )}
               </div>
+              <StreamingIndicator className="shrink-0" size="sm" />
             </div>
           ) : (
             <StreamingIndicator className="my-4" />
