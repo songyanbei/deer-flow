@@ -111,7 +111,7 @@ async def _ensure_mcp_ready(agent_name: str) -> None:
 def _get_latest_fact_text(state: ThreadState) -> str:
     facts = state.get("verified_facts") or {}
     if not facts:
-        return "Task completed."
+        return "任务已完成。"
     last_key = next(reversed(facts))
     return _fact_value_to_text(facts[last_key])
 
@@ -189,7 +189,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
             "run_id": run_id,
             "status": "DONE",
             "result": final,
-            "status_detail": "Task completed by system shortcut",
+            "status_detail": "系统快捷完成任务",
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
@@ -211,7 +211,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
         "run_id": run_id,
         "status": "DONE",
         "result": SYSTEM_FALLBACK_FINAL_MESSAGE,
-        "status_detail": "Completed by system fallback",
+        "status_detail": "系统兜底完成任务",
         "clarification_prompt": None,
         "request_help": None,
         "blocked_reason": None,
@@ -223,7 +223,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
         fallback_task,
         agent_name,
         result=SYSTEM_FALLBACK_FINAL_MESSAGE,
-        status_detail="Completed by system fallback",
+        status_detail="系统兜底完成任务",
     )
     _emit_workflow_stage(
         writer,
@@ -379,7 +379,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
     writer = _get_event_writer()
     logger.info("[Executor] Executing task '%s' via agent '%s'.", task["task_id"], agent_name)
-    _emit_task_event(writer, "task_started", task, agent_name, message="Task execution started", status_detail="Task execution started")
+    _emit_task_event(writer, "task_started", task, agent_name, message="任务开始执行", status_detail="任务开始执行")
 
     if agent_name in ("SYSTEM_FINISH", "SYSTEM_FALLBACK"):
         return _handle_system_special(agent_name, task, state, writer)
@@ -406,8 +406,8 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "task_running",
             task,
             agent_name,
-            message="Dispatching task to domain agent",
-            status_detail="Dispatching task to domain agent",
+            message="正在交给执行代理处理",
+            status_detail="正在交给执行代理处理",
             clarification_answer=clarification_answer or None,
         )
 
@@ -458,7 +458,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "blocked_reason": help_request["reason"],
                 "help_depth": next_help_depth,
                 "clarification_prompt": None,
-                "status_detail": "Waiting for router to resolve dependency",
+                "status_detail": "正在等待系统处理依赖",
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
@@ -469,7 +469,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 blocked_reason=help_request["reason"],
                 request_help=help_request,
                 requested_by_agent=agent_name,
-                status_detail="Waiting for router to resolve dependency",
+                status_detail="正在等待系统处理依赖",
             )
             _emit_task_event(
                 writer,
@@ -500,7 +500,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             interrupted_task: TaskStatus = {
                 **task,
                 "status": "RUNNING",
-                "status_detail": "Waiting for user clarification",
+                "status_detail": "需要你补充信息",
                 "clarification_prompt": clarification_prompt,
                 "request_help": None,
                 "blocked_reason": None,
@@ -511,10 +511,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "task_running",
                 task,
                 agent_name,
-                message="Waiting for user clarification",
+                message="需要你补充信息",
                 clarification_prompt=clarification_prompt,
                 status="waiting_clarification",
-                status_detail="Waiting for user clarification",
+                status_detail="需要你补充信息",
             )
             return {
                 "task_pool": [interrupted_task],
@@ -541,13 +541,13 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             **task,
             "status": "DONE",
             "result": agent_output,
-            "status_detail": "Task completed",
+            "status_detail": "任务已完成",
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
             "updated_at": _utc_now_iso(),
         }
-        _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="Task completed")
+        _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="任务已完成")
         return {
             "task_pool": [done_task],
             "verified_facts": {

@@ -230,7 +230,7 @@ def _route_to_helper(
         "parent_task_id": parent_task["task_id"],
         "assigned_agent": assigned,
         "status": "RUNNING",
-        "status_detail": f"Assigned to {assigned}",
+        "status_detail": f"已分派给 {assigned}",
         "requested_by_agent": parent_task.get("requested_by_agent"),
         "help_depth": help_depth,
         "updated_at": _utc_now_iso(),
@@ -238,7 +238,7 @@ def _route_to_helper(
     updated_parent: TaskStatus = {
         **parent_task,
         "depends_on_task_ids": [helper_task_id],
-        "status_detail": status_detail or f"Waiting for helper {assigned}",
+        "status_detail": status_detail or f"正在等待协作代理 {assigned} 完成",
         "updated_at": _utc_now_iso(),
     }
     if helper_retry_count is not None:
@@ -408,7 +408,7 @@ def _resume_parent_from_helper(
         "depends_on_task_ids": [],
         "blocked_reason": None,
         "clarification_prompt": None,
-        "status_detail": "Dependency resolved; resuming execution",
+        "status_detail": "依赖已解决，继续执行",
         "resolved_inputs": resolved_inputs,
         "resume_count": int(parent.get("resume_count") or 0) + 1,
         "updated_at": _utc_now_iso(),
@@ -437,7 +437,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name=parent_task.get("assigned_agent") or "workflow-router",
-            status_detail="Waiting for user clarification",
+            status_detail="需要你补充信息",
         )
 
     requester = parent_task.get("requested_by_agent")
@@ -472,7 +472,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
                 state,
                 route_count,
                 direct_candidate,
-                status_detail=f"Retrying helper {direct_candidate} after previous routing budget exhaustion",
+                status_detail=f"正在重试协作代理 {direct_candidate}",
                 helper_retry_count=next_retry_count,
             )
         logger.info("[Router] %s for parent_task=%s", budget_reason, parent_task["task_id"])
@@ -483,7 +483,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name=parent_task.get("assigned_agent") or "workflow-router",
-            status_detail="Waiting for user clarification after helper routing budget was exhausted",
+            status_detail="需要你补充信息（协作代理重试次数已用尽）",
         )
 
     if not candidate_names:
@@ -495,7 +495,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name="workflow-router",
-            status_detail="Waiting for user clarification because no helper agent was available",
+            status_detail="需要你补充信息（暂无可用协作代理）",
         )
 
     if len(candidate_names) == 1:
@@ -532,7 +532,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name="workflow-router",
-            status_detail="Waiting for user clarification because no helper agent matched the request",
+            status_detail="需要你补充信息（未找到匹配的协作代理）",
         )
 
     return _route_to_helper(parent_task, state, route_count, assigned)
@@ -598,7 +598,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                             state,
                             route_count,
                             direct_candidate,
-                            status_detail=f"Retrying helper {direct_candidate} after dependency failure",
+                            status_detail=f"依赖失败，正在重试协作代理 {direct_candidate}",
                             helper_retry_count=next_retry_count,
                         )
                 logger.info(
@@ -613,7 +613,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     route_count,
                     writer,
                     agent_name=waiting_task.get("assigned_agent") or "workflow-router",
-                    status_detail=f"Dependency resolution failed; waiting for user clarification ({failure_summary})",
+                    status_detail=f"依赖处理失败，需要你补充信息（{failure_summary}）",
                 )
             resumed_task = _resume_parent_from_helper(waiting_task, dependency_ids, task_pool, verified_facts)
             if resumed_task is not None:
@@ -628,7 +628,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     resumed_task,
                     resumed_task.get("assigned_agent") or "workflow-router",
                     status="in_progress",
-                    status_detail="Dependency resolved; task resumed",
+                    status_detail="依赖已解决，任务已恢复",
                     resolved_inputs=resumed_task.get("resolved_inputs"),
                     resume_count=resumed_task.get("resume_count"),
                 )
@@ -678,7 +678,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         "run_id": run_id,
         "status": "RUNNING",
         "assigned_agent": assigned,
-        "status_detail": f"Assigned to {assigned}",
+        "status_detail": f"已分派给 {assigned}",
         "clarification_prompt": None,
         "updated_at": _utc_now_iso(),
     }

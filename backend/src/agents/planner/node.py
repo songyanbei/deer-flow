@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -22,6 +23,7 @@ from src.models import create_chat_model
 
 logger = logging.getLogger(__name__)
 _NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
+_FENCED_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
 def _resolve_model(config: RunnableConfig) -> str | None:
@@ -111,9 +113,16 @@ def _parse_planner_output(raw: Any) -> dict:
         ).strip()
     else:
         text = str(raw).strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:])
+
+    def _normalize_parsed(value: Any) -> dict:
+        if isinstance(value, list):
+            return {"done": False, "tasks": value, "parse_error": None}
+        if isinstance(value, dict):
+            value.setdefault("parse_error", None)
+            return value
+        return {"done": False, "tasks": [], "parse_error": "Planner output was not a JSON object or array."}
+
+    # 1) Direct parse
     try:
         parsed = json.loads(text)
         if isinstance(parsed, list):
@@ -465,14 +474,14 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         terminal_detail = _pick_first_non_empty(
             summary,
             stage_detail,
-            "Task completed.",
+            "任务已完成。",
         )
         logger.info("[Planner] Goal achieved. Summary length=%d", len(summary))
         _emit_workflow_stage(writer, "summarizing", terminal_detail, run_id=run_id)
         return {
             "execution_state": "DONE",
             "final_result": summary,
-            "messages": [AIMessage(content=summary or "Task completed.")],
+            "messages": [AIMessage(content=summary or "任务已完成。")],
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
