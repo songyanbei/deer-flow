@@ -110,6 +110,25 @@ Learn more and see **real demos** on our official website.
        api_key: your-actual-api-key-here  # Replace placeholder
    ```
 
+5. **If you use workflow/domain agents, set the agent data directory and MCP entrypoints**
+
+   Use the repository root `.env` as the single source of truth for local environment-based configuration. Backend, frontend, local startup scripts, and Docker development services now all read from this file.
+
+   The backend discovers workflow agents from `backend/.deer-flow` in this repository. Set `DEER_FLOW_HOME` explicitly in root `.env` so the service always loads the correct agent configs regardless of its working directory.
+
+   Example:
+
+   ```bash
+   DEER_FLOW_HOME=/absolute/path/to/deer-flow/backend/.deer-flow
+   CONTACTS_MCP_ENTRY=/absolute/path/to/mcp-servers/contacts/src/index.js
+   MEETING_ASSISTANT_MCP_ENTRY=/absolute/path/to/mcp-servers/meeting-assistant/src/index.js
+   TIME_SERVER_MCP_ENTRY=/absolute/path/to/mcp-servers/time-server/src/index.js
+   NEXT_PUBLIC_BACKEND_BASE_URL=http://127.0.0.1:8001
+   NEXT_PUBLIC_LANGGRAPH_BASE_URL=http://127.0.0.1:2024
+   ```
+
+   Without these settings, workflow mode may not discover agents such as `contacts-agent` or `meeting-agent`, and unsupported requests will fall back to the system-level unsupported-task response.
+
 ### Running the Application
 
 #### Option 1: Docker (Recommended)

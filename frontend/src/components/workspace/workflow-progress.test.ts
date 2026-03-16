@@ -11,9 +11,13 @@ import {
 const t = {
   workflowStatus: {
     initializing: "Planning",
+    queued: "Queued and waiting to start...",
+    acknowledged: "Workflow started, understanding your request...",
     planning: "Understanding your request, planning steps…",
+    routing: "Plan ready, dispatching subtasks...",
     resuming: "Resuming previous progress…",
     processing: "Working on your request…",
+    executing: "Subtasks are underway...",
     summarizing: "Tasks done, summarizing results…",
     waitingClarification: "Need more information from you",
     waitingDependency: "Waiting for a related task to finish…",
@@ -111,6 +115,29 @@ describe("workflow progress helpers", () => {
 
     expect(summary?.title).toBe("Need more information from you");
     expect(summary?.detail).toBe("Which data source should I use?");
+    expect(summary?.isWaitingClarification).toBe(true);
+  });
+
+  it("keeps the workflow shell title while using clarification as detail", () => {
+    const summary = getWorkflowProgressSummary({
+      isLoading: true,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        workflow_stage: "executing",
+        workflow_stage_detail: "Running the active room booking task",
+      },
+      tasks: [
+        createTask({
+          id: "task-1",
+          status: "waiting_clarification",
+          clarificationPrompt: "Which room should I reserve?",
+        }),
+      ],
+      t,
+    });
+
+    expect(summary?.title).toBe("Subtasks are underway...");
+    expect(summary?.detail).toBe("Which room should I reserve?");
     expect(summary?.isWaitingClarification).toBe(true);
   });
 

@@ -1,0 +1,28 @@
+{
+  "records": [
+    {
+      "employee_name": "梁萍",
+      "date": "2026-03-05",
+      "period": "全天",
+      "status": "请假",
+      "leave_type": "年假",
+      "detail": "全天年假"
+    },
+    {
+      "employee_name": "李建国",
+      "date": "2026-03-13",
+      "period": "全天",
+      "status": "未请假",
+      "leave_type": "",
+      "detail": "未查询到请假记录"
+    },
+    {
+      "employee_name": "孙琦",
+      "date": "2026-03-13",
+      "period": "全天",
+      "status": "未请假",
+      "leave_type": "",
+      "detail": "未查询到请假记录"
+    }
+  ]
+}

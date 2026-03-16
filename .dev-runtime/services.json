@@ -1,5 +1,5 @@
 ﻿{
-    "started_at":  "2026-03-12T17:42:26",
+    "started_at":  "2026-03-14T13:12:06",
     "mode":  "direct-no-nginx",
     "ports":  {
                   "langgraph":  2024,
@@ -9,17 +9,17 @@
     "processes":  [
                       {
                           "name":  "langgraph",
-                          "pid":  72612,
+                          "pid":  125492,
                           "log":  "E:\\work\\deer-flow\\.dev-runtime\\logs\\langgraph.log"
                       },
                       {
                           "name":  "gateway",
-                          "pid":  80284,
+                          "pid":  42588,
                           "log":  "E:\\work\\deer-flow\\.dev-runtime\\logs\\gateway.log"
                       },
                       {
                           "name":  "frontend",
-                          "pid":  12976,
+                          "pid":  121516,
                           "log":  "E:\\work\\deer-flow\\.dev-runtime\\logs\\frontend.log"
                       }
                   ]

@@ -1,4 +1,5 @@
 @echo off
+setlocal EnableDelayedExpansion
 REM DeerFlow Development Server Startup Script
 
 echo.
@@ -15,6 +16,18 @@ timeout /t 2 /nobreak >nul
 
 REM Create logs directory
 if not exist logs mkdir logs
+
+REM Load repo .env for workflow/domain-agent MCP settings
+if exist .env (
+  for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
+    set "key=%%A"
+    set "value=%%B"
+    if not "!key!"=="" if not "!key:~0,1!"=="#" set "!key!=!value!"
+  )
+)
+
+if "%NEXT_PUBLIC_BACKEND_BASE_URL%"=="" set NEXT_PUBLIC_BACKEND_BASE_URL=http://127.0.0.1:8001
+if "%NEXT_PUBLIC_LANGGRAPH_BASE_URL%"=="" set NEXT_PUBLIC_LANGGRAPH_BASE_URL=http://127.0.0.1:2024
 
 echo.
 echo Services starting up...

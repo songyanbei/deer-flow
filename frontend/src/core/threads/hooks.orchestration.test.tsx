@@ -188,10 +188,7 @@ describe("useThreadStream orchestration hydration", () => {
     });
 
     expect(hydrateTasksMock).not.toHaveBeenCalled();
-    expect(resetTasksBySourceMock).toHaveBeenCalledWith(
-      "multi_agent",
-      "run-1",
-    );
+    expect(resetTasksBySourceMock).toHaveBeenCalledWith("multi_agent", "run-1");
 
     rendered.cleanup();
   });
@@ -317,8 +314,10 @@ describe("useThreadStream orchestration hydration", () => {
         | undefined;
       onCustomEvent?.({
         type: "workflow_stage_changed",
+        run_id: "run-stage-1",
         workflow_stage: "planning",
         workflow_stage_detail: "Book the meeting room",
+        workflow_stage_updated_at: "2026-03-13T10:00:00.000Z",
       });
     });
 
@@ -326,12 +325,14 @@ describe("useThreadStream orchestration hydration", () => {
     expect(latestThread?.values.workflow_stage_detail).toBe(
       "Book the meeting room",
     );
+    expect(latestThread?.values.run_id).toBe("run-stage-1");
 
     rendered.rerender({
       assistantId: "entry_graph",
       threadValues: {
         workflow_stage: null,
         workflow_stage_detail: null,
+        run_id: null,
       },
       isLoading: false,
     });
@@ -378,6 +379,346 @@ describe("useThreadStream orchestration hydration", () => {
       "Run workflow subtasks in parallel.",
     );
     expect(latestThread?.values.run_id).toBe("run-4");
+
+    rendered.cleanup();
+  });
+
+  it("applies newer stage patches for the same run after hydration", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-5",
+        workflow_stage: "planning",
+        workflow_stage_detail: "Planning the room booking",
+        workflow_stage_updated_at: "2026-03-13T10:00:00.000Z",
+      },
+      isLoading: false,
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("planning");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Planning the room booking",
+    );
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-5",
+        workflow_stage: "routing",
+        workflow_stage_detail: "Dispatching the room booking task",
+        workflow_stage_updated_at: "2026-03-13T10:01:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("routing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Dispatching the room booking task",
+    );
+    expect(latestThread?.values.run_id).toBe("run-5");
+
+    rendered.cleanup();
+  });
+
+  it("ignores out-of-order older stage patches for the same run", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-old-stage-1",
+        workflow_stage: "routing",
+        workflow_stage_detail: "Dispatching the task",
+        workflow_stage_updated_at: "2026-03-13T10:05:00.000Z",
+      },
+      isLoading: false,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-old-stage-1",
+        workflow_stage: "planning",
+        workflow_stage_detail: "Older planning update",
+        workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("routing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Dispatching the task",
+    );
+    expect(latestThread?.values.workflow_stage_updated_at).toBe(
+      "2026-03-13T10:05:00.000Z",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("transitions an optimistic acknowledged shell into backend queued for the same run", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+      isLoading: true,
+    });
+
+    await act(async () => {
+      void latestSendMessage?.("thread-1", {
+        text: "Reserve the board room",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-queued-1",
+        resolved_orchestration_mode: "workflow",
+        workflow_stage: "queued",
+        workflow_stage_detail: "Waiting for the workflow worker to start",
+        workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-queued-1");
+    expect(latestThread?.values.workflow_stage).toBe("queued");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Waiting for the workflow worker to start",
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await submitPromise;
+    });
+
+    rendered.cleanup();
+  });
+
+  it("replaces stale stage state when a newer run starts streaming", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-6",
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Conference room A is booked",
+        workflow_stage_updated_at: "2026-03-13T10:02:00.000Z",
+      },
+      isLoading: false,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-7",
+        resolved_orchestration_mode: "workflow",
+        workflow_stage: "acknowledged",
+        workflow_stage_detail: "Book the next meeting room",
+        workflow_stage_updated_at: "2026-03-13T10:03:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-7");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book the next meeting room",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("ignores late stage events from a run that was already replaced", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-6",
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Conference room A is booked",
+        workflow_stage_updated_at: "2026-03-13T10:02:00.000Z",
+      },
+      isLoading: false,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-7",
+        resolved_orchestration_mode: "workflow",
+        workflow_stage: "acknowledged",
+        workflow_stage_detail: "Book conference room B",
+        workflow_stage_updated_at: "2026-03-13T10:03:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-7");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-6",
+        resolved_orchestration_mode: "workflow",
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Late old run event",
+        workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-7");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book conference room B",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("clears the previous run task scope before hydrating a new workflow run", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-task-1",
+        task_pool: [
+          {
+            task_id: "task-1",
+            description: "Old workflow task",
+            status: "RUNNING",
+          },
+        ],
+      },
+      isLoading: false,
+    });
+
+    hydrateTasksMock.mockClear();
+    resetTasksBySourceMock.mockClear();
+
+    rendered.rerender({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-task-2",
+        task_pool: [
+          {
+            task_id: "task-2",
+            description: "New workflow task",
+            status: "PENDING",
+          },
+        ],
+      },
+      isLoading: false,
+    });
+
+    expect(resetTasksBySourceMock).toHaveBeenCalledWith(
+      "multi_agent",
+      "run-task-1",
+    );
+    expect(hydrateTasksMock).toHaveBeenCalledTimes(1);
+    expect(hydrateTasksMock.mock.calls[0]?.[1]).toEqual({
+      source: "multi_agent",
+      runId: "run-task-2",
+    });
+
+    rendered.cleanup();
+  });
+
+  it("recovers a terminal summarizing shell from thread state until the next run replaces it", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-summary-1",
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Conference room A is booked",
+        workflow_stage_updated_at: "2026-03-13T10:06:00.000Z",
+      },
+      isLoading: false,
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("summarizing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Conference room A is booked",
+    );
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "workflow_stage_changed",
+        run_id: "run-summary-2",
+        resolved_orchestration_mode: "workflow",
+        workflow_stage: "acknowledged",
+        workflow_stage_detail: "Book conference room B",
+        workflow_stage_updated_at: "2026-03-13T10:07:00.000Z",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-summary-2");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book conference room B",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("clears the previous run stage when only the new run id has arrived", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-6",
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Conference room A is booked",
+        workflow_stage_updated_at: "2026-03-13T10:02:00.000Z",
+      },
+      isLoading: false,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "orchestration_mode_resolved",
+        run_id: "run-7",
+        resolved_orchestration_mode: "workflow",
+        orchestration_reason: "Structured task detected",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-7");
+    expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
+    expect(latestThread?.values.workflow_stage).toBeNull();
+    expect(latestThread?.values.workflow_stage_detail).toBeNull();
 
     rendered.cleanup();
   });
@@ -429,7 +770,7 @@ describe("useThreadStream orchestration hydration", () => {
     });
 
     expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
-    expect(latestThread?.values.workflow_stage).toBe("queued");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
     expect(latestThread?.values.workflow_stage_detail).toBe(
       "Book the meeting room",
     );
@@ -439,6 +780,115 @@ describe("useThreadStream orchestration hydration", () => {
     }
     await act(async () => {
       await sendPromise;
+    });
+
+    rendered.cleanup();
+  });
+
+  it("keeps the optimistic shell when the thread still holds the previous run stage", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-old",
+        workflow_stage: "summarizing",
+        workflow_stage_detail: "Conference room A is booked",
+        workflow_stage_updated_at: "2026-03-13T10:02:00.000Z",
+      },
+    });
+
+    await act(async () => {
+      void latestSendMessage?.("thread-1", {
+        text: "Book conference room B",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book conference room B",
+    );
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "orchestration_mode_resolved",
+        run_id: "run-9",
+        resolved_orchestration_mode: "workflow",
+        orchestration_reason: "Structured task detected",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-9");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book conference room B",
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await submitPromise;
+    });
+
+    rendered.cleanup();
+  });
+
+  it("keeps the optimistic acknowledged shell until an authoritative stage arrives", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+    });
+
+    await act(async () => {
+      void latestSendMessage?.("thread-1", {
+        text: "Book the board room",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "orchestration_mode_resolved",
+        run_id: "run-8",
+        resolved_orchestration_mode: "workflow",
+        orchestration_reason: "Structured task detected",
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-8");
+    expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book the board room",
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await submitPromise;
     });
 
     rendered.cleanup();

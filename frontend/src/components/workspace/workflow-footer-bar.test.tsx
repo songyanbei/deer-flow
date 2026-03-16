@@ -3,17 +3,16 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { I18nProvider } from "@/core/i18n/context";
-import {
-  SubtasksProvider,
-  useSubtaskContext,
-} from "@/core/tasks/context";
+import { SubtasksProvider, useSubtaskContext } from "@/core/tasks/context";
 import type { TaskViewModel } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
 
 import { WorkflowFooterBar } from "./workflow-footer-bar";
 
 vi.mock("./flip-display", () => ({
-  FlipDisplay: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  FlipDisplay: ({ children }: { children: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
 }));
 
 function createTask(overrides: Partial<TaskViewModel>): TaskViewModel {
@@ -140,6 +139,59 @@ describe("WorkflowFooterBar", () => {
     rendered.cleanup();
   });
 
+  it("shows an acknowledged workflow shell immediately before subtasks exist", () => {
+    const rendered = renderWorkflowFooter([], {
+      workflow_stage: "acknowledged",
+      workflow_stage_detail: "Prepare a workflow for the launch checklist",
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Workflow started, understanding your request...",
+    );
+
+    const trigger = rendered.container.querySelector("button");
+    if (!trigger) {
+      throw new Error("Workflow footer trigger not found.");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Prepare a workflow for the launch checklist",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("recovers a planning shell after refresh before subtasks hydrate", () => {
+    const rendered = renderWorkflowFooter([], {
+      workflow_stage: "planning",
+      workflow_stage_detail: "Breaking the launch work into subtasks",
+      execution_state: "PLANNING_DONE",
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Understanding your request, planning steps",
+    );
+
+    const trigger = rendered.container.querySelector("button");
+    if (!trigger) {
+      throw new Error("Workflow footer trigger not found.");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Breaking the launch work into subtasks",
+    );
+
+    rendered.cleanup();
+  });
+
   it("keeps the routing stage visible until execution starts", () => {
     const rendered = renderWorkflowFooter(
       [
@@ -180,7 +232,7 @@ describe("WorkflowFooterBar", () => {
     );
 
     expect(rendered.container.textContent).toContain(
-      "Tasks done, summarizing results...",
+      "Tasks done, summarizing results",
     );
 
     const trigger = rendered.container.querySelector("button");

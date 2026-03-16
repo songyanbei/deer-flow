@@ -185,6 +185,13 @@ def test_entry_graph_streams_workflow_task_events_incrementally():
 
         event_types = [event["type"] for event in custom_events]
         assert event_types[0] == "orchestration_mode_resolved"
+        stage_events = [
+            event for event in custom_events if event.get("type") == "workflow_stage_changed"
+        ]
+        assert stage_events[0]["workflow_stage"] == "acknowledged"
+        assert stage_events[0]["run_id"].startswith("run_")
+        assert stage_events[1]["workflow_stage"] == "queued"
+        assert stage_events[1]["run_id"] == stage_events[0]["run_id"]
         assert "task_started" in event_types
         assert "task_waiting_dependency" in event_types
         assert "task_resumed" in event_types

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import TypedDict
 
@@ -12,6 +13,10 @@ from src.agents.thread_state import (
     ResolvedOrchestrationMode,
     ThreadState,
     WorkflowStage,
+)
+from src.agents.workflow_resume import (
+    extract_latest_user_input,
+    latest_user_message_is_clarification_answer,
 )
 from src.config.agents_config import load_agent_config
 
@@ -68,7 +73,6 @@ _LEADER_HINTS = (
     "\u641c\u7d22",
     "\u5feb\u901f",
 )
-_CLARIFICATION_KEYWORD = "\u6f84\u6e05"
 _MULTI_GOAL_CONNECTORS = (
     " and ",
     " then ",
@@ -87,52 +91,6 @@ def _normalize_requested_mode(value: object) -> RequestedOrchestrationMode:
         if lowered in _VALID_REQUESTED:
             return lowered  # type: ignore[return-value]
     return "auto"
-
-
-def _content_to_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            part.get("text", "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        )
-    return str(content or "")
-
-
-def _is_human_message(message: object) -> bool:
-    return (
-        getattr(message, "type", None) == "human"
-        or message.__class__.__name__ == "HumanMessage"
-    )
-
-
-def _extract_latest_user_input(state: ThreadState) -> str:
-    for message in reversed(state.get("messages") or []):
-        if _is_human_message(message):
-            return _content_to_text(getattr(message, "content", ""))
-    return ""
-
-
-def _latest_user_message_is_clarification_answer(state: ThreadState) -> bool:
-    messages = state.get("messages") or []
-    if len(messages) < 2:
-        return False
-
-    last = messages[-1]
-    prev = messages[-2]
-    if not _is_human_message(last):
-        return False
-
-    prev_name = getattr(prev, "name", None)
-    prev_content = _content_to_text(getattr(prev, "content", ""))
-    return (
-        prev_name == "ask_clarification"
-        or "clarification" in prev_content.lower()
-        or _CLARIFICATION_KEYWORD in prev_content
-    )
-
 
 def _count_matches(text: str, patterns: tuple[str, ...]) -> int:
     lowered = text.lower()
@@ -169,6 +127,10 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _new_run_id() -> str:
+    return f"run_{uuid.uuid4().hex[:12]}"
+
+
 def _build_workflow_stage_update(
     stage: WorkflowStage | None,
     detail: str | None = None,
@@ -184,10 +146,13 @@ def _emit_workflow_stage(
     writer,
     stage: WorkflowStage,
     detail: str | None = None,
+    *,
+    run_id: str | None = None,
 ) -> None:
     writer(
         {
             "type": "workflow_stage_changed",
+            "run_id": run_id,
             **_build_workflow_stage_update(stage, detail),
         }
     )
@@ -208,7 +173,7 @@ def decide_orchestration(
     existing_resolved_mode = state.get("resolved_orchestration_mode")
 
     if (
-        _latest_user_message_is_clarification_answer(state)
+        latest_user_message_is_clarification_answer(state)
         and existing_resolved_mode in {"leader", "workflow"}
     ):
         return {
@@ -238,7 +203,7 @@ def decide_orchestration(
             "leader_score": 0,
         }
 
-    latest_input = _extract_latest_user_input(state)
+    latest_input = extract_latest_user_input(state)
     workflow_score = 0
     leader_score = 0
 
@@ -270,8 +235,51 @@ def decide_orchestration(
     }
 
 
+def _resolve_workflow_run_id(
+    state: ThreadState,
+    decision: OrchestrationDecision,
+) -> str | None:
+    if decision["resolved_mode"] != "workflow":
+        return None
+
+    existing_run_id = state.get("run_id")
+    if (
+        existing_run_id
+        and latest_user_message_is_clarification_answer(state)
+        and state.get("resolved_orchestration_mode") == "workflow"
+    ):
+        return existing_run_id
+
+    if (
+        existing_run_id
+        and state.get("resolved_orchestration_mode") == "workflow"
+        and state.get("workflow_stage") == "queued"
+        and state.get("execution_state") == "QUEUED"
+    ):
+        return existing_run_id
+
+    return _new_run_id()
+
+
+def _has_authoritative_workflow_stage(
+    state: ThreadState,
+    workflow_run_id: str | None,
+) -> bool:
+    if not workflow_run_id:
+        return False
+    if state.get("run_id") != workflow_run_id:
+        return False
+    stage = state.get("workflow_stage")
+    return stage in {"queued", "planning", "routing", "executing", "summarizing"}
+
+
 def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> dict:
     decision = decide_orchestration(state, config)
+    workflow_run_id = _resolve_workflow_run_id(state, decision)
+    preserve_existing_stage = (
+        decision["resolved_mode"] == "workflow"
+        and _has_authoritative_workflow_stage(state, workflow_run_id)
+    )
     try:
         writer = get_stream_writer()
     except Exception:
@@ -284,13 +292,15 @@ def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> d
                 "requested_orchestration_mode": decision["requested_mode"],
                 "resolved_orchestration_mode": decision["resolved_mode"],
                 "orchestration_reason": decision["reason"],
+                "run_id": workflow_run_id,
             }
         )
-        if decision["resolved_mode"] == "workflow":
+        if decision["resolved_mode"] == "workflow" and not preserve_existing_stage:
             _emit_workflow_stage(
                 writer,
                 "acknowledged",
                 decision["reason"],
+                run_id=workflow_run_id,
             )
 
     result = {
@@ -299,7 +309,9 @@ def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> d
         "orchestration_reason": decision["reason"],
     }
     if decision["resolved_mode"] == "workflow":
-        result.update(_build_workflow_stage_update("acknowledged", decision["reason"]))
+        result["run_id"] = workflow_run_id
+        if not preserve_existing_stage:
+            result.update(_build_workflow_stage_update("acknowledged", decision["reason"]))
     else:
         result.update(_build_workflow_stage_update(None))
     return result

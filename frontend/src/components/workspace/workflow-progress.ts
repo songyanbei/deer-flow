@@ -27,6 +27,32 @@ export type WorkflowProgressSummary = {
   workflowStage?: AgentThreadState["workflow_stage"];
 };
 
+function getWorkflowStageTitle(
+  workflowStage: AgentThreadState["workflow_stage"],
+  t: Translations,
+) {
+  if (workflowStage === "queued") {
+    return t.workflowStatus.queued;
+  }
+  if (workflowStage === "acknowledged") {
+    return t.workflowStatus.acknowledged;
+  }
+  if (workflowStage === "planning") {
+    return t.workflowStatus.planning;
+  }
+  if (workflowStage === "routing") {
+    return t.workflowStatus.routing;
+  }
+  if (workflowStage === "executing") {
+    return t.workflowStatus.executing;
+  }
+  if (workflowStage === "summarizing") {
+    return t.workflowStatus.summarizing;
+  }
+
+  return t.workflowStatus.processing;
+}
+
 export function filterWorkflowTasks(
   tasksById: Record<string, TaskViewModel>,
   orderedTaskIds: string[],
@@ -99,42 +125,26 @@ export function getWorkflowProgressSummary({
 
   let title = t.workflowStatus.processing;
   let detail: string | undefined;
+  const waitingTaskDetail = clarificationTask
+    ? pickFirstNonEmpty([
+        clarificationTask.clarificationPrompt,
+        clarificationTask.statusDetail,
+        clarificationTask.latestUpdate,
+        clarificationTask.description,
+      ])
+    : dependencyTask
+      ? pickFirstNonEmpty([
+          dependencyTask.blockedReason,
+          dependencyTask.statusDetail,
+          dependencyTask.latestUpdate,
+          dependencyTask.description,
+        ])
+      : undefined;
 
-  if (clarificationTask) {
-    title = t.workflowStatus.waitingClarification;
+  if (workflowStage) {
+    title = getWorkflowStageTitle(workflowStage, t);
     detail = pickFirstNonEmpty([
-      clarificationTask.clarificationPrompt,
-      clarificationTask.statusDetail,
-      clarificationTask.latestUpdate,
-      clarificationTask.description,
-    ]);
-  } else if (dependencyTask) {
-    title = t.workflowStatus.waitingDependency;
-    detail = pickFirstNonEmpty([
-      dependencyTask.blockedReason,
-      dependencyTask.statusDetail,
-      dependencyTask.latestUpdate,
-      dependencyTask.description,
-    ]);
-  } else if (
-    workflowStage === "queued" ||
-    workflowStage === "acknowledged" ||
-    workflowStage === "planning" ||
-    workflowStage === "routing" ||
-    workflowStage === "summarizing"
-  ) {
-    if (workflowStage === "queued") {
-      title = t.workflowStatus.queued;
-    } else if (workflowStage === "acknowledged") {
-      title = t.workflowStatus.acknowledged;
-    } else if (workflowStage === "planning") {
-      title = t.workflowStatus.planning;
-    } else if (workflowStage === "routing") {
-      title = t.workflowStatus.routing;
-    } else {
-      title = t.workflowStatus.summarizing;
-    }
-    detail = pickFirstNonEmpty([
+      waitingTaskDetail,
       threadValues.workflow_stage_detail,
       latestCompletedTask?.latestUpdate,
       latestCompletedTask?.result,
@@ -142,6 +152,12 @@ export function getWorkflowProgressSummary({
       threadValues.planner_goal,
       threadValues.orchestration_reason,
     ]);
+  } else if (clarificationTask) {
+    title = t.workflowStatus.waitingClarification;
+    detail = waitingTaskDetail;
+  } else if (dependencyTask) {
+    title = t.workflowStatus.waitingDependency;
+    detail = waitingTaskDetail;
   } else if (activeTaskCount > 0) {
     title = t.workflowStatus.running(activeTaskCount);
     const activeTask = activeTasks[0];
@@ -149,15 +165,6 @@ export function getWorkflowProgressSummary({
       activeTask?.latestUpdate,
       activeTask?.statusDetail,
       activeTask?.description,
-    ]);
-  } else if (workflowStage === "executing") {
-    title = t.workflowStatus.executing;
-    detail = pickFirstNonEmpty([
-      threadValues.workflow_stage_detail,
-      latestCompletedTask?.latestUpdate,
-      latestCompletedTask?.description,
-      threadValues.planner_goal,
-      threadValues.orchestration_reason,
     ]);
   } else if (
     executionState === "PLANNING_RESET" ||
@@ -197,6 +204,6 @@ export function getWorkflowProgressSummary({
     activeTaskCount,
     totalTaskCount,
     isWaitingClarification: Boolean(clarificationTask),
-    workflowStage,
+    ...(workflowStage ? { workflowStage } : {}),
   };
 }

@@ -6,8 +6,17 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from src.agents.executor.executor import _ensure_mcp_ready, _mcp_initialized, executor_node
-from src.agents.graph import route_after_workflow_executor, route_after_workflow_router
+from src.agents.executor.executor import (
+    SYSTEM_FALLBACK_FINAL_MESSAGE,
+    _ensure_mcp_ready,
+    _mcp_initialized,
+    executor_node,
+)
+from src.agents.graph import (
+    route_after_workflow_executor,
+    route_after_workflow_planner,
+    route_after_workflow_router,
+)
 from src.agents.middlewares.help_request_middleware import HelpRequestMiddleware
 from src.agents.orchestration.selector import orchestration_selector_node
 from src.agents.planner.node import planner_node
@@ -34,8 +43,15 @@ def test_planner_invalid_json_returns_error():
                 )
         assert result["execution_state"] == "ERROR"
         assert result["final_result"] == "Planner failed to produce valid structured output."
+        assert result["workflow_stage"] == "planning"
+        assert result["workflow_stage_detail"] == "Planner failed to produce valid structured output."
 
     asyncio.run(_run())
+
+
+def test_planner_queued_state_loops_back_to_planner():
+    assert route_after_workflow_planner({"execution_state": "QUEUED"}) == "planner"
+    assert route_after_workflow_planner({"execution_state": "PLANNING_DONE"}) == "router"
 
 
 def test_orchestration_selector_emits_acknowledged_stage_for_workflow():
@@ -52,9 +68,72 @@ def test_orchestration_selector_emits_acknowledged_stage_for_workflow():
 
     assert result["resolved_orchestration_mode"] == "workflow"
     assert result["workflow_stage"] == "acknowledged"
+    assert result["run_id"].startswith("run_")
     assert events[0]["type"] == "orchestration_mode_resolved"
+    assert events[0]["run_id"] == result["run_id"]
     assert events[1]["type"] == "workflow_stage_changed"
     assert events[1]["workflow_stage"] == "acknowledged"
+    assert events[1]["run_id"] == result["run_id"]
+
+
+def test_orchestration_selector_reuses_run_id_for_workflow_clarification_resume():
+    existing_run_id = "run_existing123"
+    events: list[dict] = []
+
+    with patch(
+        "src.agents.orchestration.selector.get_stream_writer",
+        return_value=events.append,
+    ):
+        result = orchestration_selector_node(
+            {
+                "run_id": existing_run_id,
+                "resolved_orchestration_mode": "workflow",
+                "execution_state": "INTERRUPTED",
+                "task_pool": [
+                    {
+                        "task_id": "task-1",
+                        "description": "Book the meeting room",
+                        "status": "RUNNING",
+                        "clarification_prompt": "Please confirm the attendee identity.",
+                    }
+                ],
+                "messages": [
+                    HumanMessage(content="Book the meeting room"),
+                    AIMessage(content="Please confirm the attendee identity.", name="ask_clarification"),
+                    HumanMessage(content="Wang Xing from Shanghai"),
+                ],
+            },
+            {"configurable": {"requested_orchestration_mode": "workflow"}},
+        )
+
+    assert result["run_id"] == existing_run_id
+    assert events[0]["run_id"] == existing_run_id
+    assert events[1]["run_id"] == existing_run_id
+
+
+def test_orchestration_selector_preserves_enqueue_time_queued_stage():
+    existing_run_id = "run_existing123"
+    events: list[dict] = []
+
+    with patch(
+        "src.agents.orchestration.selector.get_stream_writer",
+        return_value=events.append,
+    ):
+        result = orchestration_selector_node(
+            {
+                "run_id": existing_run_id,
+                "execution_state": "QUEUED",
+                "workflow_stage": "queued",
+                "resolved_orchestration_mode": "workflow",
+                "messages": [HumanMessage(content="Compare two plans and summarize the tradeoffs.")],
+            },
+            {"configurable": {"requested_orchestration_mode": "workflow"}},
+        )
+
+    assert result["run_id"] == existing_run_id
+    assert "workflow_stage" not in result
+    assert events[0]["type"] == "orchestration_mode_resolved"
+    assert len(events) == 1
 
 
 def test_planner_accepts_content_blocks_from_model():
@@ -118,6 +197,66 @@ def test_planner_emits_planning_then_routing_stage_events():
     asyncio.run(_run())
 
 
+def test_planner_emits_queued_before_planning_after_workflow_acknowledged():
+    class PlannerLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse(
+                '[{"description": "book meeting room", "assigned_agent": "meeting-agent"}]'
+            )
+
+    async def _run():
+        queued_events: list[dict] = []
+        with patch("src.agents.planner.node.get_stream_writer", return_value=queued_events.append):
+            queued = await planner_node(
+                {
+                    "messages": [HumanMessage(content="Book the meeting room")],
+                    "run_id": "run_test123",
+                    "workflow_stage": "acknowledged",
+                },
+                {"configurable": {}},
+            )
+
+        assert queued["execution_state"] == "QUEUED"
+        assert queued["workflow_stage"] == "queued"
+        assert queued["run_id"] == "run_test123"
+        assert queued_events[0]["workflow_stage"] == "queued"
+        assert queued_events[0]["run_id"] == "run_test123"
+
+        planning_events: list[dict] = []
+        with patch("src.agents.planner.node.create_chat_model", return_value=PlannerLLM()):
+            with patch(
+                "src.agents.planner.node.list_domain_agents",
+                return_value=[SimpleNamespace(name="meeting-agent", description="Book meetings")],
+            ):
+                with patch(
+                    "src.agents.planner.node.get_stream_writer",
+                    return_value=planning_events.append,
+                ):
+                    result = await planner_node(
+                        {
+                            "messages": [HumanMessage(content="Book the meeting room")],
+                            "run_id": queued["run_id"],
+                            "workflow_stage": queued["workflow_stage"],
+                            "original_input": "Book the meeting room",
+                            "planner_goal": "Book the meeting room",
+                            "task_pool": [],
+                        },
+                        {"configurable": {}},
+                    )
+
+        stage_events = [
+            event for event in planning_events if event.get("type") == "workflow_stage_changed"
+        ]
+        assert [event["workflow_stage"] for event in stage_events] == [
+            "planning",
+            "routing",
+        ]
+        assert all(event["run_id"] == queued["run_id"] for event in stage_events)
+        assert result["workflow_stage"] == "routing"
+
+    asyncio.run(_run())
+
+
 def test_planner_empty_unfinished_tasks_returns_error():
     class EmptyTaskPlannerLLM:
         def __init__(self):
@@ -148,6 +287,8 @@ def test_planner_empty_unfinished_tasks_returns_error():
                 )
         assert second["execution_state"] == "ERROR"
         assert second["final_result"] == "Planner produced no actionable tasks for an unfinished goal."
+        assert second["workflow_stage"] == "summarizing"
+        assert second["workflow_stage_detail"] == "Planner produced no actionable tasks for an unfinished goal."
 
     asyncio.run(_run())
 
@@ -167,6 +308,8 @@ def test_planner_model_invocation_error_returns_visible_error_message():
         assert result["execution_state"] == "ERROR"
         assert result["final_result"] == "Workflow planning failed: Connection error."
         assert result["messages"][0].content == "Workflow planning failed: Connection error."
+        assert result["workflow_stage"] == "planning"
+        assert result["workflow_stage_detail"] == "Workflow planning failed: Connection error."
 
     asyncio.run(_run())
 
@@ -198,6 +341,8 @@ def test_planner_done_with_null_summary_falls_back_to_task_completed():
         assert result["execution_state"] == "DONE"
         assert result["final_result"] == ""
         assert result["messages"][0].content == "Task completed."
+        assert result["workflow_stage"] == "summarizing"
+        assert result["workflow_stage_detail"] == "Room booked"
 
     asyncio.run(_run())
 
@@ -237,8 +382,10 @@ def test_planner_emits_summarizing_stage_before_final_validation():
         ]
         assert stage_events[0]["workflow_stage"] == "summarizing"
         assert stage_events[0]["workflow_stage_detail"] == "Room booked"
-        assert result["workflow_stage"] is None
-        assert result["workflow_stage_detail"] is None
+        assert stage_events[-1]["workflow_stage"] == "summarizing"
+        assert stage_events[-1]["workflow_stage_detail"] == "Room booked"
+        assert result["workflow_stage"] == "summarizing"
+        assert result["workflow_stage_detail"] == "Room booked"
 
     asyncio.run(_run())
 
@@ -278,10 +425,17 @@ def test_planner_run_id_changes_on_new_user_turn_and_reuses_on_clarification():
                             AIMessage(content="Please confirm the employee identity.", name="ask_clarification"),
                             HumanMessage(content="Wang Mingtian from R&D"),
                         ],
-                        "task_pool": [first["task_pool"][0]],
                         "run_id": first["run_id"],
                         "original_input": "Find Wang Mingtian's employee id",
                         "planner_goal": "Find Wang Mingtian's employee id",
+                        "execution_state": "INTERRUPTED",
+                        "task_pool": [
+                            {
+                                **first["task_pool"][0],
+                                "status": "RUNNING",
+                                "clarification_prompt": "Please confirm the employee identity.",
+                            }
+                        ],
                     },
                     {"configurable": {}},
                 )
@@ -289,9 +443,93 @@ def test_planner_run_id_changes_on_new_user_turn_and_reuses_on_clarification():
         assert first["run_id"].startswith("run_")
         assert all(task["run_id"] == first["run_id"] for task in first["task_pool"])
         assert reset["run_id"] != first["run_id"]
-        assert reset["execution_state"] == "PLANNING_RESET"
+        assert reset["execution_state"] == "QUEUED"
+        assert reset["workflow_stage"] == "queued"
         assert clarified["execution_state"] == "RESUMING"
         assert "run_id" not in clarified or clarified["run_id"] == first["run_id"]
+
+    asyncio.run(_run())
+
+
+def test_planner_starts_new_run_when_user_redirects_after_clarification():
+    async def _run():
+        result = await planner_node(
+            {
+                "messages": [
+                    HumanMessage(content="Book the meeting room"),
+                    AIMessage(
+                        content="Which building should I book?",
+                        name="ask_clarification",
+                    ),
+                    HumanMessage(
+                        content="Actually ignore that and draft a quarterly hiring plan instead.",
+                    ),
+                ],
+                "task_pool": [
+                    {
+                        "task_id": "task-1",
+                        "description": "Book the meeting room",
+                        "status": "RUNNING",
+                        "run_id": "run_existing",
+                        "clarification_prompt": "Which building should I book?",
+                        "updated_at": "2026-03-13T10:00:00.000Z",
+                    }
+                ],
+                "run_id": "run_existing",
+                "original_input": "Book the meeting room",
+                "planner_goal": "Book the meeting room",
+                "resolved_orchestration_mode": "workflow",
+                "execution_state": "INTERRUPTED",
+            },
+            {"configurable": {"requested_orchestration_mode": "workflow"}},
+        )
+
+        assert result["execution_state"] == "QUEUED"
+        assert result["workflow_stage"] == "queued"
+        assert result["task_pool"] == []
+        assert result["run_id"] != "run_existing"
+        assert result["original_input"] == (
+            "Actually ignore that and draft a quarterly hiring plan instead."
+        )
+
+    asyncio.run(_run())
+
+
+def test_planner_treats_plain_assistant_clarification_copy_as_new_turn():
+    async def _run():
+        result = await planner_node(
+            {
+                "messages": [
+                    HumanMessage(content="Prepare the report"),
+                    AIMessage(
+                        content="Need clarification: which region should I focus on?",
+                        name="assistant",
+                    ),
+                    HumanMessage(content="Japan only."),
+                ],
+                "task_pool": [
+                    {
+                        "task_id": "task-1",
+                        "description": "Prepare the report",
+                        "status": "RUNNING",
+                        "run_id": "run_existing",
+                        "clarification_prompt": "Which region should I focus on?",
+                        "updated_at": "2026-03-13T10:00:00.000Z",
+                    }
+                ],
+                "run_id": "run_existing",
+                "original_input": "Prepare the report",
+                "planner_goal": "Prepare the report",
+                "resolved_orchestration_mode": "workflow",
+                "execution_state": "INTERRUPTED",
+            },
+            {"configurable": {"requested_orchestration_mode": "workflow"}},
+        )
+
+        assert result["execution_state"] == "QUEUED"
+        assert result["workflow_stage"] == "queued"
+        assert result["run_id"] != "run_existing"
+        assert result["original_input"] == "Japan only."
 
     asyncio.run(_run())
 
@@ -1118,7 +1356,8 @@ def test_router_interrupts_when_dependency_task_failed():
         assert "Directory API unavailable" in task["clarification_prompt"]
         assert result["messages"][0].name == "ask_clarification"
 
-    asyncio.run(_run())
+    with patch("src.agents.router.semantic_router.list_domain_agents", return_value=[]):
+        asyncio.run(_run())
 
 
 def test_router_retries_failed_direct_helper_once_when_hint_is_unambiguous():
@@ -1243,6 +1482,44 @@ def test_executor_generates_run_id_when_called_with_legacy_running_task(monkeypa
 
         assert result["task_pool"][0]["run_id"].startswith("run_")
         assert all(event["run_id"] == result["task_pool"][0]["run_id"] for event in events)
+
+    asyncio.run(_run())
+
+
+def test_executor_finishes_system_fallback_with_terminal_message():
+    events: list[dict] = []
+
+    async def _run():
+        with patch("src.agents.executor.executor.get_stream_writer", return_value=events.append):
+            result = await executor_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "Tell the user room booking is unsupported",
+                            "run_id": "run_fallback123",
+                            "assigned_agent": "SYSTEM_FALLBACK",
+                            "status": "RUNNING",
+                        }
+                    ]
+                },
+                {"configurable": {}},
+            )
+
+        assert result["execution_state"] == "DONE"
+        assert result["final_result"] == SYSTEM_FALLBACK_FINAL_MESSAGE
+        assert result["messages"][0].content == SYSTEM_FALLBACK_FINAL_MESSAGE
+        assert result["workflow_stage"] == "summarizing"
+        assert result["workflow_stage_detail"] == SYSTEM_FALLBACK_FINAL_MESSAGE
+        assert result["task_pool"][0]["status"] == "DONE"
+        assert result["task_pool"][0]["result"] == SYSTEM_FALLBACK_FINAL_MESSAGE
+        assert [event["type"] for event in events] == [
+            "task_started",
+            "task_completed",
+            "workflow_stage_changed",
+        ]
+        assert events[1]["result"] == SYSTEM_FALLBACK_FINAL_MESSAGE
+        assert events[2]["workflow_stage"] == "summarizing"
 
     asyncio.run(_run())
 

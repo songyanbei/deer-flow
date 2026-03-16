@@ -1,0 +1,9 @@
+*
+!.gitignore
+!agents/
+agents/*
+!agents/*/
+!agents/*/config.yaml
+!agents/*/SOUL.md
+!agents/*/hr_mcp_server.py
+!agents/*/leave_records.json

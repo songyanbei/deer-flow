@@ -1,0 +1,21 @@
+name: contacts-agent
+engine_type: ReadOnly_Explorer
+domain: contacts
+description: |
+  拥有完整的企业员工和组织架构查询能力，数据覆盖约2000名员工。
+  核心能力：
+  1. 按姓名搜索员工，获取工号、手机、邮箱、openId、部门路径等信息
+  2. 按工号批量查询员工详情（支持字段过滤）
+  3. 查询部门成员列表，支持按城市(Base地)过滤，返回 openId 等信息
+  4. 查询部门基础信息（成员数、层级等）
+  5. 获取全量部门列表（扁平或树状结构）
+  适用场景：为会议系统提供 openId、查联系方式、查部门归属、查同事信息。
+  不具备任何写入、修改、创建或删除操作的能力。
+tool_groups: []  # only MCP tools; no web/bash
+available_skills:
+  - contacts
+mcp_servers:
+  - name: contacts
+    command: node
+    args:
+      - $CONTACTS_MCP_ENTRY

@@ -1,0 +1,17 @@
+name: hr-agent
+domain: hr
+description: |
+  拥有 HR 域的数据查询能力，专注于员工考勤和请假状态查询。不能执行任何修改操作。
+  核心能力：查询指定员工在指定时间段内的请假记录、考勤状态。
+  【重要边界】：本智能体不具备查询员工 openId、姓名、工号、城市、部门、联系方式等人员基础信息的能力。
+  人员基础信息请找通讯录智能体（contacts-agent）。
+tool_groups: []  # only MCP tools; no web/bash
+available_skills:
+  - hr
+mcp_servers:
+  - name: hr-attendance
+    command: uv
+    args:
+      - run
+      - python
+      - .deer-flow/agents/hr-agent/hr_mcp_server.py

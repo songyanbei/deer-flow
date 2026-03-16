@@ -10,6 +10,8 @@ from unittest.mock import patch
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
+from src.agents.executor.executor import SYSTEM_FALLBACK_FINAL_MESSAGE
+
 
 class DummyResponse:
     def __init__(self, content):
@@ -78,6 +80,15 @@ def test_multi_agent_graph_end_to_end():
 
         with ExitStack() as stack:
             stack.enter_context(patch("src.agents.planner.node.create_chat_model", return_value=planner_llm))
+            stack.enter_context(
+                patch(
+                    "src.agents.router.semantic_router.list_domain_agents",
+                    return_value=[
+                        type("Agent", (), {"name": "contacts-agent", "description": "Lookup employees"})(),
+                        type("Agent", (), {"name": "hr-agent", "description": "Lookup leave status"})(),
+                    ],
+                )
+            )
             stack.enter_context(patch("src.agents.executor.executor._ensure_mcp_ready", return_value=None))
             stack.enter_context(patch("src.agents.executor.executor.make_lead_agent", create=True, new=make_lead_agent_stub(domain_stub)))
             stack.enter_context(patch("src.agents.lead_agent.agent.make_lead_agent", new=make_lead_agent_stub(domain_stub)))
@@ -112,6 +123,8 @@ def test_multi_agent_graph_end_to_end():
             assert final_state.get("run_id") == first_state.get("run_id")
             assert final_state.get("final_result") == "Employee ID is A-1001 and there is no active leave record."
             assert final_state.get("planner_goal") == "Check whether Wang Mingtian is on leave and tell me the employee ID."
+            assert final_state.get("workflow_stage") == "summarizing"
+            assert final_state.get("workflow_stage_detail") == "Employee ID is A-1001 and there is no active leave record."
             assert len(final_state.get("verified_facts", {})) == 2
             assert all(t["status"] == "DONE" for t in final_state.get("task_pool", []))
             assert all(t["run_id"] == final_state.get("run_id") for t in final_state.get("task_pool", []))
@@ -202,6 +215,8 @@ def test_multi_agent_graph_request_help_round_trip():
 
             assert final_state.get("execution_state") == "DONE"
             assert final_state.get("final_result") == "Meeting booked for Wang Xing in Shanghai."
+            assert final_state.get("workflow_stage") == "summarizing"
+            assert final_state.get("workflow_stage_detail") == "Meeting booked for Wang Xing in Shanghai."
             assert len(final_state.get("verified_facts", {})) == 2
             parent_task = next(task for task in final_state["task_pool"] if task["assigned_agent"] == "meeting-agent")
             helper_task = next(task for task in final_state["task_pool"] if task["assigned_agent"] == "contacts-agent")
@@ -214,5 +229,47 @@ def test_multi_agent_graph_request_help_round_trip():
                 "task_resumed",
                 "task_completed",
             }
+
+    asyncio.run(_run())
+
+
+def test_multi_agent_graph_terminates_on_system_fallback():
+    class UnsupportedPlannerLLM:
+        async def ainvoke(self, _messages):
+            return DummyResponse(
+                '[{"description": "Tell the user this request is unsupported", "assigned_agent": "SYSTEM_FALLBACK"}]'
+            )
+
+    async def _run():
+        from src.agents.graph import build_multi_agent_graph_for_test
+
+        planner_llm = UnsupportedPlannerLLM()
+        checkpointer = MemorySaver()
+        events: list[dict] = []
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("src.agents.planner.node.create_chat_model", return_value=planner_llm))
+            stack.enter_context(patch("src.agents.router.semantic_router.list_domain_agents", return_value=[]))
+            stack.enter_context(patch("src.agents.executor.executor.get_stream_writer", return_value=events.append))
+
+            graph = build_multi_agent_graph_for_test(checkpointer=checkpointer)
+            thread_id = str(uuid.uuid4())
+            config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 20}
+
+            final_state = await graph.ainvoke(
+                {"messages": [HumanMessage(content="Book a meeting room for tomorrow morning.")]},
+                config=config,
+            )
+
+            assert final_state.get("execution_state") == "DONE"
+            assert final_state.get("final_result") == SYSTEM_FALLBACK_FINAL_MESSAGE
+            assert final_state.get("messages")[-1].content == SYSTEM_FALLBACK_FINAL_MESSAGE
+            assert final_state.get("workflow_stage") == "summarizing"
+            assert final_state.get("workflow_stage_detail") == SYSTEM_FALLBACK_FINAL_MESSAGE
+            assert len(final_state.get("task_pool", [])) == 1
+            assert final_state["task_pool"][0]["assigned_agent"] == "SYSTEM_FALLBACK"
+            assert final_state["task_pool"][0]["status"] == "DONE"
+            assert len([event for event in events if event["type"] == "task_completed"]) == 1
+            assert not [event for event in events if event["type"] == "task_failed"]
 
     asyncio.run(_run())

@@ -46,7 +46,7 @@ def build_entry_graph(config: RunnableConfig | None = None):
     graph.add_conditional_edges(
         "workflow_planner",
         route_after_workflow_planner,
-        {END: END, "router": "workflow_router"},
+        {END: END, "planner": "workflow_planner", "router": "workflow_router"},
     )
     graph.add_conditional_edges(
         "workflow_router",

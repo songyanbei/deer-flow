@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "demo:save": "node scripts/save-demo.js",
-    "build": "next build",
+    "build": "node scripts/run-next-with-root-env.mjs build",
     "check": "next lint && tsc --noEmit",
-    "dev": "next dev --turbo",
+    "dev": "node scripts/run-next-with-root-env.mjs dev --turbo",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
-    "preview": "next build && next start",
-    "start": "next start",
+    "preview": "node scripts/run-next-with-root-env.mjs build && node scripts/run-next-with-root-env.mjs start",
+    "start": "node scripts/run-next-with-root-env.mjs start",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"
   },

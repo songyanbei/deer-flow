@@ -11,13 +11,21 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
-from src.agents.thread_state import HelpRequestPayload, TaskStatus, ThreadState, VerifiedFact
+from src.agents.thread_state import (
+    HelpRequestPayload,
+    TaskStatus,
+    ThreadState,
+    VerifiedFact,
+    WorkflowStage,
+)
+from src.agents.workflow_resume import extract_latest_clarification_answer
 from src.config.agents_config import load_agent_config
 
 logger = logging.getLogger(__name__)
 
 _mcp_initialized: set[str] = set()
 _NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
+SYSTEM_FALLBACK_FINAL_MESSAGE = "当前系统暂时无法处理该类问题，后续可按需扩展相关能力。"
 
 
 def _utc_now_iso() -> str:
@@ -39,25 +47,6 @@ def _normalize_text_value(value: Any) -> str:
     if text.lower() in _NULLISH_TEXT_VALUES:
         return ""
     return text
-
-
-def _extract_latest_clarification_answer(state: ThreadState) -> str:
-    messages = state.get("messages") or []
-    if len(messages) < 2:
-        return ""
-
-    last = messages[-1]
-    prev = messages[-2]
-    is_last_human = getattr(last, "type", None) == "human" or last.__class__.__name__ == "HumanMessage"
-    if not is_last_human:
-        return ""
-
-    prev_name = getattr(prev, "name", None)
-    prev_content = _content_to_text(getattr(prev, "content", ""))
-    if prev_name == "ask_clarification" or "clarif" in prev_content.lower() or "clarification" in prev_content.lower():
-        return _content_to_text(getattr(last, "content", ""))
-    return ""
-
 
 def _fact_value_to_text(value: Any) -> str:
     if isinstance(value, str):
@@ -150,6 +139,33 @@ def _resolve_task_run_id(state: ThreadState, task: TaskStatus) -> str:
     return task.get("run_id") or state.get("run_id") or f"run_{uuid.uuid4().hex[:12]}"
 
 
+def _build_workflow_stage_update(
+    stage: WorkflowStage | None,
+    detail: str | None = None,
+) -> dict:
+    return {
+        "workflow_stage": stage,
+        "workflow_stage_detail": detail,
+        "workflow_stage_updated_at": _utc_now_iso(),
+    }
+
+
+def _emit_workflow_stage(
+    writer: Callable[[dict[str, Any]], None],
+    stage: WorkflowStage,
+    detail: str | None = None,
+    *,
+    run_id: str | None = None,
+) -> None:
+    writer(
+        {
+            "type": "workflow_stage_changed",
+            "run_id": run_id,
+            **_build_workflow_stage_update(stage, detail),
+        }
+    )
+
+
 def _emit_task_event(writer: Callable[[dict[str, Any]], None], event_type: str, task: TaskStatus, agent_name: str, **extra: Any) -> None:
     payload = {
         "type": event_type,
@@ -165,10 +181,12 @@ def _emit_task_event(writer: Callable[[dict[str, Any]], None], event_type: str, 
 
 
 def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState, writer: Callable[[dict[str, Any]], None]) -> dict:
+    run_id = _resolve_task_run_id(state, task)
     if agent_name == "SYSTEM_FINISH":
         final = _get_latest_fact_text(state)
         done_task: TaskStatus = {
             **task,
+            "run_id": run_id,
             "status": "DONE",
             "result": final,
             "status_detail": "Task completed by system shortcut",
@@ -177,22 +195,50 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
             "blocked_reason": None,
             "updated_at": _utc_now_iso(),
         }
-        _emit_task_event(writer, "task_completed", task, agent_name, result=final)
-        return {"task_pool": [done_task], "execution_state": "EXECUTING_DONE", "final_result": final}
+        _emit_task_event(writer, "task_completed", done_task, agent_name, result=final)
+        _emit_workflow_stage(writer, "summarizing", final, run_id=run_id)
+        return {
+            "task_pool": [done_task],
+            "execution_state": "DONE",
+            "final_result": final,
+            "run_id": run_id,
+            "messages": [AIMessage(content=final)],
+            **_build_workflow_stage_update("summarizing", final),
+        }
 
-    fallback_msg = "System fallback: no domain agent could handle this task."
-    failed_task: TaskStatus = {
+    fallback_task: TaskStatus = {
         **task,
-        "status": "FAILED",
-        "error": fallback_msg,
-        "status_detail": fallback_msg,
+        "run_id": run_id,
+        "status": "DONE",
+        "result": SYSTEM_FALLBACK_FINAL_MESSAGE,
+        "status_detail": "Completed by system fallback",
         "clarification_prompt": None,
         "request_help": None,
         "blocked_reason": None,
         "updated_at": _utc_now_iso(),
     }
-    _emit_task_event(writer, "task_failed", task, agent_name, error=fallback_msg)
-    return {"task_pool": [failed_task], "execution_state": "EXECUTING_DONE"}
+    _emit_task_event(
+        writer,
+        "task_completed",
+        fallback_task,
+        agent_name,
+        result=SYSTEM_FALLBACK_FINAL_MESSAGE,
+        status_detail="Completed by system fallback",
+    )
+    _emit_workflow_stage(
+        writer,
+        "summarizing",
+        SYSTEM_FALLBACK_FINAL_MESSAGE,
+        run_id=run_id,
+    )
+    return {
+        "task_pool": [fallback_task],
+        "execution_state": "DONE",
+        "final_result": SYSTEM_FALLBACK_FINAL_MESSAGE,
+        "run_id": run_id,
+        "messages": [AIMessage(content=SYSTEM_FALLBACK_FINAL_MESSAGE)],
+        **_build_workflow_stage_update("summarizing", SYSTEM_FALLBACK_FINAL_MESSAGE),
+    }
 
 
 def _extract_agent_output(messages: list[Any]) -> str:
@@ -326,7 +372,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         from src.agents.lead_agent.agent import make_lead_agent
 
         domain_agent = make_lead_agent(agent_config_override)
-        clarification_answer = _extract_latest_clarification_answer(state)
+        clarification_answer = extract_latest_clarification_answer(state)
         context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
         _emit_task_event(
             writer,

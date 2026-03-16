@@ -2,6 +2,11 @@
 
 .PHONY: help config check install dev stop clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway
 
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
+
 help:
 	@echo "DeerFlow Development Commands:"
 	@echo "  make config          - Generate local config files (aborts if config already exists)"
@@ -27,7 +32,6 @@ config:
 	fi
 	@cp config.example.yaml config.yaml
 	@test -f .env || cp .env.example .env
-	@test -f frontend/.env || cp frontend/.env.example frontend/.env
 
 # Check required tools
 check:

@@ -24,6 +24,9 @@ def route_after_workflow_planner(state: ThreadState) -> str:
     if exec_state in _TERMINAL_STATES:
         logger.debug("[Graph] planner -> END (execution_state=%s)", exec_state)
         return END
+    if exec_state == "QUEUED":
+        logger.debug("[Graph] planner -> planner (execution_state=QUEUED)")
+        return "planner"
     logger.debug("[Graph] planner -> router (execution_state=%s)", exec_state)
     return "router"
 
@@ -75,7 +78,7 @@ def _compile_multi_agent_graph(checkpointer=None):
     graph.add_node("executor", executor_node)
 
     graph.add_edge(START, "planner")
-    graph.add_conditional_edges("planner", route_after_workflow_planner, {END: END, "router": "router"})
+    graph.add_conditional_edges("planner", route_after_workflow_planner, {END: END, "planner": "planner", "router": "router"})
     graph.add_conditional_edges("router", route_after_workflow_router, {END: END, "planner": "planner", "executor": "executor"})
     graph.add_conditional_edges("executor", route_after_workflow_executor, {END: END, "planner": "planner", "router": "router"})
 

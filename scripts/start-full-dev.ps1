@@ -13,6 +13,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeDir = Join-Path $repoRoot '.dev-runtime'
 $logDir = Join-Path $runtimeDir 'logs'
 $stateFile = Join-Path $runtimeDir 'services.json'
+$envFile = Join-Path $repoRoot '.env'
 
 function Ensure-Directory([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -57,8 +58,52 @@ function Start-LoggedProcess([string]$Name, [string]$Command) {
     return $process
 }
 
+function Import-DotEnvFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    foreach ($line in Get-Content -Path $Path) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) {
+            continue
+        }
+
+        $separatorIndex = $trimmed.IndexOf('=')
+        if ($separatorIndex -lt 1) {
+            continue
+        }
+
+        $key = $trimmed.Substring(0, $separatorIndex).Trim()
+        $value = $trimmed.Substring($separatorIndex + 1).Trim()
+        if ($value.Length -ge 2 -and (
+            ($value.StartsWith('"') -and $value.EndsWith('"')) -or
+            ($value.StartsWith("'") -and $value.EndsWith("'"))
+        )) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+        [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
+    }
+}
+
 Ensure-Directory $runtimeDir
 Ensure-Directory $logDir
+Import-DotEnvFile $envFile
+
+if (-not $env:NEXT_PUBLIC_BACKEND_BASE_URL) {
+    [System.Environment]::SetEnvironmentVariable(
+        'NEXT_PUBLIC_BACKEND_BASE_URL',
+        "http://127.0.0.1:$GatewayPort",
+        'Process'
+    )
+}
+if (-not $env:NEXT_PUBLIC_LANGGRAPH_BASE_URL) {
+    [System.Environment]::SetEnvironmentVariable(
+        'NEXT_PUBLIC_LANGGRAPH_BASE_URL',
+        "http://127.0.0.1:$LangGraphPort",
+        'Process'
+    )
+}
 
 if (-not $NoStop) {
     & (Join-Path $PSScriptRoot 'stop-full-dev.ps1') -Quiet
@@ -73,7 +118,7 @@ $frontendDir = Join-Path $repoRoot 'frontend'
 
 $langgraphCmd = "cd /d `"$backendDir`" && uv run langgraph dev --no-browser --allow-blocking --no-reload --port $LangGraphPort > `"$langgraphLog`" 2>&1"
 $gatewayCmd = "cd /d `"$backendDir`" && uv run uvicorn src.gateway.app:app --host 127.0.0.1 --port $GatewayPort > `"$gatewayLog`" 2>&1"
-$frontendCmd = "cd /d `"$frontendDir`" && set NEXT_PUBLIC_BACKEND_BASE_URL=http://127.0.0.1:$GatewayPort && set NEXT_PUBLIC_LANGGRAPH_BASE_URL=http://127.0.0.1:$LangGraphPort && pnpm.cmd exec next dev --hostname 127.0.0.1 --port $FrontendPort > `"$frontendLog`" 2>&1"
+$frontendCmd = "cd /d `"$frontendDir`" && pnpm.cmd exec next dev --hostname 127.0.0.1 --port $FrontendPort > `"$frontendLog`" 2>&1"
 
 Write-Host 'Starting LangGraph...'
 $langgraphProcess = Start-LoggedProcess -Name 'LangGraph' -Command $langgraphCmd
@@ -116,5 +161,3 @@ Write-Host "  $langgraphLog"
 Write-Host ''
 Write-Host 'Stop everything with:'
 Write-Host "  powershell -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot 'stop-full-dev.ps1')`""
-
-

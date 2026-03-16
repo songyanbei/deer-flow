@@ -88,9 +88,12 @@ type LocalWorkflowShell = {
   stage: NonNullable<AgentThreadState["workflow_stage"]>;
   detail?: string;
   updatedAt: string;
+  previousRunId: string | null;
 };
 
-const WORKFLOW_STAGES = new Set<NonNullable<AgentThreadState["workflow_stage"]>>([
+const WORKFLOW_STAGES = new Set<
+  NonNullable<AgentThreadState["workflow_stage"]>
+>([
   "queued",
   "acknowledged",
   "planning",
@@ -110,28 +113,194 @@ function isWorkflowStage(
   );
 }
 
-function createLocalWorkflowShell(detail?: string): LocalWorkflowShell {
+function createLocalWorkflowShell(
+  detail?: string,
+  previousRunId?: string | null,
+): LocalWorkflowShell {
   return {
-    stage: "queued",
+    stage: "acknowledged",
     detail: detail?.trim() || undefined,
     updatedAt: new Date().toISOString(),
+    previousRunId: previousRunId ?? null,
   };
 }
 
-function mergePatchedThreadValue<T>(
-  value: T | null | undefined,
-  patch: T | undefined,
-  isLoading: boolean,
+function parseWorkflowStageUpdatedAt(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function shouldPreferIncomingStage(
+  current:
+    | ThreadEventPatch
+    | Pick<
+        AgentThreadState,
+        | "workflow_stage"
+        | "workflow_stage_detail"
+        | "workflow_stage_updated_at"
+        | "run_id"
+      >,
+  incoming: ThreadEventPatch,
 ) {
-  if (value !== undefined && value !== null) {
-    return value;
+  const currentTime = parseWorkflowStageUpdatedAt(
+    current.workflow_stage_updated_at,
+  );
+  const incomingTime = parseWorkflowStageUpdatedAt(
+    incoming.workflow_stage_updated_at,
+  );
+
+  if (incomingTime !== null) {
+    if (currentTime === null) {
+      return true;
+    }
+    return incomingTime >= currentTime;
   }
 
-  if (isLoading && patch !== undefined) {
-    return patch;
+  if (incoming.workflow_stage && current.workflow_stage == null) {
+    return true;
   }
 
-  return value;
+  if (incoming.workflow_stage_detail && current.workflow_stage_detail == null) {
+    return true;
+  }
+
+  return false;
+}
+
+function mergeThreadEventPatch(
+  current: ThreadEventPatch,
+  incoming: ThreadEventPatch,
+  staleRunIds?: ReadonlySet<string>,
+): ThreadEventPatch {
+  if (Object.keys(current).length === 0) {
+    return incoming;
+  }
+
+  const currentRunId = current.run_id ?? null;
+  const incomingRunId = incoming.run_id ?? null;
+
+  if (
+    incomingRunId !== null &&
+    (currentRunId === null || incomingRunId !== currentRunId)
+  ) {
+    if (staleRunIds?.has(incomingRunId)) {
+      return current;
+    }
+    return incoming;
+  }
+
+  const preferIncomingStage = shouldPreferIncomingStage(current, incoming);
+
+  return {
+    resolved_orchestration_mode:
+      incoming.resolved_orchestration_mode ??
+      current.resolved_orchestration_mode,
+    orchestration_reason:
+      incoming.orchestration_reason ?? current.orchestration_reason,
+    workflow_stage: preferIncomingStage
+      ? (incoming.workflow_stage ?? current.workflow_stage)
+      : current.workflow_stage,
+    workflow_stage_detail: preferIncomingStage
+      ? (incoming.workflow_stage_detail ?? current.workflow_stage_detail)
+      : current.workflow_stage_detail,
+    workflow_stage_updated_at: preferIncomingStage
+      ? (incoming.workflow_stage_updated_at ??
+        current.workflow_stage_updated_at)
+      : current.workflow_stage_updated_at,
+    run_id: incoming.run_id ?? current.run_id,
+  };
+}
+
+function mergeThreadValuesWithPatch(
+  values: AgentThreadState,
+  patch: ThreadEventPatch,
+  isLoading: boolean,
+  hasLocalWorkflowShell: boolean,
+) {
+  if (Object.keys(patch).length === 0) {
+    return values;
+  }
+
+  const valueRunId = values.run_id ?? null;
+  const patchRunId = patch.run_id ?? null;
+  const replacesRun =
+    patchRunId !== null && valueRunId !== null && patchRunId !== valueRunId;
+  const fillsLoadingGap =
+    isLoading && patchRunId !== null && valueRunId === null;
+  const preferPatchStage = shouldPreferIncomingStage(values, patch);
+  const canApplyPatchStage =
+    preferPatchStage &&
+    (isLoading || valueRunId !== null || hasLocalWorkflowShell);
+  const mergedValues: AgentThreadState = { ...values };
+
+  if (replacesRun || fillsLoadingGap) {
+    mergedValues.run_id = patch.run_id ?? mergedValues.run_id ?? null;
+    mergedValues.resolved_orchestration_mode =
+      patch.resolved_orchestration_mode ??
+      mergedValues.resolved_orchestration_mode ??
+      null;
+    mergedValues.orchestration_reason =
+      patch.orchestration_reason ?? mergedValues.orchestration_reason ?? null;
+    // A newly identified run must not reuse the previous run's stage shell.
+    mergedValues.workflow_stage = patch.workflow_stage ?? null;
+    mergedValues.workflow_stage_detail = patch.workflow_stage_detail ?? null;
+    mergedValues.workflow_stage_updated_at =
+      patch.workflow_stage_updated_at ?? null;
+    return mergedValues;
+  }
+
+  if (canApplyPatchStage) {
+    mergedValues.workflow_stage =
+      patch.workflow_stage ?? mergedValues.workflow_stage ?? null;
+    mergedValues.workflow_stage_detail =
+      patch.workflow_stage_detail ?? mergedValues.workflow_stage_detail ?? null;
+    mergedValues.workflow_stage_updated_at =
+      patch.workflow_stage_updated_at ??
+      mergedValues.workflow_stage_updated_at ??
+      null;
+    mergedValues.run_id = patch.run_id ?? mergedValues.run_id ?? null;
+  }
+
+  if (isLoading || canApplyPatchStage) {
+    if (patch.resolved_orchestration_mode != null) {
+      mergedValues.resolved_orchestration_mode =
+        patch.resolved_orchestration_mode;
+    }
+    if (patch.orchestration_reason != null) {
+      mergedValues.orchestration_reason = patch.orchestration_reason;
+    }
+  }
+
+  if (isLoading && mergedValues.run_id == null) {
+    mergedValues.run_id = patch.run_id ?? null;
+  }
+
+  return mergedValues;
+}
+
+function shouldClearLocalWorkflowShell(
+  localWorkflowShell: LocalWorkflowShell,
+  values: AgentThreadState,
+  patch: ThreadEventPatch,
+) {
+  if (patch.workflow_stage != null) {
+    return true;
+  }
+
+  if (values.workflow_stage == null) {
+    return false;
+  }
+
+  const authoritativeRunId = values.run_id ?? null;
+  if (authoritativeRunId == null) {
+    return false;
+  }
+
+  return authoritativeRunId !== localWorkflowShell.previousRunId;
 }
 
 export type ThreadStreamOptions = {
@@ -171,6 +340,7 @@ export function useThreadStream({
   const [localWorkflowShell, setLocalWorkflowShell] =
     useState<LocalWorkflowShell | null>(null);
   const hadWorkflowHydrationRef = useRef(false);
+  const staleRunIdsRef = useRef<Set<string>>(new Set());
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
     assistantId,
@@ -195,20 +365,22 @@ export function useThreadStream({
     onCustomEvent(event: unknown) {
       const patch = extractThreadEventPatch(event);
       if (patch) {
-        setEventPatch((current) => ({
-          resolved_orchestration_mode:
-            patch.resolved_orchestration_mode ??
-            current.resolved_orchestration_mode,
-          orchestration_reason:
-            patch.orchestration_reason ?? current.orchestration_reason,
-          workflow_stage: patch.workflow_stage ?? current.workflow_stage,
-          workflow_stage_detail:
-            patch.workflow_stage_detail ?? current.workflow_stage_detail,
-          workflow_stage_updated_at:
-            patch.workflow_stage_updated_at ??
-            current.workflow_stage_updated_at,
-          run_id: patch.run_id ?? current.run_id,
-        }));
+        setEventPatch((current) => {
+          const currentRunId = current.run_id ?? thread.values.run_id ?? null;
+          const incomingRunId = patch.run_id ?? null;
+          if (
+            currentRunId !== null &&
+            incomingRunId !== null &&
+            currentRunId !== incomingRunId
+          ) {
+            staleRunIdsRef.current.add(currentRunId);
+          }
+          return mergeThreadEventPatch(
+            current,
+            patch,
+            staleRunIdsRef.current,
+          );
+        });
       }
 
       if (typeof event !== "object" || event === null || !("type" in event)) {
@@ -239,6 +411,7 @@ export function useThreadStream({
     setLocalWorkflowShell(null);
     hadWorkflowHydrationRef.current = false;
     hydratedRunIdRef.current = null;
+    staleRunIdsRef.current = new Set();
   }, [_threadId]);
 
   useEffect(() => {
@@ -246,71 +419,66 @@ export function useThreadStream({
       return;
     }
 
-    const hasAuthoritativeWorkflow =
-      thread.values.resolved_orchestration_mode === "workflow" ||
-      eventPatch.resolved_orchestration_mode === "workflow" ||
-      thread.values.workflow_stage != null ||
-      eventPatch.workflow_stage != null;
-
-    if (hasAuthoritativeWorkflow) {
+    if (
+      shouldClearLocalWorkflowShell(
+        localWorkflowShell,
+        thread.values,
+        eventPatch,
+      )
+    ) {
       setLocalWorkflowShell(null);
     }
   }, [
-    eventPatch.resolved_orchestration_mode,
+    eventPatch,
     eventPatch.workflow_stage,
     localWorkflowShell,
-    thread.values.resolved_orchestration_mode,
+    thread.values.run_id,
     thread.values.workflow_stage,
   ]);
 
-  const mergedValues = useMemo<AgentThreadState>(
-    () => ({
-      ...thread.values,
-      resolved_orchestration_mode:
-        mergePatchedThreadValue(
-          thread.values.resolved_orchestration_mode,
-          eventPatch.resolved_orchestration_mode,
-          thread.isLoading,
-        ) ??
-        (localWorkflowShell ? "workflow" : null),
-      orchestration_reason:
-        mergePatchedThreadValue(
-          thread.values.orchestration_reason,
-          eventPatch.orchestration_reason,
-          thread.isLoading,
-        ) ?? null,
-      workflow_stage:
-        mergePatchedThreadValue(
-          thread.values.workflow_stage,
-          eventPatch.workflow_stage,
-          thread.isLoading,
-        ) ??
-        localWorkflowShell?.stage ??
-        null,
-      workflow_stage_detail:
-        mergePatchedThreadValue(
-          thread.values.workflow_stage_detail,
-          eventPatch.workflow_stage_detail,
-          thread.isLoading,
-        ) ??
-        localWorkflowShell?.detail ??
-        null,
-      workflow_stage_updated_at:
-        mergePatchedThreadValue(
-          thread.values.workflow_stage_updated_at,
-          eventPatch.workflow_stage_updated_at,
-          thread.isLoading,
-        ) ??
-        localWorkflowShell?.updatedAt ??
-        null,
-      run_id:
-        mergePatchedThreadValue(
-          thread.values.run_id,
-          eventPatch.run_id,
-          thread.isLoading,
-        ) ?? null,
-    }),
+  const mergedPatchedValues = useMemo(
+    () =>
+      mergeThreadValuesWithPatch(
+        thread.values,
+        eventPatch,
+        thread.isLoading,
+        localWorkflowShell != null,
+      ),
     [eventPatch, localWorkflowShell, thread.isLoading, thread.values],
+  );
+
+  const mergedValues = useMemo<AgentThreadState>(
+    () => {
+      const localShellSupersedesPatchedStage =
+        localWorkflowShell != null &&
+        mergedPatchedValues.workflow_stage != null &&
+        (mergedPatchedValues.run_id ?? null) === localWorkflowShell.previousRunId;
+
+      return {
+        ...mergedPatchedValues,
+        resolved_orchestration_mode:
+          mergedPatchedValues.resolved_orchestration_mode ??
+          (localWorkflowShell ? "workflow" : null),
+        orchestration_reason: mergedPatchedValues.orchestration_reason ?? null,
+        workflow_stage: localShellSupersedesPatchedStage
+          ? localWorkflowShell.stage
+          : (mergedPatchedValues.workflow_stage ?? localWorkflowShell?.stage ?? null),
+        workflow_stage_detail: localShellSupersedesPatchedStage
+          ? (localWorkflowShell.detail ?? null)
+          : (mergedPatchedValues.workflow_stage_detail ??
+            localWorkflowShell?.detail ??
+            null),
+        workflow_stage_updated_at: localShellSupersedesPatchedStage
+          ? localWorkflowShell.updatedAt
+          : (mergedPatchedValues.workflow_stage_updated_at ??
+            localWorkflowShell?.updatedAt ??
+            null),
+        run_id:
+          mergedPatchedValues.run_id ??
+          (localWorkflowShell ? (eventPatch.run_id ?? null) : null),
+      };
+    },
+    [eventPatch.run_id, localWorkflowShell, mergedPatchedValues],
   );
 
   useEffect(() => {
@@ -343,7 +511,9 @@ export function useThreadStream({
     }
 
     hydrateTasks(
-      taskPool.map((task) => fromMultiAgentTaskState(task, _threadId ?? undefined)),
+      taskPool.map((task) =>
+        fromMultiAgentTaskState(task, _threadId ?? undefined),
+      ),
       {
         source: "multi_agent",
         runId,
@@ -387,7 +557,12 @@ export function useThreadStream({
       prevMsgCountRef.current = thread.messages.length;
 
       if (explicitWorkflowRequest) {
-        setLocalWorkflowShell(createLocalWorkflowShell(text));
+        setLocalWorkflowShell(
+          createLocalWorkflowShell(
+            text,
+            thread.values.run_id ?? eventPatch.run_id ?? null,
+          ),
+        );
       }
 
       const optimisticFiles: FileInMessage[] = (message.files ?? []).map(
@@ -551,7 +726,14 @@ export function useThreadStream({
         throw error;
       }
     },
-    [thread, t.uploads.uploadingFiles, onStart, context, queryClient],
+    [
+      thread,
+      t.uploads.uploadingFiles,
+      onStart,
+      context,
+      queryClient,
+      eventPatch.run_id,
+    ],
   );
 
   const mergedThread =

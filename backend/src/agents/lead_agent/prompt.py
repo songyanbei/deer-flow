@@ -271,19 +271,27 @@ When to call `request_help` - you MUST escalate when:
   - `clarification_options`: Optional list of viable options
   - `clarification_context`: Optional short explanation for why the choice is needed
 
-**Example — cross-domain lookup (do NOT set user_clarification):**
-  User said "我叫孙琦" and you need the openId → call `request_help` with:
-  - `problem`: "需要为孙琦预定会议室，但缺少孙琦的 openId"
-  - `required_capability`: "Look up employee openId by name"
-  - `expected_output`: "孙琦的 openId 字符串"
-  - `candidate_agents`: ["contacts-agent"]
-  - Do NOT set `resolution_strategy` — the system will route this to contacts-agent automatically.
-
-**Example — genuine user decision (set user_clarification):**
+**Example – genuine user decision (set user_clarification):**
   User asked "帮我订个会议室" but didn't say what时间 → call `request_help` with:
   - `resolution_strategy`: "user_clarification"
   - `clarification_question`: "请问您希望预定哪天什么时间段的会议室？"
 </clarification_system>"""
+
+MEETING_AGENT_HELP_RULES = """<meeting_agent_help_system>
+You are the meeting-domain agent.
+
+When a meeting tool requires an organizer or attendee `openId` and you only have a person's name or employee clue:
+- call `request_help`
+- set `required_capability` to a directory lookup such as `Look up employee openId by name`
+- set `candidate_agents` to `["contacts-agent"]`
+- do NOT set `resolution_strategy="user_clarification"` for this case, because the contacts agent can resolve it
+
+Example:
+- `problem`: "需要为孙琦预定会议室，但缺少孙琦的 openId"
+- `required_capability`: "Look up employee openId by name"
+- `expected_output`: "孙琦的 openId 字符串"
+- `candidate_agents`: ["contacts-agent"]
+</meeting_agent_help_system>"""
 
 READ_ONLY_EXPLORER_RULES = """<read_only_explorer_system>
 You are operating in `ReadOnly_Explorer` mode.
@@ -447,11 +455,18 @@ def apply_prompt_template(
         else ""
     )
 
-    domain_agent_reminder = (
-        "- **Workflow Domain Agent**: If you need data outside your tools (e.g. openId, employee info, HR records), you MUST call `request_help` immediately. NEVER guess or fabricate missing data. NEVER respond with just a text description of what should be done — either execute with real data or call `request_help`.\n"
-        if is_domain_agent
-        else ""
-    )
+    domain_agent_reminder = ""
+    if is_domain_agent:
+        domain_agent_reminder = (
+            "- **Workflow Domain Agent**: If you need data outside your tools, you MUST call `request_help` immediately. "
+            "NEVER guess or fabricate missing data. NEVER respond with just a text description of what should be done "
+            "- either execute with real data or call `request_help`.\n"
+        )
+        if agent_name == "meeting-agent":
+            domain_agent_reminder += (
+                "- **Meeting Agent**: If a meeting tool requires an organizer or attendee `openId` that you cannot derive "
+                "inside the meeting domain, escalate that lookup to `contacts-agent` via `request_help`.\n"
+            )
 
     read_only_reminder = (
         "- **Read-Only Explorer**: Use your own domain lookup tools first, stay strictly read-only, and return concrete facts instead of re-delegating queries you can answer yourself.\n"
@@ -473,7 +488,12 @@ def apply_prompt_template(
 
     # Get skills section
     skills_section = get_skills_prompt_section(available_skills)
-    clarification_rules = DOMAIN_AGENT_HELP_RULES if is_domain_agent else TOP_LEVEL_CLARIFICATION_RULES
+    if is_domain_agent:
+        clarification_rules = DOMAIN_AGENT_HELP_RULES
+        if agent_name == "meeting-agent":
+            clarification_rules += "\n\n" + MEETING_AGENT_HELP_RULES
+    else:
+        clarification_rules = TOP_LEVEL_CLARIFICATION_RULES
     if read_only_explorer:
         clarification_rules += "\n\n" + READ_ONLY_EXPLORER_RULES
     if react_engine:

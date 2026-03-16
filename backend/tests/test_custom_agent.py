@@ -70,6 +70,17 @@ class TestPaths:
         assert paths.memory_file == tmp_path / "memory.json"
         assert paths.agent_memory_file("my-agent") == tmp_path / "agents" / "my-agent" / "memory.json"
 
+    def test_base_dir_uses_backend_deer_flow_when_running_from_repo_root(self, tmp_path, monkeypatch):
+        backend_data_dir = tmp_path / "backend" / ".deer-flow"
+        backend_data_dir.mkdir(parents=True)
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("DEER_FLOW_HOME", raising=False)
+
+        from src.config.paths import Paths
+
+        assert Paths().base_dir == backend_data_dir.resolve()
+
 
 # ===========================================================================
 # 2. AgentConfig - Pydantic parsing

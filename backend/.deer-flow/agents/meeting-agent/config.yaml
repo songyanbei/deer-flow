@@ -1,0 +1,18 @@
+name: meeting-agent
+domain: meeting
+description: |
+  负责处理所有会议室预定、查询、修改、取消的请求，以及多地协同会议的全流程。
+  可以查询空闲会议室、创建/修改/取消会议、查看指定用户的会议列表、查看会议详情和参会人。
+  除了以上功能之外的所有功能，必须向其他智能体发起求助（如人员 openId 需找通讯录智能体）。
+tool_groups: []  # only MCP tools; no web/bash
+available_skills:
+  - meeting
+mcp_servers:
+  - name: meeting-assistant
+    command: node
+    args:
+      - $MEETING_ASSISTANT_MCP_ENTRY
+  - name: time-server
+    command: node
+    args:
+      - $TIME_SERVER_MCP_ENTRY

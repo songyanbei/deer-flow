@@ -12,6 +12,11 @@ from langgraph.config import get_stream_writer
 
 from src.agents.planner.prompt import DECOMPOSE_SYSTEM_PROMPT, VALIDATE_SYSTEM_PROMPT
 from src.agents.thread_state import TaskStatus, ThreadState, VerifiedFact, WorkflowStage
+from src.agents.workflow_resume import (
+    extract_latest_user_input,
+    is_human_message,
+    latest_user_message_is_clarification_answer,
+)
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 
@@ -190,15 +195,6 @@ def _make_tasks(raw_tasks: list[dict], run_id: str) -> list[TaskStatus]:
         )
     return tasks
 
-
-def _content_to_text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-    return str(content or "")
-
-
 def _normalize_text_value(value: Any) -> str:
     if value is None:
         return ""
@@ -276,35 +272,27 @@ def _build_summarizing_detail(task_pool: list[TaskStatus], planner_goal: str) ->
     )
 
 
-def _is_human_message(message) -> bool:
-    return getattr(message, "type", None) == "human" or message.__class__.__name__ == "HumanMessage"
+def _build_queued_detail(original_input: str, planner_goal: str) -> str | None:
+    return _pick_first_non_empty(
+        planner_goal,
+        original_input,
+    )
 
 
 def _extract_original_input(state: ThreadState) -> str:
     messages = state.get("messages") or []
     for msg in messages:
-        if _is_human_message(msg):
+        if is_human_message(msg):
             return _content_to_text(getattr(msg, "content", ""))
     return ""
 
 
-def _extract_latest_user_input(state: ThreadState) -> str:
-    messages = state.get("messages") or []
-    for msg in reversed(messages):
-        if _is_human_message(msg):
-            return _content_to_text(getattr(msg, "content", ""))
-    return ""
-
-
-def _latest_user_message_is_clarification_answer(state: ThreadState) -> bool:
-    messages = state.get("messages") or []
-    if len(messages) < 2:
-        return False
-    last = messages[-1]
-    prev = messages[-2]
-    if not _is_human_message(last):
-        return False
-    return getattr(prev, "type", None) == "ai" and getattr(prev, "name", None) == "ask_clarification"
+def _content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+    return str(content or "")
 
 
 async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
@@ -314,8 +302,8 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     stored_original_input = state.get("original_input")
     current_run_id = state.get("run_id")
-    latest_user_input = _extract_latest_user_input(state)
-    is_clarification_answer = _latest_user_message_is_clarification_answer(state)
+    latest_user_input = extract_latest_user_input(state)
+    is_clarification_answer = latest_user_message_is_clarification_answer(state)
     run_id = _resolve_run_id(task_pool, current_run_id)
     writer = _get_event_writer()
     normalized_task_pool, task_pool_changed = _normalize_task_pool(task_pool, run_id)
@@ -325,8 +313,10 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     waiting = [t for t in task_pool if t["status"] == "WAITING_DEPENDENCY"]
 
     if stored_original_input and latest_user_input and latest_user_input != stored_original_input and not is_clarification_answer:
-        next_run_id = _new_run_id()
+        next_run_id = current_run_id if state.get("workflow_stage") == "acknowledged" and current_run_id else _new_run_id()
+        queued_detail = _build_queued_detail(latest_user_input, latest_user_input)
         logger.info("[Planner] New user turn detected, resetting task pool for fresh decomposition.")
+        _emit_workflow_stage(writer, "queued", queued_detail, run_id=next_run_id)
         return {
             "task_pool": [],
             "verified_facts": {},
@@ -335,8 +325,8 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "planner_goal": latest_user_input,
             "route_count": 0,
             "final_result": None,
-            "execution_state": "PLANNING_RESET",
-            **_build_workflow_stage_update("planning", latest_user_input),
+            "execution_state": "QUEUED",
+            **_build_workflow_stage_update("queued", queued_detail),
         }
 
     if pending or running or waiting:
@@ -357,6 +347,22 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     original_input: str = stored_original_input or latest_user_input or _extract_original_input(state)
     planner_goal: str = state.get("planner_goal") or original_input
     is_first_run = not task_pool
+
+    if is_first_run and state.get("workflow_stage") == "acknowledged":
+        queued_detail = _build_queued_detail(original_input, planner_goal)
+        logger.info("[Planner] Workflow acknowledged; emitting queued stage before planning.")
+        _emit_workflow_stage(writer, "queued", queued_detail, run_id=run_id)
+        result = {
+            "execution_state": "QUEUED",
+            "original_input": original_input,
+            "run_id": run_id,
+            "planner_goal": planner_goal,
+            "route_count": state.get("route_count") or 0,
+            **_build_workflow_stage_update("queued", queued_detail),
+        }
+        if task_pool_changed and task_pool:
+            result["task_pool"] = task_pool
+        return result
 
     if is_first_run:
         system_prompt = DECOMPOSE_SYSTEM_PROMPT.format(agent_descriptions=agent_descriptions)
@@ -390,6 +396,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     except Exception as exc:
         error_message = _planner_invocation_error_message(exc)
         logger.exception("[Planner] Model invocation failed: %s", error_message)
+        _emit_workflow_stage(writer, stage_name, error_message, run_id=run_id)
         return {
             "execution_state": "ERROR",
             "final_result": error_message,
@@ -397,7 +404,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
-            **_build_workflow_stage_update(None),
+            **_build_workflow_stage_update(stage_name, error_message),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
@@ -408,6 +415,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     if parsed.get("parse_error"):
         error_message = "Planner failed to produce valid structured output."
         logger.error("[Planner] %s Raw output=%r", error_message, response.content[:500])
+        _emit_workflow_stage(writer, stage_name, error_message, run_id=run_id)
         return {
             "execution_state": "ERROR",
             "final_result": error_message,
@@ -415,13 +423,19 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
-            **_build_workflow_stage_update(None),
+            **_build_workflow_stage_update(stage_name, error_message),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
     if parsed.get("done"):
         summary = _normalize_text_value(parsed.get("summary", ""))
+        terminal_detail = _pick_first_non_empty(
+            summary,
+            stage_detail,
+            "Task completed.",
+        )
         logger.info("[Planner] Goal achieved. Summary length=%d", len(summary))
+        _emit_workflow_stage(writer, "summarizing", terminal_detail, run_id=run_id)
         return {
             "execution_state": "DONE",
             "final_result": summary,
@@ -429,7 +443,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
-            **_build_workflow_stage_update(None),
+            **_build_workflow_stage_update("summarizing", terminal_detail),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 
@@ -438,6 +452,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     if not new_tasks:
         logger.error("[Planner] No tasks generated for unfinished goal; stopping to avoid false completion.")
         fallback = "Planner produced no actionable tasks for an unfinished goal."
+        _emit_workflow_stage(writer, stage_name, fallback, run_id=run_id)
         return {
             "execution_state": "ERROR",
             "final_result": fallback,
@@ -445,7 +460,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
-            **_build_workflow_stage_update(None),
+            **_build_workflow_stage_update(stage_name, fallback),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
 

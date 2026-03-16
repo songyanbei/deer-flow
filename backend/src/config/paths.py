@@ -48,8 +48,21 @@ class Paths:
             return Path(env_home).resolve()
 
         cwd = Path.cwd()
-        if cwd.name == "backend" or (cwd / "pyproject.toml").exists():
-            return cwd / ".deer-flow"
+        local_data = cwd / ".deer-flow"
+        if cwd.name == "backend":
+            return local_data
+
+        if local_data.exists():
+            return local_data
+
+        # When the process starts from the repository root, agent data still
+        # lives under backend/.deer-flow.
+        repo_backend_data = cwd / "backend" / ".deer-flow"
+        if repo_backend_data.exists():
+            return repo_backend_data
+
+        if (cwd / "pyproject.toml").exists():
+            return local_data
 
         return Path.home() / ".deer-flow"
 
