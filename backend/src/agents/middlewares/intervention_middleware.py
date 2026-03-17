@@ -1,0 +1,287 @@
+"""Middleware for intercepting tool calls that require user intervention before execution.
+
+Phase 1: tool-originated intervention only. Intercepts risky tool calls before they
+execute side effects, emits an `intervention_required` ToolMessage, and returns
+Command(goto=END) so the executor can write WAITING_INTERVENTION state.
+"""
+
+import hashlib
+import json
+import logging
+import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, override
+
+from langchain.agents import AgentState
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import ToolMessage
+from langgraph.graph import END
+from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.types import Command
+
+from src.agents.thread_state import InterventionActionSchema, InterventionRequest
+
+logger = logging.getLogger(__name__)
+
+# Default write/side-effect keywords for tool risk detection (structured parser rules)
+_RISKY_TOOL_KEYWORDS = {
+    "write", "create", "update", "delete", "send", "cancel",
+    "insert", "modify", "book", "reserve", "schedule", "submit",
+    "approve", "reject", "confirm", "execute", "run", "deploy",
+    "publish", "release", "remove", "drop", "transfer", "pay",
+}
+
+# Read-only tools are excluded by default
+_READ_ONLY_PREFIXES = ("get_", "list_", "read_", "search_", "query_", "fetch_", "view_", "check_")
+
+
+class InterventionMiddlewareState(AgentState):
+    """Compatible with ThreadState."""
+
+    pass
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _generate_fingerprint(
+    run_id: str,
+    task_id: str,
+    agent_name: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> str:
+    """Deterministic fingerprint to prevent duplicate interventions in the same run."""
+    # Normalize tool args by sorting keys
+    normalized_args = json.dumps(tool_args, sort_keys=True, ensure_ascii=False, default=str)
+    raw = f"{run_id}:{task_id}:{agent_name}:{tool_name}:{normalized_args}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def _tool_matches_keywords(tool_name: str, keywords: list[str]) -> bool:
+    """Check if a tool name matches any hitl_keywords (backward-compatible fallback)."""
+    name_lower = tool_name.lower()
+    for keyword in keywords:
+        if keyword.lower() in name_lower:
+            return True
+    return False
+
+
+def _tool_is_risky_by_parser(tool_name: str) -> bool:
+    """Structured parser: check if the tool name contains risky keywords."""
+    name_lower = tool_name.lower()
+    # Exclude read-only tools first
+    if any(name_lower.startswith(prefix) for prefix in _READ_ONLY_PREFIXES):
+        return False
+    return any(keyword in name_lower for keyword in _RISKY_TOOL_KEYWORDS)
+
+
+def _build_default_action_schema(tool_name: str) -> InterventionActionSchema:
+    """Build default approve/reject action schema for a risky tool."""
+    return {
+        "actions": [
+            {
+                "key": "approve",
+                "label": "批准执行",
+                "kind": "button",
+                "resolution_behavior": "resume_current_task",
+            },
+            {
+                "key": "reject",
+                "label": "拒绝执行",
+                "kind": "button",
+                "resolution_behavior": "fail_current_task",
+            },
+            {
+                "key": "provide_input",
+                "label": "修改后执行",
+                "kind": "input",
+                "resolution_behavior": "resume_current_task",
+                "placeholder": "请输入修改意见...",
+            },
+        ]
+    }
+
+
+def _build_intervention_request(
+    run_id: str,
+    task_id: str,
+    agent_name: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    *,
+    policy: dict[str, Any] | None = None,
+) -> InterventionRequest:
+    """Build a structured InterventionRequest for a tool call."""
+    request_id = f"intv_{uuid.uuid4().hex[:16]}"
+    fingerprint = _generate_fingerprint(run_id, task_id, agent_name, tool_name, tool_args)
+
+    # Use policy overrides if available, otherwise defaults
+    title = (policy or {}).get("title", f"工具 {tool_name} 需要确认")
+    reason = (policy or {}).get("reason", f"Agent {agent_name} 尝试执行工具 {tool_name}，该操作可能产生副作用，需要您确认后才能继续。")
+    risk_level = (policy or {}).get("risk_level", "medium")
+    category = (policy or {}).get("category", "tool_execution")
+    action_schema = (policy or {}).get("action_schema") or _build_default_action_schema(tool_name)
+
+    request: InterventionRequest = {
+        "request_id": request_id,
+        "fingerprint": fingerprint,
+        "intervention_type": "before_tool",
+        "title": title,
+        "reason": reason,
+        "source_agent": agent_name,
+        "source_task_id": task_id,
+        "tool_name": tool_name,
+        "risk_level": risk_level,
+        "category": category,
+        "context": {
+            "tool_args": tool_args,
+        },
+        "action_summary": f"执行 {tool_name}",
+        "action_schema": action_schema,
+        "created_at": _utc_now_iso(),
+    }
+    return request
+
+
+class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
+    """Intercept tool calls requiring user intervention before execution.
+
+    Trigger priority (Phase 1):
+    1. Explicit metadata on tool (tool_metadata.requires_intervention)
+    2. Structured parser rules (risky keyword detection)
+    3. hitl_keywords fallback from agent config
+
+    When intervention is triggered:
+    - Emits ToolMessage(name="intervention_required") with the serialized InterventionRequest
+    - Returns Command(goto=END) to halt the domain agent
+    """
+
+    state_schema = InterventionMiddlewareState
+
+    def __init__(
+        self,
+        *,
+        intervention_policies: dict[str, Any] | None = None,
+        hitl_keywords: list[str] | None = None,
+        run_id: str = "",
+        task_id: str = "",
+        agent_name: str = "",
+        resolved_fingerprints: set[str] | None = None,
+    ):
+        self._intervention_policies = intervention_policies or {}
+        self._hitl_keywords = hitl_keywords or []
+        self._run_id = run_id
+        self._task_id = task_id
+        self._agent_name = agent_name
+        self._resolved_fingerprints = resolved_fingerprints or set()
+
+    def _should_intervene(self, tool_name: str, tool_args: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
+        """Determine whether a tool call should trigger intervention.
+
+        Returns:
+            (should_intervene, policy_override_or_none)
+        """
+        name_lower = tool_name.lower()
+
+        # 1. Check explicit per-tool policy from intervention_policies config
+        tool_policy = self._intervention_policies.get(tool_name)
+        if isinstance(tool_policy, dict):
+            if tool_policy.get("requires_intervention", False):
+                return True, tool_policy
+            if tool_policy.get("skip_intervention", False):
+                return False, None
+
+        # Read-only tools stay exempt unless explicitly overridden by policy.
+        if any(name_lower.startswith(prefix) for prefix in _READ_ONLY_PREFIXES):
+            return False, None
+
+        # 2. Structured parser rules
+        if _tool_is_risky_by_parser(tool_name):
+            return True, None
+
+        # 3. hitl_keywords fallback
+        if self._hitl_keywords and _tool_matches_keywords(tool_name, self._hitl_keywords):
+            return True, None
+
+        return False, None
+
+    def _check_already_resolved(self, tool_name: str, tool_args: dict[str, Any]) -> bool:
+        """Check if the same intervention fingerprint was already resolved in this run."""
+        fingerprint = _generate_fingerprint(
+            self._run_id, self._task_id, self._agent_name, tool_name, tool_args
+        )
+        return fingerprint in self._resolved_fingerprints
+
+    def _handle_intervention(self, request: ToolCallRequest, tool_name: str, tool_args: dict[str, Any], policy: dict[str, Any] | None) -> Command:
+        """Build intervention request and return Command to halt execution."""
+        intervention_request = _build_intervention_request(
+            run_id=self._run_id,
+            task_id=self._task_id,
+            agent_name=self._agent_name,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            policy=policy,
+        )
+
+        logger.info(
+            "[InterventionMiddleware] Intervention triggered for tool '%s' by agent '%s'. request_id=%s fingerprint=%s",
+            tool_name,
+            self._agent_name,
+            intervention_request["request_id"],
+            intervention_request["fingerprint"],
+        )
+
+        tool_call_id = request.tool_call.get("id", "")
+        payload = json.dumps(intervention_request, ensure_ascii=False, default=str)
+        tool_message = ToolMessage(
+            content=payload,
+            tool_call_id=tool_call_id,
+            name="intervention_required",
+        )
+        return Command(update={"messages": [tool_message]}, goto=END)
+
+    def _process_tool_call(self, request: ToolCallRequest, handler: Callable) -> ToolMessage | Command:
+        """Common logic for sync/async tool call processing."""
+        tool_name = request.tool_call.get("name", "")
+
+        should_intervene, policy = self._should_intervene(tool_name, request.tool_call.get("args", {}))
+        if not should_intervene:
+            return None  # signal to call handler
+
+        tool_args = request.tool_call.get("args", {})
+
+        # Dedup: skip if already resolved in this run
+        if self._check_already_resolved(tool_name, tool_args):
+            logger.info(
+                "[InterventionMiddleware] Skipping intervention for tool '%s' - already resolved in run '%s'.",
+                tool_name,
+                self._run_id,
+            )
+            return None  # signal to call handler
+
+        return self._handle_intervention(request, tool_name, tool_args, policy)
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        result = self._process_tool_call(request, handler)
+        if result is None:
+            return handler(request)
+        return result
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        result = self._process_tool_call(request, handler)
+        if result is None:
+            return await handler(request)
+        return result

@@ -1,11 +1,14 @@
 import type { AIMessage } from "@langchain/langgraph-sdk";
 
+import type { InterventionRequest } from "../threads/types";
+
 export type TaskSource = "legacy_subagent" | "multi_agent";
 
 export type TaskStatus =
   | "pending"
   | "in_progress"
   | "waiting_dependency"
+  | "waiting_intervention"
   | "waiting_clarification"
   | "completed"
   | "failed";
@@ -35,6 +38,9 @@ export interface TaskViewModel {
   status: TaskStatus;
   statusDetail?: string;
   clarificationPrompt?: string;
+  interventionRequest?: InterventionRequest;
+  interventionStatus?: "pending" | "resolved" | "consumed" | "rejected";
+  interventionFingerprint?: string;
   latestMessage?: AIMessage;
   latestUpdate?: string;
   result?: string;

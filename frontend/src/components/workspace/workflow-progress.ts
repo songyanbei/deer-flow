@@ -25,6 +25,7 @@ export type WorkflowProgressSummary = {
   activeTaskCount: number;
   totalTaskCount: number;
   isWaitingClarification: boolean;
+  isWaitingIntervention: boolean;
   workflowStage?: AgentThreadState["workflow_stage"];
 };
 
@@ -76,6 +77,7 @@ function isActiveTask(task: TaskViewModel) {
   return (
     task.status === "pending" ||
     task.status === "waiting_dependency" ||
+    task.status === "waiting_intervention" ||
     task.status === "in_progress" ||
     task.status === "waiting_clarification"
   );
@@ -101,6 +103,9 @@ export function getWorkflowProgressSummary({
   const totalTaskCount = tasks.length;
   const activeTasks = tasks.filter(isActiveTask);
   const activeTaskCount = activeTasks.length;
+  const interventionTask = tasks.find(
+    (task) => task.status === "waiting_intervention",
+  );
   const clarificationTask = tasks.find(
     (task) => task.status === "waiting_clarification",
   );
@@ -108,7 +113,8 @@ export function getWorkflowProgressSummary({
     (task) => task.status === "waiting_dependency",
   );
   const activeExecutionTask = activeTasks.find(
-    (task) => task.status === "in_progress" || task.status === "waiting_dependency",
+    (task) =>
+      task.status === "in_progress" || task.status === "waiting_dependency",
   );
   const latestCompletedTask = [...tasks]
     .reverse()
@@ -137,7 +143,15 @@ export function getWorkflowProgressSummary({
       workflowStage === "acknowledged" ||
       workflowStage === "planning" ||
       workflowStage === "routing");
-  const waitingTaskDetail = clarificationTask
+  const waitingTaskDetail = interventionTask
+    ? pickFirstNonEmpty([
+        interventionTask.interventionRequest?.reason,
+        interventionTask.interventionRequest?.description,
+        interventionTask.interventionRequest?.action_summary,
+        l(interventionTask.statusDetail),
+        interventionTask.description,
+      ])
+    : clarificationTask
     ? pickFirstNonEmpty([
         clarificationTask.clarificationPrompt,
         l(clarificationTask.statusDetail),
@@ -163,6 +177,9 @@ export function getWorkflowProgressSummary({
       threadValues.planner_goal,
       threadValues.orchestration_reason,
     ]);
+  } else if (interventionTask) {
+    title = t.workflowStatus.waitingIntervention;
+    detail = waitingTaskDetail;
   } else if (clarificationTask) {
     title = t.workflowStatus.waitingClarification;
     detail = waitingTaskDetail;
@@ -215,6 +232,7 @@ export function getWorkflowProgressSummary({
     activeTaskCount,
     totalTaskCount,
     isWaitingClarification: Boolean(clarificationTask),
+    isWaitingIntervention: Boolean(interventionTask),
     ...(workflowStage ? { workflowStage } : {}),
   };
 }

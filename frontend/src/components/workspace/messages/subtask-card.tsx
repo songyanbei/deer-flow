@@ -1,4 +1,5 @@
 ﻿import {
+  AlertTriangleIcon,
   CheckCircleIcon,
   ChevronUp,
   ClipboardListIcon,
@@ -28,6 +29,7 @@ import { CitationLink } from "../citations/citation-link";
 import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
+import { InterventionCard } from "./intervention-card";
 
 const INTERNAL_ERROR_PATTERNS = [
   /domain agent returned no final answer/i,
@@ -76,6 +78,14 @@ function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeo
       t.subtasks.waiting_clarification
     );
   }
+  if (task.status === "waiting_intervention") {
+    return (
+      task.interventionRequest?.reason ??
+      localizedDetail ??
+      localizedUpdate ??
+      t.subtasks.waiting_intervention
+    );
+  }
   if (task.status === "in_progress") {
     return task.latestMessage && hasToolCalls(task.latestMessage)
       ? explainLastToolCall(task.latestMessage, t)
@@ -103,6 +113,9 @@ function getCollapsedStatusLabel(
   }
   if (task.status === "waiting_clarification") {
     return t.subtasks.waiting_clarification;
+  }
+  if (task.status === "waiting_intervention") {
+    return t.subtasks.waiting_intervention;
   }
   if (task.status === "in_progress") {
     return t.subtasks.in_progress;
@@ -141,6 +154,7 @@ export function SubtaskCard({
     icon = <XCircleIcon className="size-3 text-red-500" />;
   } else if (
     task.status === "waiting_dependency" ||
+    task.status === "waiting_intervention" ||
     task.status === "in_progress" ||
     task.status === "waiting_clarification"
   ) {
@@ -152,6 +166,7 @@ export function SubtaskCard({
   const isActive =
     task.status === "in_progress" ||
     task.status === "waiting_clarification" ||
+    task.status === "waiting_intervention" ||
     task.status === "waiting_dependency";
 
   return (
@@ -233,6 +248,7 @@ export function SubtaskCard({
           )}
           {(task.status === "in_progress" ||
             task.status === "waiting_dependency" ||
+            task.status === "waiting_intervention" ||
             task.status === "waiting_clarification" ||
             task.status === "pending") &&
             progressLabel && (
@@ -285,6 +301,12 @@ export function SubtaskCard({
                   />
                 </div>
               }
+            ></ChainOfThoughtStep>
+          )}
+          {task.status === "waiting_intervention" && (
+            <ChainOfThoughtStep
+              label={<InterventionCard task={task} />}
+              icon={<AlertTriangleIcon className="size-4 text-orange-500" />}
             ></ChainOfThoughtStep>
           )}
           {task.status === "completed" && (

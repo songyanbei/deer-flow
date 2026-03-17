@@ -96,6 +96,45 @@ describe("task adapters", () => {
     });
   });
 
+  it("maps intervention events into waiting_intervention tasks", () => {
+    const task = fromMultiAgentTaskEvent({
+      type: "task_waiting_intervention",
+      source: "multi_agent",
+      task_id: "task-int-1",
+      run_id: "run-1",
+      description: "Approve sending the email",
+      status: "waiting_intervention",
+      intervention_fingerprint: "fp-1",
+      intervention_status: "pending",
+      intervention_request: {
+        request_id: "req-1",
+        fingerprint: "fp-1",
+        intervention_type: "approval",
+        title: "Need approval",
+        reason: "This action sends an external email.",
+        source_agent: "ops-agent",
+        source_task_id: "task-int-1",
+        action_schema: {
+          actions: [
+            {
+              key: "approve",
+              label: "Approve",
+              kind: "button",
+              resolution_behavior: "resume_current_task",
+            },
+          ],
+        },
+        created_at: "2026-03-17T10:00:00.000Z",
+      },
+    }, "thread-1");
+
+    expect(task.status).toBe("waiting_intervention");
+    expect(task.threadId).toBe("thread-1");
+    expect(task.interventionFingerprint).toBe("fp-1");
+    expect(task.interventionStatus).toBe("pending");
+    expect(task.interventionRequest?.title).toBe("Need approval");
+  });
+
   it("maps task_timed_out to a failed legacy task", () => {
     const task = fromLegacyTaskEvent({
       type: "task_timed_out",

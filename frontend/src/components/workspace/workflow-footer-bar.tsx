@@ -22,6 +22,7 @@ import type { TaskViewModel } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
+import { InterventionCard } from "./messages/intervention-card";
 import { FlipDisplay } from "./flip-display";
 import {
   filterWorkflowTasks,
@@ -30,6 +31,7 @@ import {
 
 function pickPrimaryWorkflowTask(tasks: TaskViewModel[]) {
   return (
+    tasks.find((task) => task.status === "waiting_intervention") ??
     tasks.find((task) => task.status === "waiting_clarification") ??
     tasks.find((task) => task.status === "waiting_dependency") ??
     tasks.find((task) => task.status === "in_progress") ??
@@ -60,6 +62,7 @@ function getTaskDetail(
   // User-visible prompts shown as-is
   if (task.clarificationPrompt) return task.clarificationPrompt;
   if (task.blockedReason) return task.blockedReason;
+  if (task.interventionRequest?.reason) return task.interventionRequest.reason;
   // Localize structured @key values; filter raw legacy English
   const localized =
     localizeStatusDetail(task.latestUpdate, t) ??
@@ -84,6 +87,9 @@ function getTaskStatusLabel(
   if (task.status === "waiting_clarification") {
     return t.subtasks.waiting_clarification;
   }
+  if (task.status === "waiting_intervention") {
+    return t.subtasks.waiting_intervention;
+  }
   if (task.status === "in_progress") {
     return t.subtasks.in_progress;
   }
@@ -106,6 +112,9 @@ function getTaskIcon(task: TaskViewModel) {
   if (task.status === "waiting_clarification") {
     return <SparklesIcon className="size-3.5 text-sky-500" />;
   }
+  if (task.status === "waiting_intervention") {
+    return <PauseCircleIcon className="size-3.5 text-orange-500" />;
+  }
   if (task.status === "in_progress") {
     return <Loader2Icon className="size-3.5 animate-spin text-primary" />;
   }
@@ -115,6 +124,7 @@ function getTaskIcon(task: TaskViewModel) {
 function isActiveWorkflowTask(task: TaskViewModel | undefined) {
   return (
     task?.status === "waiting_dependency" ||
+    task?.status === "waiting_intervention" ||
     task?.status === "in_progress" ||
     task?.status === "waiting_clarification"
   );
@@ -207,6 +217,9 @@ export function WorkflowFooterBar({
   const titleKey = primaryTask?.id ?? headerTitle;
   const showShimmer =
     isActiveWorkflowTask(primaryTask) || Boolean(progress && !primaryTask);
+  const shouldShowPrimaryInterventionCard =
+    primaryTask?.status === "waiting_intervention" &&
+    primaryTask.interventionRequest != null;
 
   if (workflowTasks.length === 0 && !progress) {
     return null;
@@ -261,6 +274,13 @@ export function WorkflowFooterBar({
           />
         </div>
       </button>
+      {shouldShowPrimaryInterventionCard && primaryTask ? (
+        <div className="border-border/60 border-t bg-muted/25 px-3 py-3">
+          <div className="max-h-[min(52vh,36rem)] overflow-y-auto pr-1">
+            <InterventionCard task={primaryTask} />
+          </div>
+        </div>
+      ) : null}
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -270,14 +290,14 @@ export function WorkflowFooterBar({
             transition={{ duration: 0.3, ease: [0.32, 0.72, 0, 1] }}
             className="overflow-hidden"
           >
-            <div className="border-border/60 bg-accent flex max-h-[40vh] flex-col gap-2 border-t px-2 pb-2 pt-2">
+            <div className="border-border/60 bg-accent flex max-h-[34vh] flex-col gap-2 border-t px-2 pb-2 pt-2">
               {progress && (
                 <div className="text-muted-foreground px-2 text-xs leading-4">
                   <span className="font-medium text-foreground">{progress.title}</span>
                   {progress.detail ? ` - ${progress.detail}` : ""}
                 </div>
               )}
-              <div className="flex max-h-[28vh] flex-col gap-1 overflow-y-auto">
+              <div className="flex max-h-[24vh] flex-col gap-1 overflow-y-auto pr-1">
                 {workflowTasks.map((task, index) => (
                   <motion.div
                     key={task.id}

@@ -15,6 +15,14 @@ vi.mock("./flip-display", () => ({
   ),
 }));
 
+vi.mock("./messages/intervention-card", () => ({
+  InterventionCard: ({ task }: { task: TaskViewModel }) => (
+    <div data-testid="footer-intervention-card">
+      intervention:{task.interventionRequest?.title}
+    </div>
+  ),
+}));
+
 function createTask(overrides: Partial<TaskViewModel>): TaskViewModel {
   return {
     id: overrides.id ?? "task-1",
@@ -134,7 +142,9 @@ describe("WorkflowFooterBar", () => {
       trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(rendered.container.textContent).toContain("Book the meeting room");
+    expect(rendered.container.textContent).toContain(
+      "Queued and waiting to start...",
+    );
 
     rendered.cleanup();
   });
@@ -159,7 +169,52 @@ describe("WorkflowFooterBar", () => {
     });
 
     expect(rendered.container.textContent).toContain(
-      "Prepare a workflow for the launch checklist",
+      "Workflow started, understanding your request...",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("prioritizes intervention tasks in the compact summary", () => {
+    const rendered = renderWorkflowFooter([
+      createTask({
+        id: "task-1",
+        threadId: "thread-1",
+        status: "waiting_intervention",
+        description: "Approve sending the email",
+        interventionRequest: {
+          request_id: "req-1",
+          fingerprint: "fp-1",
+          intervention_type: "approval",
+          title: "Need approval",
+          reason: "Please approve the risky action.",
+          source_agent: "ops-agent",
+          source_task_id: "task-1",
+          action_schema: { actions: [] },
+          created_at: "2026-03-17T10:00:00.000Z",
+        },
+      }),
+      createTask({
+        id: "task-2",
+        status: "in_progress",
+        description: "Prepare the final email body",
+      }),
+    ]);
+
+    expect(rendered.container.textContent).toContain("Approve sending the email");
+    expect(rendered.container.textContent).toContain("intervention:Need approval");
+
+    const trigger = rendered.container.querySelector("button");
+    if (!trigger) {
+      throw new Error("Workflow footer trigger not found.");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(rendered.container.textContent).toContain(
+      "Please approve the risky action.",
     );
 
     rendered.cleanup();
@@ -186,7 +241,7 @@ describe("WorkflowFooterBar", () => {
     });
 
     expect(rendered.container.textContent).toContain(
-      "Breaking the launch work into subtasks",
+      "Understanding your request, planning steps",
     );
 
     rendered.cleanup();
@@ -245,7 +300,7 @@ describe("WorkflowFooterBar", () => {
     });
 
     expect(rendered.container.textContent).toContain(
-      "Conference room A is booked",
+      "Tasks done, summarizing results",
     );
 
     rendered.cleanup();

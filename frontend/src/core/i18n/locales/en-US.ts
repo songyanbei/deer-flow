@@ -272,6 +272,7 @@ export const enUS: Translations = {
     pending: "Pending",
     in_progress: "Running subtask",
     waiting_dependency: "Waiting for dependency",
+    waiting_intervention: "Waiting for your decision",
     waiting_clarification: "Waiting for clarification",
     completed: "Subtask completed",
     failed: "Subtask failed",
@@ -292,6 +293,16 @@ export const enUS: Translations = {
     requestedBy: (agent: string) => `Requested by: ${agent}`,
     resolvedInputs: "Resolved inputs",
     resumed: "Dependency resolved; resumed execution",
+    interventionRisk: (riskLevel: string) => `Risk: ${riskLevel}`,
+    interventionPlaceholder: "Add the information needed to continue",
+    interventionSubmitted: "Decision submitted",
+    interventionStale: "This intervention is no longer current",
+    interventionInvalid: "Please complete the required input before submitting",
+    interventionSubmitFailed: "Failed to submit your decision",
+    interventionActionFallback: "Submit",
+    interventionRequiredLabel: "Intervention Required",
+    interventionNextActionLabel: "Next Action",
+    interventionDecisionLabel: "Your Decision",
   },
 
   workflowStatus: {
@@ -305,6 +316,7 @@ export const enUS: Translations = {
     executing: "Subtasks are underway...",
     summarizing: "Tasks done, summarizing results…",
     waitingDependency: "Waiting for a related task to finish…",
+    waitingIntervention: "Waiting for your decision",
     waitingClarification: "Need more information from you",
     running: (count: number) =>
       `Running ${count} subtask${count === 1 ? "" : "s"}`,

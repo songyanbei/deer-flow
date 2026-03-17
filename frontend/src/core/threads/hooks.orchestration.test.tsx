@@ -337,6 +337,61 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
+  it("preserves thread id on multi-agent intervention events so the card can submit resolutions", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {},
+      isLoading: true,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "task_waiting_intervention",
+        source: "multi_agent",
+        task_id: "task-int-1",
+        run_id: "run-int-1",
+        description: "Approve the room booking",
+        status: "waiting_intervention",
+        intervention_fingerprint: "fp-1",
+        intervention_status: "pending",
+        intervention_request: {
+          request_id: "req-1",
+          fingerprint: "fp-1",
+          intervention_type: "before_tool",
+          title: "Need approval",
+          reason: "This action will create a meeting",
+          source_agent: "meeting-agent",
+          source_task_id: "task-int-1",
+          action_schema: {
+            actions: [
+              {
+                key: "approve",
+                label: "Approve",
+                kind: "button",
+                resolution_behavior: "resume_current_task",
+              },
+            ],
+          },
+          created_at: "2026-03-17T10:00:00.000Z",
+        },
+      });
+    });
+
+    expect(upsertTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "task-int-1",
+        source: "multi_agent",
+        threadId: "thread-1",
+        status: "waiting_intervention",
+      }),
+    );
+
+    rendered.cleanup();
+  });
+
   it("syncs workflow stage from non-task stage events before values hydration catches up", () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
@@ -876,7 +931,7 @@ describe("useThreadStream orchestration hydration", () => {
       }),
     );
     expect(submitImpl).toHaveBeenCalledTimes(1);
-    expect(submitImpl.mock.calls[0]?.[1]).toEqual(
+    expect((submitImpl.mock.calls[0] as unknown[] | undefined)?.[1]).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
           recursion_limit: 1000,
@@ -958,7 +1013,7 @@ describe("useThreadStream orchestration hydration", () => {
       }),
     );
     expect(submitImpl).toHaveBeenCalledTimes(1);
-    expect(submitImpl.mock.calls[0]?.[1]).toEqual(
+    expect((submitImpl.mock.calls[0] as unknown[] | undefined)?.[1]).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
           recursion_limit: 1000,
@@ -1013,7 +1068,7 @@ describe("useThreadStream orchestration hydration", () => {
       "Resuming the meeting room booking",
     );
     expect(submitImpl).toHaveBeenCalledTimes(1);
-    expect(submitImpl.mock.calls[0]?.[1]).toEqual(
+    expect((submitImpl.mock.calls[0] as unknown[] | undefined)?.[1]).toEqual(
       expect.objectContaining({
         config: expect.objectContaining({
           recursion_limit: 1000,

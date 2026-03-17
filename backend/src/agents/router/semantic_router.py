@@ -609,6 +609,15 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             **_build_workflow_stage_update("executing", detail),
         }
 
+    # WAITING_INTERVENTION tasks are blocking on user action; do not route past them.
+    waiting_intervention = [t for t in task_pool if t["status"] == "WAITING_INTERVENTION"]
+    if waiting_intervention:
+        logger.info("[Router] Found %d WAITING_INTERVENTION task(s), waiting for user resolution.", len(waiting_intervention))
+        return {
+            "execution_state": "INTERRUPTED",
+            "route_count": route_count,
+        }
+
     waiting = [t for t in task_pool if t["status"] == "WAITING_DEPENDENCY"]
     verified_facts = state.get("verified_facts") or {}
     for waiting_task in waiting:

@@ -19,6 +19,102 @@ contracts.
 
 ## Open Items
 
+## [closed] Intervention input action payload contract needs to be frozen
+- Date: 2026-03-17
+- Related feature: `features/workflow-intervention-flow.md`
+- Blocking area: schema-driven `input` action submission for intervention resolve
+- Current frontend assumption:
+  frontend has completed the Phase 1 intervention integration and currently
+  treats `input` actions as a single free-text field submitted as:
+  `payload.comment`.
+- What is missing from backend:
+  the current handoff and feature doc freeze the top-level resolve body
+  (`fingerprint`, `action_key`, `payload`) but do not yet freeze how Phase 1
+  `input` actions map `payload_schema` into concrete payload field names.
+- Needed response:
+  backend should freeze one of the following for Phase 1 so frontend can remain
+  generic without per-scenario branching:
+  1. all Phase 1 `input` actions submit `{ comment: string }`
+  2. `payload_schema` exposes the canonical field name plus required/optional
+     rule, and frontend should build the payload from that schema
+- Suggested payload or API:
+  preferred smallest-scope option for Phase 1:
+  - `input` kind always maps to:
+    ```json
+    {
+      "fingerprint": "...",
+      "action_key": "provide_input",
+      "payload": {
+        "comment": "..."
+      }
+    }
+    ```
+  if backend wants schema-driven field names in Phase 1, please specify the
+  minimum supported `payload_schema` shape explicitly.
+- Backend response (2026-03-17):
+  frozen for Phase 1: all `input` kind actions use `{ comment: string }` as the
+  payload shape. Backend resolve endpoint accepts any `payload` object, so
+  `{ "comment": "用户输入内容" }` is the canonical Phase 1 contract.
+  Phase 2 may introduce `payload_schema`-driven field names, but Phase 1
+  frontend can hardcode `comment` for `input` actions without risk.
+- Notes:
+  backend default action schema for `provide_input` already uses
+  `placeholder: "请输入修改意见..."` which aligns with the `comment` field
+  semantics.
+
+## [closed] Clarify whether intervention_resolution is frontend-visible in Phase 1
+- Date: 2026-03-17
+- Related feature: `features/workflow-intervention-flow.md`
+- Blocking area: post-resolution task rendering and hydration behavior
+- Current frontend assumption:
+  Phase 1 UI only requires `intervention_request`, `intervention_status`, and
+  `intervention_fingerprint` to render active intervention state.
+- What is missing from backend:
+  backend handoff mentions an additional `intervention_resolution` field but
+  does not define whether frontend should consume or display it.
+- Needed response:
+  please confirm one of:
+  1. Phase 1 frontend may ignore `intervention_resolution`
+  2. frontend should display the accepted user choice after resolve/reconnect
+- Backend response (2026-03-17):
+  confirmed option 1: Phase 1 frontend may ignore `intervention_resolution`.
+  This field is a backend-only persistence artifact used to drive resume
+  behavior. Frontend only needs:
+  - `intervention_request` (to render the card)
+  - `intervention_status` (to know pending vs resolved vs consumed)
+  - `intervention_fingerprint` (to submit resolution)
+  `intervention_resolution` is a non-blocking extension field for Phase 1.
+  Phase 2 may expose it for post-resolution display (e.g., "你选择了：批准执行").
+- Notes:
+  after resolution, the task transitions from `WAITING_INTERVENTION` to
+  `RUNNING` or `FAILED`. Frontend can rely on the status change to dismiss
+  the intervention card.
+
+## [closed] Intervention 422 error body shape is not yet specified
+- Date: 2026-03-17
+- Related feature: `features/workflow-intervention-flow.md`
+- Blocking area: validation error presentation for resolve submission
+- Current frontend assumption:
+  frontend currently handles `409` and `422` by status code and shows generic
+  localized error copy.
+- What is missing from backend:
+  the handoff does not yet specify whether `422` returns only a simple `detail`
+  string or a structured validation payload.
+- Needed response:
+  please confirm the response shape for invalid payload submissions so frontend
+  can decide whether generic toast copy is enough for Phase 1 or whether field
+  errors should be surfaced.
+- Backend response (2026-03-17):
+  confirmed option 1 for Phase 1: `422` returns FastAPI default
+  `{ "detail": "Invalid action_key: xxx" }` — a simple string.
+  `409` returns `{ "detail": "Fingerprint mismatch: intervention may be stale" }`.
+  `404` returns `{ "detail": "No pending intervention found for request_id: xxx" }`.
+  Frontend generic toast copy is sufficient for Phase 1. Phase 2 may introduce
+  structured field-level errors if needed.
+- Notes:
+  current frontend implementation with status-code-based generic error handling
+  is fully compatible with the backend response shape.
+
 ## [closed] Refresh during true queued window now hydrates queued shell
 - Date: 2026-03-14
 - Related feature: `features/workflow-entry-feedback-and-runtime-polish.md`

@@ -15,6 +15,7 @@ type BaseTaskEvent = {
   type:
     | "task_started"
     | "task_running"
+    | "task_waiting_intervention"
     | "task_waiting_dependency"
     | "task_help_requested"
     | "task_resumed"
@@ -48,6 +49,9 @@ export type MultiAgentTaskEvent = BaseTaskEvent & {
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
+  intervention_request?: ThreadTaskState["intervention_request"];
+  intervention_status?: ThreadTaskState["intervention_status"];
+  intervention_fingerprint?: string;
 };
 
 export type LegacyTaskEvent = BaseTaskEvent & {
@@ -68,6 +72,9 @@ function mapThreadTaskStatus(
   if (status === "WAITING_DEPENDENCY") {
     return "waiting_dependency";
   }
+  if (status === "WAITING_INTERVENTION") {
+    return "waiting_intervention";
+  }
   if (status === "RUNNING" && clarificationPrompt) {
     return "waiting_clarification";
   }
@@ -83,6 +90,12 @@ function mapThreadTaskStatus(
 function mapEventStatus(event: MultiAgentTaskEvent): TaskStatus {
   if (event.status === "waiting_clarification") {
     return "waiting_clarification";
+  }
+  if (
+    event.type === "task_waiting_intervention" ||
+    event.status === "waiting_intervention"
+  ) {
+    return "waiting_intervention";
   }
   if (
     event.type === "task_waiting_dependency" ||
@@ -200,7 +213,11 @@ export function fromMultiAgentTaskState(
     status,
     statusDetail: task.status_detail ?? undefined,
     clarificationPrompt: task.clarification_prompt ?? undefined,
+    interventionRequest: task.intervention_request ?? undefined,
+    interventionStatus: task.intervention_status ?? undefined,
+    interventionFingerprint: task.intervention_fingerprint ?? undefined,
     latestUpdate:
+      task.intervention_request?.reason ??
       task.clarification_prompt ??
       task.status_detail ??
       undefined,
@@ -212,11 +229,13 @@ export function fromMultiAgentTaskState(
 
 export function fromMultiAgentTaskEvent(
   event: MultiAgentTaskEvent,
+  threadId?: string,
 ): TaskUpsert {
   return {
     id: event.task_id,
     source: "multi_agent",
     runId: event.run_id ?? undefined,
+    threadId,
     description: event.description ?? "",
     prompt: event.description ?? "",
     agentName: event.agent_name ?? undefined,
@@ -239,6 +258,9 @@ export function fromMultiAgentTaskEvent(
     status: mapEventStatus(event),
     statusDetail: event.status_detail ?? getTaskUpdateText(event.message),
     clarificationPrompt: event.clarification_prompt ?? undefined,
+    interventionRequest: event.intervention_request ?? undefined,
+    interventionStatus: event.intervention_status ?? undefined,
+    interventionFingerprint: event.intervention_fingerprint ?? undefined,
     latestMessage:
       typeof event.message === "object" && event.message !== null
         ? event.message

@@ -332,6 +332,21 @@ def _describe_active_stage(task_pool: list[TaskStatus]) -> tuple[WorkflowStage, 
             ),
         )
 
+    intervention_task = next(
+        (task for task in task_pool if task["status"] == "WAITING_INTERVENTION"),
+        None,
+    )
+    if intervention_task is not None:
+        intervention_request = intervention_task.get("intervention_request") or {}
+        return (
+            "executing",
+            _pick_first_non_empty(
+                intervention_request.get("title") if isinstance(intervention_request, dict) else None,
+                intervention_task.get("status_detail"),
+                intervention_task.get("description"),
+            ),
+        )
+
     waiting_task = next(
         (task for task in task_pool if task["status"] == "WAITING_DEPENDENCY"),
         None,
@@ -413,6 +428,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     pending = [t for t in task_pool if t["status"] == "PENDING"]
     running = [t for t in task_pool if t["status"] == "RUNNING"]
     waiting = [t for t in task_pool if t["status"] == "WAITING_DEPENDENCY"]
+    waiting_intervention = [t for t in task_pool if t["status"] == "WAITING_INTERVENTION"]
 
     if stored_original_input and latest_user_input and latest_user_input != stored_original_input and not is_clarification_answer:
         next_run_id = current_run_id if state.get("workflow_stage") == "acknowledged" and current_run_id else _new_run_id()
@@ -431,12 +447,13 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             **_build_workflow_stage_update("queued", queued_detail),
         }
 
-    if pending or running or waiting:
+    if pending or running or waiting or waiting_intervention:
         logger.info(
-            "[Planner] Active tasks detected (pending=%d, running=%d, waiting=%d), resuming.",
+            "[Planner] Active tasks detected (pending=%d, running=%d, waiting=%d, waiting_intervention=%d), resuming.",
             len(pending),
             len(running),
             len(waiting),
+            len(waiting_intervention),
         )
         result = {"execution_state": "RESUMING", "run_id": run_id}
         active_stage = _describe_active_stage(task_pool)

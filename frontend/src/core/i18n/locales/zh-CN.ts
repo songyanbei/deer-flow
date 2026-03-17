@@ -257,6 +257,7 @@ export const zhCN: Translations = {
     pending: "待处理",
     in_progress: "子任务运行中",
     waiting_dependency: "等待依赖",
+    waiting_intervention: "等待你的决策",
     waiting_clarification: "等待澄清",
     completed: "子任务已完成",
     failed: "子任务失败",
@@ -277,6 +278,16 @@ export const zhCN: Translations = {
     requestedBy: (agent: string) => `求助来源：${agent}`,
     resolvedInputs: "已解析的依赖结果",
     resumed: "依赖已解析，任务继续执行",
+    interventionRisk: (riskLevel: string) => `风险：${riskLevel}`,
+    interventionPlaceholder: "请输入继续执行所需的补充信息",
+    interventionSubmitted: "已提交决策",
+    interventionStale: "当前干预请求已过期",
+    interventionInvalid: "请先补全必填信息再提交",
+    interventionSubmitFailed: "提交决策失败",
+    interventionActionFallback: "提交",
+    interventionRequiredLabel: "需要你的决策",
+    interventionNextActionLabel: "下一步动作",
+    interventionDecisionLabel: "请做出选择",
   },
 
   workflowStatus: {
@@ -290,6 +301,7 @@ export const zhCN: Translations = {
     executing: "子任务已开始执行...",
     summarizing: "任务已完成，正在汇总结果…",
     waitingDependency: "正在等待相关任务完成…",
+    waitingIntervention: "等待你的决策",
     waitingClarification: "需要你提供更多信息",
     running: (count: number) => `正在执行 ${count} 个子任务`,
     completedSummary: (completed: number, total: number) =>

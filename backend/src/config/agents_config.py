@@ -58,7 +58,8 @@ class AgentConfig(BaseModel):
     # Multi-agent orchestration fields
     domain: str | None = None                      # Business domain label (e.g. "hr"). Set to be discovered by Router.
     system_prompt_file: str | None = None          # Optional override for the default SOUL.md prompt file.
-    hitl_keywords: list[str] = Field(default_factory=list)  # Keywords triggering Human-in-the-Loop approval (Phase 3)
+    hitl_keywords: list[str] = Field(default_factory=list)  # Keywords triggering Human-in-the-Loop approval (backward-compatible fallback)
+    intervention_policies: dict[str, Any] = Field(default_factory=dict)  # Per-tool intervention policies (Phase 1)
     max_tool_calls: int = 20                       # Per-agent safety limit for tool usage inside one task execution.
     mcp_servers: list[McpServerEntry] = Field(default_factory=list)  # Domain-specific MCP servers (stdio connections)
     available_skills: list[str] | None = None      # Skill names to expose; None = all enabled skills

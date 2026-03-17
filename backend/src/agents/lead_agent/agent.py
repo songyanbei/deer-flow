@@ -9,6 +9,7 @@ from src.agents.lead_agent.prompt import apply_prompt_template
 from src.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from src.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
 from src.agents.middlewares.help_request_middleware import HelpRequestMiddleware
+from src.agents.middlewares.intervention_middleware import InterventionMiddleware
 from src.agents.middlewares.memory_middleware import MemoryMiddleware
 from src.agents.middlewares.subagent_limit_middleware import SubagentLimitMiddleware
 from src.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
@@ -263,6 +264,24 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
         middlewares.append(SubagentLimitMiddleware(max_concurrent=max_concurrent_subagents))
 
     if is_domain_agent:
+        # InterventionMiddleware intercepts risky tool calls before execution.
+        # Must be before HelpRequestMiddleware so intervention takes priority.
+        intervention_policies = config.get("configurable", {}).get("intervention_policies") or {}
+        hitl_keywords = config.get("configurable", {}).get("hitl_keywords") or []
+        run_id = config.get("configurable", {}).get("run_id") or ""
+        task_id = config.get("configurable", {}).get("task_id") or ""
+        intervention_agent_name = config.get("configurable", {}).get("agent_name") or ""
+        resolved_fingerprints = config.get("configurable", {}).get("resolved_fingerprints") or set()
+        middlewares.append(
+            InterventionMiddleware(
+                intervention_policies=intervention_policies,
+                hitl_keywords=hitl_keywords,
+                run_id=run_id,
+                task_id=task_id,
+                agent_name=intervention_agent_name,
+                resolved_fingerprints=resolved_fingerprints,
+            )
+        )
         middlewares.append(HelpRequestMiddleware())
 
     # ClarificationMiddleware should always be last

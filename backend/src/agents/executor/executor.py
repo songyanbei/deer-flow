@@ -14,6 +14,8 @@ from langgraph.config import get_stream_writer
 
 from src.agents.thread_state import (
     HelpRequestPayload,
+    InterventionRequest,
+    InterventionResolution,
     TaskStatus,
     ThreadState,
     VerifiedFact,
@@ -151,6 +153,8 @@ def _default_event_status(event_type: str) -> str:
         return "in_progress"
     if event_type in {"task_waiting_dependency", "task_help_requested"}:
         return "waiting_dependency"
+    if event_type == "task_waiting_intervention":
+        return "waiting_intervention"
     if event_type == "task_completed":
         return "completed"
     if event_type == "task_failed":
@@ -365,7 +369,7 @@ def _find_last_terminal_tool_signal(messages: list[Any]) -> tuple[int, ToolMessa
         message = messages[idx]
         if not isinstance(message, ToolMessage):
             continue
-        if getattr(message, "name", None) in {"request_help", "ask_clarification"}:
+        if getattr(message, "name", None) in {"request_help", "ask_clarification", "intervention_required"}:
             return idx, message
     return None
 
@@ -436,6 +440,41 @@ def _parse_request_help_message(message: ToolMessage) -> HelpRequestPayload | No
     return result
 
 
+def _parse_intervention_required_message(message: ToolMessage) -> InterventionRequest | None:
+    """Parse an intervention_required ToolMessage into an InterventionRequest."""
+    raw_content = _content_to_text(message.content)
+    payload = _parse_json_object(raw_content)
+    if payload is None:
+        logger.error("[Executor] intervention_required payload is not valid JSON: %r", raw_content[:2000])
+        return None
+
+    # Validate required fields
+    required = ("request_id", "fingerprint", "intervention_type", "title", "reason", "source_agent", "source_task_id", "action_schema", "created_at")
+    missing = [f for f in required if f not in payload]
+    if missing:
+        logger.error("[Executor] intervention_required payload missing fields: %s", missing)
+        return None
+
+    return payload  # type: ignore[return-value]
+
+
+def _collect_resolved_fingerprints(task_pool: list[TaskStatus]) -> set[str]:
+    """Collect fingerprints of already-resolved interventions in the current run."""
+    fingerprints: set[str] = set()
+    for task in task_pool:
+        resolution = task.get("intervention_resolution")
+        if isinstance(resolution, dict):
+            fp = resolution.get("fingerprint")
+            if fp:
+                fingerprints.add(fp)
+        # Also collect consumed fingerprints
+        if task.get("intervention_status") in ("resolved", "consumed"):
+            fp = task.get("intervention_fingerprint")
+            if fp:
+                fingerprints.add(fp)
+    return fingerprints
+
+
 async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     running = [t for t in task_pool if t["status"] == "RUNNING"]
@@ -462,12 +501,31 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     try:
         await _ensure_mcp_ready(agent_name)
 
+        # Collect resolved fingerprints for dedup in InterventionMiddleware
+        resolved_fingerprints = _collect_resolved_fingerprints(task_pool)
+
+        # Load agent config for intervention policies
+        try:
+            agent_cfg = load_agent_config(agent_name)
+        except Exception:
+            agent_cfg = None
+        intervention_policies = {}
+        hitl_keywords: list[str] = []
+        if agent_cfg:
+            intervention_policies = getattr(agent_cfg, "intervention_policies", None) or {}
+            hitl_keywords = getattr(agent_cfg, "hitl_keywords", None) or []
+
         agent_config_override = RunnableConfig(
             configurable={
                 **config.get("configurable", {}),
                 "agent_name": agent_name,
                 "subagent_enabled": False,
                 "is_domain_agent": True,
+                "run_id": task_run_id,
+                "task_id": task["task_id"],
+                "intervention_policies": intervention_policies,
+                "hitl_keywords": hitl_keywords,
+                "resolved_fingerprints": resolved_fingerprints,
             }
         )
 
@@ -520,6 +578,49 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
 
         terminal_tool_signal = _find_last_terminal_tool_signal(messages)
         terminal_signal_name = terminal_tool_signal[1].name if terminal_tool_signal else None
+
+        # --- intervention_required handling ---
+        if terminal_tool_signal and terminal_tool_signal[1].name == "intervention_required":
+            terminal_idx, terminal_message = terminal_tool_signal
+            logger.info("[Executor] Task '%s' interrupted by intervention_required.", task["task_id"])
+            intervention_request = _parse_intervention_required_message(terminal_message)
+            if intervention_request is None:
+                raise RuntimeError("intervention_required returned invalid structured payload.")
+            _log_executor_decision(
+                task,
+                agent_name,
+                messages,
+                "intervention_required",
+                terminal_signal=terminal_signal_name,
+                intervention_request_id=intervention_request["request_id"],
+                intervention_fingerprint=intervention_request["fingerprint"],
+            )
+            intervention_task: TaskStatus = {
+                **task,
+                "status": "WAITING_INTERVENTION",
+                "status_detail": "@waiting_intervention",
+                "intervention_request": intervention_request,
+                "intervention_status": "pending",
+                "intervention_fingerprint": intervention_request["fingerprint"],
+                "intervention_resolution": None,
+                "clarification_prompt": None,
+                "request_help": None,
+                "blocked_reason": None,
+                "updated_at": _utc_now_iso(),
+            }
+            _emit_task_event(
+                writer,
+                "task_waiting_intervention",
+                intervention_task,
+                agent_name,
+                status_detail="@waiting_intervention",
+                intervention_request=intervention_request,
+            )
+            return {
+                "task_pool": [intervention_task],
+                "execution_state": "INTERRUPTED",
+            }
+
         if terminal_tool_signal and terminal_tool_signal[1].name == "request_help":
             terminal_idx, terminal_message = terminal_tool_signal
             if terminal_idx != len(messages) - 1:

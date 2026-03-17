@@ -18,6 +18,7 @@ import {
 
 function pickPrimaryWorkflowTask(tasks: TaskViewModel[]) {
   return (
+    tasks.find((task) => task.status === "waiting_intervention") ??
     tasks.find((task) => task.status === "waiting_clarification") ??
     tasks.find((task) => task.status === "waiting_dependency") ??
     tasks.find((task) => task.status === "in_progress") ??
@@ -38,6 +39,7 @@ function getCompactTaskTitle(task: TaskViewModel | undefined, fallback?: string)
 function isActiveWorkflowTask(task: TaskViewModel | undefined) {
   return (
     task?.status === "waiting_dependency" ||
+    task?.status === "waiting_intervention" ||
     task?.status === "in_progress" || task?.status === "waiting_clarification"
   );
 }

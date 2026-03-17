@@ -24,12 +24,15 @@ const t = {
     processing: "Working on your request…",
     executing: "Subtasks are underway...",
     summarizing: "Tasks done, summarizing results…",
+    waitingIntervention: "Waiting for your decision",
     waitingClarification: "Need more information from you",
     waitingDependency: "Waiting for a related task to finish…",
     running: (count: number) =>
       `Running ${count} subtask${count === 1 ? "" : "s"}`,
+    completedSummary: (completed: number, total: number) =>
+      `${completed} of ${total} done`,
   },
-} as Pick<Translations, "workflowStatus"> as Translations;
+} as unknown as Translations;
 
 function createTask(overrides: Partial<TaskViewModel>): TaskViewModel {
   return {
@@ -74,6 +77,7 @@ describe("workflow progress helpers", () => {
       activeTaskCount: 0,
       totalTaskCount: 0,
       isWaitingClarification: false,
+      isWaitingIntervention: false,
     });
   });
 
@@ -121,6 +125,43 @@ describe("workflow progress helpers", () => {
     expect(summary?.title).toBe("Need more information from you");
     expect(summary?.detail).toBe("Which data source should I use?");
     expect(summary?.isWaitingClarification).toBe(true);
+    expect(summary?.isWaitingIntervention).toBe(false);
+  });
+
+  it("prioritizes intervention over other waiting states", () => {
+    const summary = getWorkflowProgressSummary({
+      isLoading: true,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+      },
+      tasks: [
+        createTask({
+          id: "task-1",
+          status: "waiting_intervention",
+          interventionRequest: {
+            request_id: "req-1",
+            fingerprint: "fp-1",
+            intervention_type: "approval",
+            title: "Need approval",
+            reason: "Please approve the risky action.",
+            source_agent: "ops-agent",
+            source_task_id: "task-1",
+            action_schema: { actions: [] },
+            created_at: "2026-03-17T10:00:00.000Z",
+          },
+        }),
+        createTask({
+          id: "task-2",
+          status: "waiting_dependency",
+          blockedReason: "Need organizer info",
+        }),
+      ],
+      t,
+    });
+
+    expect(summary?.title).toBe("Waiting for your decision");
+    expect(summary?.detail).toBe("Please approve the risky action.");
+    expect(summary?.isWaitingIntervention).toBe(true);
   });
 
   it("keeps the workflow shell title while using clarification as detail", () => {
@@ -192,6 +233,7 @@ describe("workflow progress helpers", () => {
       "Need contact lookup for the meeting organizer",
     );
     expect(summary?.isWaitingClarification).toBe(false);
+    expect(summary?.isWaitingIntervention).toBe(false);
   });
 
   it("stays hidden for non-workflow streams", () => {

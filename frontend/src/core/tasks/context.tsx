@@ -28,8 +28,9 @@ const TASK_STATUS_PRIORITY: Record<TaskViewModel["status"], number> = {
   in_progress: 1,
   waiting_dependency: 2,
   waiting_clarification: 3,
-  completed: 4,
-  failed: 5,
+  waiting_intervention: 4,
+  completed: 5,
+  failed: 6,
 };
 
 export const SubtaskContext = createContext<SubtaskContextValue>({
@@ -127,6 +128,18 @@ export function mergeHydratedTask(
     clarificationPrompt: selectRichField(
       existing.clarificationPrompt,
       hydrated.clarificationPrompt,
+    ),
+    interventionRequest: selectRichField(
+      existing.interventionRequest,
+      hydrated.interventionRequest,
+    ),
+    interventionStatus: selectRichField(
+      existing.interventionStatus,
+      hydrated.interventionStatus,
+    ),
+    interventionFingerprint: selectRichField(
+      existing.interventionFingerprint,
+      hydrated.interventionFingerprint,
     ),
     statusDetail: selectRichField(existing.statusDetail, hydrated.statusDetail),
   };

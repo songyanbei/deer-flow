@@ -12,6 +12,46 @@ export type WorkflowStage =
   | "executing"
   | "summarizing";
 
+export type InterventionResolutionBehavior =
+  | "resume_current_task"
+  | "fail_current_task"
+  | "replan_from_resolution";
+
+export type InterventionActionKind =
+  | "button"
+  | "input"
+  | "select"
+  | "composite";
+
+export interface InterventionActionSchema {
+  actions: Array<{
+    key: string;
+    label: string;
+    kind: InterventionActionKind;
+    resolution_behavior: InterventionResolutionBehavior;
+    payload_schema?: Record<string, unknown>;
+    placeholder?: string;
+  }>;
+}
+
+export interface InterventionRequest {
+  request_id: string;
+  fingerprint: string;
+  intervention_type: string;
+  title: string;
+  reason: string;
+  description?: string;
+  source_agent: string;
+  source_task_id: string;
+  tool_name?: string;
+  risk_level?: "medium" | "high" | "critical";
+  category?: string;
+  context?: Record<string, unknown>;
+  action_summary?: string;
+  action_schema: InterventionActionSchema;
+  created_at: string;
+}
+
 export interface ThreadTaskState {
   task_id: string;
   description: string;
@@ -32,9 +72,18 @@ export interface ThreadTaskState {
   blocked_reason?: string | null;
   resume_count?: number | null;
   help_depth?: number | null;
-  status: "PENDING" | "RUNNING" | "WAITING_DEPENDENCY" | "DONE" | "FAILED";
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "WAITING_DEPENDENCY"
+    | "WAITING_INTERVENTION"
+    | "DONE"
+    | "FAILED";
   status_detail?: string | null;
   clarification_prompt?: string | null;
+  intervention_request?: InterventionRequest | null;
+  intervention_status?: "pending" | "resolved" | "consumed" | "rejected" | null;
+  intervention_fingerprint?: string | null;
   updated_at?: string | null;
   result?: string | null;
   error?: string | null;

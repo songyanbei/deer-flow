@@ -41,6 +41,62 @@ class VerifiedFactEntry(TypedDict):
     updated_at: NotRequired[str | None]
 
 
+# ---------------------------------------------------------------------------
+# Intervention Protocol Types (Phase 1)
+# ---------------------------------------------------------------------------
+
+InterventionActionKind = Literal["button", "input", "select", "composite"]
+InterventionResolutionBehavior = Literal["resume_current_task", "fail_current_task", "replan_from_resolution"]
+InterventionStatusValue = Literal["pending", "resolved", "consumed", "rejected"]
+InterventionRiskLevel = Literal["medium", "high", "critical"]
+
+
+class InterventionActionEntry(TypedDict):
+    """One action option inside an intervention request."""
+
+    key: str
+    label: str
+    kind: InterventionActionKind
+    resolution_behavior: InterventionResolutionBehavior
+    payload_schema: NotRequired[dict[str, Any] | None]
+    placeholder: NotRequired[str | None]
+
+
+class InterventionActionSchema(TypedDict):
+    """Schema describing available user actions for an intervention."""
+
+    actions: list[InterventionActionEntry]
+
+
+class InterventionRequest(TypedDict):
+    """Structured request emitted when a workflow step requires user intervention."""
+
+    request_id: str
+    fingerprint: str
+    intervention_type: str
+    title: str
+    reason: str
+    description: NotRequired[str | None]
+    source_agent: str
+    source_task_id: str
+    tool_name: NotRequired[str | None]
+    risk_level: NotRequired[InterventionRiskLevel | None]
+    category: NotRequired[str | None]
+    context: NotRequired[dict[str, Any] | None]
+    action_summary: NotRequired[str | None]
+    action_schema: InterventionActionSchema
+    created_at: str
+
+
+class InterventionResolution(TypedDict):
+    """User-submitted resolution for an intervention request."""
+
+    request_id: str
+    fingerprint: str
+    action_key: str
+    payload: dict[str, Any]
+
+
 class TaskStatus(TypedDict):
     """Status of a single sub-task in the shared task pool."""
 
@@ -58,12 +114,17 @@ class TaskStatus(TypedDict):
     help_depth: NotRequired[int | None]
     helper_retry_count: NotRequired[int | None]
     helper_context: NotRequired[str | None]
-    status: Literal["PENDING", "RUNNING", "WAITING_DEPENDENCY", "DONE", "FAILED"]
+    status: Literal["PENDING", "RUNNING", "WAITING_DEPENDENCY", "WAITING_INTERVENTION", "DONE", "FAILED"]
     status_detail: NotRequired[str | None]
     clarification_prompt: NotRequired[str | None]
     updated_at: NotRequired[str | None]
     result: NotRequired[str | None]
     error: NotRequired[str | None]
+    # Intervention fields
+    intervention_request: NotRequired[InterventionRequest | None]
+    intervention_status: NotRequired[InterventionStatusValue | None]
+    intervention_fingerprint: NotRequired[str | None]
+    intervention_resolution: NotRequired[InterventionResolution | None]
 
 
 RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
@@ -88,8 +149,9 @@ def _is_valid_status_transition(old_status: str, new_status: str) -> bool:
 
     allowed_transitions = {
         "PENDING": {"RUNNING", "FAILED"},
-        "RUNNING": {"WAITING_DEPENDENCY", "DONE", "FAILED"},
+        "RUNNING": {"WAITING_DEPENDENCY", "WAITING_INTERVENTION", "DONE", "FAILED"},
         "WAITING_DEPENDENCY": {"PENDING", "RUNNING", "FAILED"},
+        "WAITING_INTERVENTION": {"RUNNING", "FAILED"},
         "DONE": set(),
         "FAILED": set(),
     }

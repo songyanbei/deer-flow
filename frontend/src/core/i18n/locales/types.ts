@@ -207,6 +207,7 @@ export interface Translations {
     pending: string;
     in_progress: string;
     waiting_dependency: string;
+    waiting_intervention: string;
     waiting_clarification: string;
     completed: string;
     failed: string;
@@ -227,6 +228,16 @@ export interface Translations {
     requestedBy?: (agent: string) => string;
     resolvedInputs?: string;
     resumed?: string;
+    interventionRisk: (riskLevel: string) => string;
+    interventionPlaceholder: string;
+    interventionSubmitted: string;
+    interventionStale: string;
+    interventionInvalid: string;
+    interventionSubmitFailed: string;
+    interventionActionFallback: string;
+    interventionRequiredLabel: string;
+    interventionNextActionLabel: string;
+    interventionDecisionLabel: string;
   };
 
   workflowStatus: {
@@ -240,6 +251,7 @@ export interface Translations {
     executing: string;
     summarizing: string;
     waitingDependency: string;
+    waitingIntervention: string;
     waitingClarification: string;
     running: (count: number) => string;
     completedSummary: (completed: number, total: number) => string;

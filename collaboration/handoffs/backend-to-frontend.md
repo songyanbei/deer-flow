@@ -134,6 +134,52 @@ clarification on how a payload will be displayed.
     - a follow-up live run later advanced from refreshed `queued` into
       `planning`
 
+## [closed] Intervention flow backend implementation ready for frontend integration
+- Date: 2026-03-17
+- Related feature: `features/workflow-intervention-flow.md`
+- Blocking area: intervention card rendering and resolve action submission
+- Backend question:
+  backend has implemented the full Phase 1 intervention protocol. Frontend can
+  now begin integration against the following contract.
+- Frontend decision needed:
+  confirm that the event/state contract below is sufficient for rendering
+  `InterventionCard` and submitting resolutions.
+- Backend contract summary:
+  1. **New task status**: `WAITING_INTERVENTION` in `task_pool`
+  2. **New stream event**: `task_waiting_intervention` with full
+     `intervention_request` payload
+  3. **Task fields added**:
+     - `intervention_request` (InterventionRequest object)
+     - `intervention_status` (`pending` | `resolved` | `consumed` | `rejected`)
+     - `intervention_fingerprint` (string)
+     - `intervention_resolution` (InterventionResolution object, after resolve)
+  4. **Resolve endpoint**:
+     `POST /api/threads/{thread_id}/interventions/{request_id}:resolve`
+     Body: `{ fingerprint, action_key, payload }`
+     Success: `{ ok, thread_id, request_id, fingerprint, accepted }`
+     Errors: 404 (not found), 409 (stale fingerprint), 422 (invalid action)
+  5. **status_detail**: `@waiting_intervention` for localization
+  6. **Hydration**: intervention state persists in `task_pool` and survives
+     refresh/reconnect
+- Suggested UI behavior:
+  - treat `waiting_intervention` as highest-priority blocking state in footer
+  - render `InterventionCard` from `intervention_request.action_schema`
+  - submit resolution to the dedicated endpoint, not chat
+  - handle 409 as stale (show "已过期" or similar)
+- Notes:
+  - backend does not hard-code action labels; frontend should render from
+    `action_schema.actions[].label`
+  - Phase 1 supports `button` and `input` action kinds only
+  - `select` and `composite` are protocol-reserved but not rendered in Phase 1
+  - the resolve endpoint triggers a resume run automatically on success
+  - frontend has confirmed this contract is sufficient for the current Phase 1
+    implementation
+  - clarified on 2026-03-17:
+    - all Phase 1 `input` actions submit `payload.comment`
+    - frontend may ignore `intervention_resolution` in Phase 1
+    - `422/409/404` currently return simple `{ detail: string }` bodies
+  - no additional frontend-blocking contract gaps remain for intervention flow
+
 ## [open] Workflow timeline duplication rule
 - Date: 2026-03-13
 - Related feature: `features/workflow-realtime-chat.md`

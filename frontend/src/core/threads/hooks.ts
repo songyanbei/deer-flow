@@ -34,6 +34,7 @@ type BaseTaskEvent = {
   type:
     | "task_started"
     | "task_running"
+    | "task_waiting_intervention"
     | "task_waiting_dependency"
     | "task_help_requested"
     | "task_resumed"
@@ -68,6 +69,17 @@ type MultiAgentTaskEvent = Omit<BaseTaskEvent, "source"> & {
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
+  intervention_request?: AgentThreadState["task_pool"] extends Array<infer Task>
+    ? Task extends { intervention_request?: infer Request }
+      ? Request
+      : never
+    : never;
+  intervention_status?: AgentThreadState["task_pool"] extends Array<infer Task>
+    ? Task extends { intervention_status?: infer Status }
+      ? Status
+      : never
+    : never;
+  intervention_fingerprint?: string;
   resolved_orchestration_mode?: AgentThreadState["resolved_orchestration_mode"];
   orchestration_reason?: AgentThreadState["orchestration_reason"];
   workflow_stage?: AgentThreadState["workflow_stage"];
@@ -169,6 +181,30 @@ function findPendingClarificationTaskFromStore(
     return task;
   }
   return null;
+}
+
+function getClarificationTaskRunId(
+  task: PendingClarificationTask | TaskViewModel,
+) {
+  return "source" in task ? task.runId : task.run_id;
+}
+
+function getClarificationTaskAgentName(
+  task: PendingClarificationTask | TaskViewModel,
+) {
+  return "source" in task ? task.agentName : task.assigned_agent;
+}
+
+function getClarificationTaskParentId(
+  task: PendingClarificationTask | TaskViewModel,
+) {
+  return "source" in task ? task.parentTaskId : task.parent_task_id;
+}
+
+function getClarificationTaskRequester(
+  task: PendingClarificationTask | TaskViewModel,
+) {
+  return "source" in task ? task.requestedByAgent : task.requested_by_agent;
 }
 
 function parseWorkflowStageUpdatedAt(value: string | null | undefined) {
@@ -440,7 +476,7 @@ export function useThreadStream({
       }
 
       if (taskEvent.kind === "multi_agent") {
-        upsertTask(fromMultiAgentTaskEvent(taskEvent.event));
+        upsertTask(fromMultiAgentTaskEvent(taskEvent.event, _threadId ?? undefined));
         return;
       }
 
@@ -652,25 +688,11 @@ export function useThreadStream({
               ? clarificationTask.task_id
               : clarificationTask.id,
           source: "multi_agent",
-          runId:
-            ("run_id" in clarificationTask
-              ? clarificationTask.run_id
-              : clarificationTask.runId) ??
-            currentRunId ??
-            undefined,
+          runId: getClarificationTaskRunId(clarificationTask) ?? currentRunId ?? undefined,
           description: clarificationTask.description,
-          agentName:
-            ("assigned_agent" in clarificationTask
-              ? clarificationTask.assigned_agent
-              : clarificationTask.agentName) ?? undefined,
-          parentTaskId:
-            ("parent_task_id" in clarificationTask
-              ? clarificationTask.parent_task_id
-              : clarificationTask.parentTaskId) ?? undefined,
-          requestedByAgent:
-            ("requested_by_agent" in clarificationTask
-              ? clarificationTask.requested_by_agent
-              : clarificationTask.requestedByAgent) ?? undefined,
+          agentName: getClarificationTaskAgentName(clarificationTask) ?? undefined,
+          parentTaskId: getClarificationTaskParentId(clarificationTask) ?? undefined,
+          requestedByAgent: getClarificationTaskRequester(clarificationTask) ?? undefined,
           status: "in_progress",
           statusDetail: undefined,
           clarificationPrompt: undefined,
@@ -887,6 +909,7 @@ export type ClassifiedTaskEvent =
 const TASK_EVENT_TYPES = new Set<BaseTaskEvent["type"]>([
   "task_started",
   "task_running",
+  "task_waiting_intervention",
   "task_waiting_dependency",
   "task_help_requested",
   "task_resumed",
