@@ -22,8 +22,8 @@ import type { TaskViewModel } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
-import { InterventionCard } from "./messages/intervention-card";
 import { FlipDisplay } from "./flip-display";
+import { InterventionCard } from "./messages/intervention-card";
 import {
   filterWorkflowTasks,
   getWorkflowProgressSummary,
@@ -55,20 +55,18 @@ function getTaskDetail(
   task: TaskViewModel,
   t: ReturnType<typeof useI18n>["t"],
 ): string | undefined {
-  // Terminal statuses: icon + label are sufficient, no detail needed
   if (task.status === "completed" || task.status === "failed") {
     return undefined;
   }
-  // User-visible prompts shown as-is
   if (task.clarificationPrompt) return task.clarificationPrompt;
   if (task.blockedReason) return task.blockedReason;
   if (task.interventionRequest?.reason) return task.interventionRequest.reason;
-  // Localize structured @key values; filter raw legacy English
+
   const localized =
     localizeStatusDetail(task.latestUpdate, t) ??
     localizeStatusDetail(task.statusDetail, t);
   if (localized) return localized;
-  // Don't leak unresolved @keys to UI
+
   const raw = task.latestUpdate ?? task.statusDetail;
   if (raw?.startsWith("@")) return undefined;
   return raw;
@@ -121,6 +119,16 @@ function getTaskIcon(task: TaskViewModel) {
   return <CircleDashedIcon className="size-3.5 text-muted-foreground/80" />;
 }
 
+function getStoppedTaskIcon(task: TaskViewModel) {
+  if (task.status === "completed") {
+    return <CheckCircle2Icon className="size-3.5 text-emerald-600" />;
+  }
+  if (task.status === "failed") {
+    return <XCircleIcon className="size-3.5 text-red-500" />;
+  }
+  return <PauseCircleIcon className="size-3.5 text-muted-foreground" />;
+}
+
 function isActiveWorkflowTask(task: TaskViewModel | undefined) {
   return (
     task?.status === "waiting_dependency" ||
@@ -132,33 +140,38 @@ function isActiveWorkflowTask(task: TaskViewModel | undefined) {
 
 function WorkflowFooterTaskRow({
   task,
+  stopped = false,
 }: {
   task: TaskViewModel;
+  stopped?: boolean;
 }) {
   const { t } = useI18n();
   const detail = getTaskDetail(task, t);
-  const isActive = isActiveWorkflowTask(task);
+  const isActive = !stopped && isActiveWorkflowTask(task);
+  const statusLabel = stopped ? "已终止" : getTaskStatusLabel(task, t);
 
   return (
     <div
       className={cn(
         "flex items-start gap-3 rounded-xl border border-transparent px-3 py-2.5 transition-colors",
-        isActive
-          ? "bg-background border-border/70"
-          : "bg-background/65",
+        isActive ? "bg-background border-border/70" : "bg-background/65",
       )}
     >
-      <div className="mt-0.5 shrink-0">{getTaskIcon(task)}</div>
+      <div className="mt-0.5 shrink-0">
+        {stopped ? getStoppedTaskIcon(task) : getTaskIcon(task)}
+      </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <div className="truncate text-sm font-medium">{task.description}</div>
           <div
             className={cn(
               "shrink-0 text-[11px] font-medium",
-              task.status === "failed" ? "text-red-500" : "text-muted-foreground",
+              !stopped && task.status === "failed"
+                ? "text-red-500"
+                : "text-muted-foreground",
             )}
           >
-            {getTaskStatusLabel(task, t)}
+            {statusLabel}
           </div>
         </div>
         {detail && (
@@ -174,9 +187,13 @@ function WorkflowFooterTaskRow({
 export function WorkflowFooterBar({
   className,
   thread,
+  hidden = false,
+  stopped = false,
 }: {
   className?: string;
   thread: BaseStream<AgentThreadState>;
+  hidden?: boolean;
+  stopped?: boolean;
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
@@ -193,12 +210,12 @@ export function WorkflowFooterBar({
     tasks: workflowTasks,
     t,
   });
-  const preferStageTitle =
-    progress?.workflowStage != null && progress.workflowStage !== "executing";
   const primaryTask = useMemo(
     () => pickPrimaryWorkflowTask(workflowTasks),
     [workflowTasks],
   );
+  const preferStageTitle =
+    progress?.workflowStage != null && progress.workflowStage !== "executing";
   const compactTitle = preferStageTitle
     ? getCompactTaskTitle(undefined, progress?.title ?? progress?.detail)
     : getCompactTaskTitle(primaryTask, progress?.title ?? progress?.detail);
@@ -206,22 +223,26 @@ export function WorkflowFooterBar({
     (task) => task.status === "completed",
   ).length;
   const totalCount = progress?.totalTaskCount ?? workflowTasks.length;
-  const summaryLabel =
-    totalCount > 0
+  const summaryLabel = stopped
+    ? "对话已终止"
+    : totalCount > 0
       ? t.workflowStatus.completedSummary(completedCount, totalCount)
       : t.workflowStatus.initializing;
   const summaryKey =
-    totalCount > 0 ? `${completedCount}-${totalCount}` : summaryLabel;
-  const headerTitle =
-    compactTitle ?? progress?.title ?? t.workflowStatus.processing;
+    totalCount > 0 && !stopped ? `${completedCount}-${totalCount}` : summaryLabel;
+  const headerTitle = stopped
+    ? "当前对话已被手动终止"
+    : compactTitle ?? progress?.title ?? t.workflowStatus.processing;
   const titleKey = primaryTask?.id ?? headerTitle;
   const showShimmer =
-    isActiveWorkflowTask(primaryTask) || Boolean(progress && !primaryTask);
+    !stopped &&
+    (isActiveWorkflowTask(primaryTask) || Boolean(progress && !primaryTask));
   const shouldShowPrimaryInterventionCard =
+    !stopped &&
     primaryTask?.status === "waiting_intervention" &&
     primaryTask.interventionRequest != null;
 
-  if (workflowTasks.length === 0 && !progress) {
+  if (hidden || (workflowTasks.length === 0 && !progress && !stopped)) {
     return null;
   }
 
@@ -238,18 +259,12 @@ export function WorkflowFooterBar({
         onClick={() => setExpanded((value) => !value)}
       >
         <div className="text-muted-foreground shrink-0 text-xs font-medium whitespace-nowrap">
-          <FlipDisplay
-            uniqueKey={summaryKey}
-            className="h-4 leading-4"
-          >
+          <FlipDisplay uniqueKey={summaryKey} className="h-4 leading-4">
             <span className="block whitespace-nowrap">{summaryLabel}</span>
           </FlipDisplay>
         </div>
         <div className="min-w-0 flex-1 text-sm font-medium">
-          <FlipDisplay
-            uniqueKey={titleKey}
-            className="h-5 leading-5"
-          >
+          <FlipDisplay uniqueKey={titleKey} className="h-5 leading-5">
             {showShimmer ? (
               <Shimmer
                 as="span"
@@ -274,6 +289,7 @@ export function WorkflowFooterBar({
           />
         </div>
       </button>
+
       {shouldShowPrimaryInterventionCard && primaryTask ? (
         <div className="border-border/60 border-t bg-muted/25 px-3 py-3">
           <div className="max-h-[min(52vh,36rem)] overflow-y-auto pr-1">
@@ -281,6 +297,7 @@ export function WorkflowFooterBar({
           </div>
         </div>
       ) : null}
+
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -291,10 +308,12 @@ export function WorkflowFooterBar({
             className="overflow-hidden"
           >
             <div className="border-border/60 bg-accent flex max-h-[34vh] flex-col gap-2 border-t px-2 pb-2 pt-2">
-              {progress && (
+              {(progress || stopped) && (
                 <div className="text-muted-foreground px-2 text-xs leading-4">
-                  <span className="font-medium text-foreground">{progress.title}</span>
-                  {progress.detail ? ` - ${progress.detail}` : ""}
+                  <span className="font-medium text-foreground">
+                    {stopped ? "对话已终止" : progress?.title}
+                  </span>
+                  {!stopped && progress?.detail ? ` - ${progress.detail}` : ""}
                 </div>
               )}
               <div className="flex max-h-[24vh] flex-col gap-1 overflow-y-auto pr-1">
@@ -309,7 +328,7 @@ export function WorkflowFooterBar({
                       ease: [0.32, 0.72, 0, 1],
                     }}
                   >
-                    <WorkflowFooterTaskRow task={task} />
+                    <WorkflowFooterTaskRow task={task} stopped={stopped} />
                   </motion.div>
                 ))}
               </div>

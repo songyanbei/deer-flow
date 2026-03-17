@@ -38,7 +38,7 @@ function compactThreadTitle(title: string, maxChars = 60): string {
   if (title.length <= maxChars) {
     return title;
   }
-  return title.slice(0, maxChars).trimEnd() + "…";
+  return `${title.slice(0, maxChars).trimEnd()}...`;
 }
 
 export function titleOfThread(thread: AgentThread) {

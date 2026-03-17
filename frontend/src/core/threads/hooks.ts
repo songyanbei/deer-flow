@@ -97,6 +97,60 @@ type ThreadEventPatch = Pick<
   | "run_id"
 >;
 
+function seedRecentThreadPreview(
+  queryClient: ReturnType<typeof useQueryClient>,
+  threadId: string,
+  text: string,
+) {
+  const normalizedText = text.trim();
+  if (!normalizedText) {
+    return;
+  }
+
+  queryClient.setQueriesData(
+    {
+      queryKey: ["threads", "search"],
+      exact: false,
+    },
+    (oldData: AgentThread[] | undefined) => {
+      const threads = Array.isArray(oldData) ? [...oldData] : [];
+      const now = new Date().toISOString();
+      const index = threads.findIndex((thread) => thread.thread_id === threadId);
+
+      if (index >= 0) {
+        const existing = threads[index]!;
+        const updated: AgentThread = {
+          ...existing,
+          updated_at: now,
+          values: {
+            ...existing.values,
+            original_input: existing.values?.original_input ?? normalizedText,
+            planner_goal: existing.values?.planner_goal ?? normalizedText,
+          },
+        };
+        threads.splice(index, 1);
+        threads.unshift(updated);
+        return threads;
+      }
+
+      return [
+        ({
+          thread_id: threadId,
+          updated_at: now,
+          values: {
+            title: "Untitled",
+            messages: [],
+            artifacts: [],
+            original_input: normalizedText,
+            planner_goal: normalizedText,
+          },
+        } as unknown) as AgentThread,
+        ...threads,
+      ];
+    },
+  );
+}
+
 type LocalWorkflowShell = {
   stage: NonNullable<AgentThreadState["workflow_stage"]>;
   detail?: string;
@@ -671,6 +725,8 @@ export function useThreadStream({
             : clarificationTask.id);
 
       prevMsgCountRef.current = thread.messages.length;
+
+      seedRecentThreadPreview(queryClient, threadId, text);
 
       if (explicitWorkflowRequest && !isClarificationResume) {
         setLocalWorkflowShell(

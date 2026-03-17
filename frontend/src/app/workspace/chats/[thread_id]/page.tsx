@@ -72,17 +72,25 @@ export default function ChatPage() {
       }
     },
   });
+  const [stoppedByUser, setStoppedByUser] = useState(false);
+
+  useEffect(() => {
+    setStoppedByUser(false);
+  }, [threadId]);
 
   const handleSubmit = useCallback(
     (message: PromptInputMessage) => {
+      setStoppedByUser(false);
       void sendMessage(threadId, message);
     },
     [sendMessage, threadId],
   );
   const handleStop = useCallback(async () => {
+    setStoppedByUser(true);
     await thread.stop();
   }, [thread]);
   const shouldDockWorkflowFooter =
+    !stoppedByUser &&
     (thread.values.resolved_orchestration_mode === "workflow" ||
       thread.values.workflow_stage != null) &&
     (thread.isLoading ||
@@ -130,6 +138,7 @@ export default function ChatPage() {
                 className={cn("size-full", !isNewThread && "pt-10")}
                 threadId={threadId}
                 thread={thread}
+                stoppedByUser={stoppedByUser}
                 paddingBottom={paddingBottom}
               />
             </div>
@@ -151,7 +160,11 @@ export default function ChatPage() {
                   className="absolute right-0 bottom-full left-0 z-0 pb-0.5"
                 >
                   <div className="flex flex-col gap-0.5">
-                    <WorkflowFooterBar thread={thread} />
+                    <WorkflowFooterBar
+                      thread={thread}
+                      hidden={false}
+                      stopped={stoppedByUser}
+                    />
                     <TodoList
                       className="bg-background/5"
                       todos={thread.values.todos ?? []}

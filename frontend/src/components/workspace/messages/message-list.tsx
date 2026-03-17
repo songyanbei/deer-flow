@@ -42,11 +42,13 @@ export function MessageList({
   className,
   threadId,
   thread,
+  stoppedByUser = false,
   paddingBottom = 160,
 }: {
   className?: string;
   threadId: string;
   thread: BaseStream<AgentThreadState>;
+  stoppedByUser?: boolean;
   paddingBottom?: number;
 }) {
   const { t } = useI18n();
@@ -75,14 +77,19 @@ export function MessageList({
     () => groupMessages(visibleMessages, (group) => group),
     [visibleMessages],
   );
-  const lastGroupedMessageType = groupedMessages.length
-    ? groupedMessages[groupedMessages.length - 1]!.type
-    : null;
+  const hasVisibleAssistantContent = groupedMessages.some(
+    (group) =>
+      group.type === "assistant" ||
+      group.type === "assistant:processing" ||
+      group.type === "assistant:clarification" ||
+      group.type === "assistant:present-files",
+  );
   const shouldShowWorkflowInlineProgress =
     isWorkflowMode &&
     thread.isLoading &&
-    workflowTasks.length === 0 &&
-    (lastGroupedMessageType === null || lastGroupedMessageType === "human");
+    !hasVisibleAssistantContent;
+  const shouldShowStoppedNotice =
+    stoppedByUser && !thread.isLoading && !hasVisibleAssistantContent;
   const legacySubagentGroups = useMemo(
     () =>
       groupedMessages.map((group) => {
@@ -274,6 +281,13 @@ export function MessageList({
           ) : (
             <StreamingIndicator className="my-4" />
           ))}
+        {shouldShowStoppedNotice && (
+          <div className="bg-background/85 border-border/60 my-4 flex max-w-xl flex-col gap-2 rounded-2xl border px-4 py-3 shadow-sm backdrop-blur-sm">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">对话已终止</div>
+            </div>
+          </div>
+        )}
         <div style={{ height: `${paddingBottom}px` }} />
       </ConversationContent>
     </Conversation>
