@@ -10,6 +10,11 @@ from uuid import UUID
 from langgraph_api.feature_flags import IS_POSTGRES_OR_GRPC_BACKEND
 from langgraph_api.serde import json_dumpb, json_loads
 
+from src.agents.workflow_resume import (
+    looks_like_explicit_new_request,
+    workflow_has_pending_clarification,
+)
+
 logger = logging.getLogger(__name__)
 
 _PATCH_INSTALLED = False
@@ -162,6 +167,33 @@ def _requested_mode_from_run(run: Mapping[str, Any]) -> str:
     )
 
 
+def _run_resume_metadata(run: Mapping[str, Any]) -> tuple[bool, str | None, str | None]:
+    kwargs = run.get("kwargs") if isinstance(run, Mapping) else None
+    if not isinstance(kwargs, Mapping):
+        return False, None, None
+
+    config = kwargs.get("config")
+    context = kwargs.get("context")
+
+    configurable: Mapping[str, Any] | None = None
+    if isinstance(config, Mapping):
+        raw = config.get("configurable")
+        if isinstance(raw, Mapping):
+            configurable = raw
+
+    resume_payload = configurable if configurable is not None else None
+    if resume_payload is None and isinstance(context, Mapping):
+        resume_payload = context
+
+    if not isinstance(resume_payload, Mapping):
+        return False, None, None
+
+    resume_flag = bool(resume_payload.get("workflow_clarification_resume"))
+    resume_run_id = _stringify_uuid(resume_payload.get("workflow_resume_run_id"))
+    resume_task_id = _stringify_uuid(resume_payload.get("workflow_resume_task_id"))
+    return resume_flag, resume_run_id, resume_task_id
+
+
 def _coerce_thread_values(raw_values: object) -> dict[str, Any]:
     if raw_values is None:
         return {}
@@ -308,6 +340,27 @@ async def _load_authoritative_thread_checkpoint(
     return _get_thread_state_module().state_snapshot_to_thread_state(state)
 
 
+async def _load_existing_thread_values(
+    conn: Any,
+    thread: Mapping[str, Any],
+) -> dict[str, Any]:
+    thread_id = thread.get("thread_id")
+    row_values = _coerce_thread_values(thread.get("values"))
+    if thread_id is None:
+        return row_values
+
+    authoritative_checkpoint = await _load_authoritative_thread_checkpoint(conn, thread_id)
+    authoritative_values = _coerce_thread_values(
+        authoritative_checkpoint.get("values") if isinstance(authoritative_checkpoint, Mapping) else None
+    )
+    if not authoritative_values:
+        return row_values
+
+    merged_values = dict(row_values)
+    merged_values.update(authoritative_values)
+    return merged_values
+
+
 def _extract_original_input_from_run(run: Mapping[str, Any]) -> str | None:
     kwargs = run.get("kwargs") if isinstance(run, Mapping) else None
     if not isinstance(kwargs, Mapping):
@@ -349,6 +402,55 @@ def _build_enqueue_time_values(
         values["planner_goal"] = original_input
 
     return values
+
+
+def _latest_pending_clarification_task(
+    existing_values: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    task_pool = existing_values.get("task_pool")
+    if not isinstance(task_pool, Sequence) or isinstance(task_pool, (str, bytes, bytearray)):
+        return None
+
+    for task in reversed(task_pool):
+        if not isinstance(task, Mapping):
+            continue
+        if task.get("status") != "RUNNING":
+            continue
+        prompt = task.get("clarification_prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return task
+    return None
+
+
+def _is_clarification_resume_submission(
+    existing_values: Mapping[str, Any],
+    run: Mapping[str, Any],
+) -> tuple[bool, str | None]:
+    resume_flag, resume_run_id, resume_task_id = _run_resume_metadata(run)
+    if resume_flag:
+        existing_run_id = _stringify_uuid(existing_values.get("run_id"))
+        if resume_run_id is None or existing_run_id is None or resume_run_id == existing_run_id:
+            return True, resume_task_id
+
+    if existing_values.get("resolved_orchestration_mode") != _WORKFLOW_MODE:
+        return False, None
+
+    pending_task = _latest_pending_clarification_task(existing_values)
+    if pending_task is None:
+        return False, None
+
+    if not workflow_has_pending_clarification(dict(existing_values)):
+        return False, None
+
+    latest_input = _extract_original_input_from_run(run)
+    if not latest_input:
+        return False, None
+
+    if looks_like_explicit_new_request(latest_input):
+        return False, None
+
+    task_id = pending_task.get("task_id")
+    return True, str(task_id).strip() or None
 
 
 def _has_same_run_authoritative_stage(
@@ -484,7 +586,25 @@ async def _persist_enqueue_time_workflow_state(
         not_found_detail=f"Thread {thread_id} not found while staging workflow queue state.",
     )
 
-    existing_values = _coerce_thread_values(thread.get("values"))
+    existing_values = await _load_existing_thread_values(conn, thread)
+    is_clarification_resume, clarification_task_id = _is_clarification_resume_submission(
+        existing_values,
+        run,
+    )
+    if is_clarification_resume:
+        logger.info(
+            "Skipping enqueue-time workflow queued staging for clarification resume.",
+            extra={
+                "thread_id": _stringify_uuid(thread_id),
+                "thread_run_id": _stringify_uuid(existing_values.get("run_id")),
+                "run_id": run_id,
+                "classification": "clarification_resume",
+                "action": "skip_enqueue_stage",
+                "clarification_task_id": clarification_task_id,
+            },
+        )
+        return None
+
     if _has_same_run_authoritative_stage(existing_values, run):
         logger.debug(
             "Skipping enqueue-time queued persistence because the same run already has an authoritative stage.",

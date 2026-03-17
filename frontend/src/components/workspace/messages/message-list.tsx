@@ -19,8 +19,8 @@ import {
   fromLegacyTaskToolCall,
   fromLegacyToolMessage,
 } from "@/core/tasks";
-import type { TaskUpsert } from "@/core/tasks/types";
 import { useSubtaskContext, useUpdateSubtask } from "@/core/tasks/context";
+import type { TaskUpsert } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
@@ -81,6 +81,7 @@ export function MessageList({
   const shouldShowWorkflowInlineProgress =
     isWorkflowMode &&
     thread.isLoading &&
+    workflowTasks.length === 0 &&
     (lastGroupedMessageType === null || lastGroupedMessageType === "human");
   const legacySubagentGroups = useMemo(
     () =>
@@ -212,7 +213,7 @@ export function MessageList({
                 results.push(
                   <SubtaskCard
                     key={"task-group-" + taskId}
-                    taskId={taskId!}
+                    taskId={taskId}
                     isLoading={thread.isLoading}
                   />,
                 );

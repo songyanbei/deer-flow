@@ -9,6 +9,11 @@ import {
 } from "./workflow-progress";
 
 const t = {
+  subtasks: {
+    statusDetail: {
+      dispatching: "Dispatching task to domain agent",
+    },
+  },
   workflowStatus: {
     initializing: "Planning",
     queued: "Queued and waiting to start...",
@@ -83,7 +88,7 @@ describe("workflow progress helpers", () => {
         createTask({
           id: "task-1",
           status: "in_progress",
-          latestUpdate: "Dispatching task to domain agent",
+          statusDetail: "@dispatching",
         }),
         createTask({
           id: "task-2",
@@ -139,6 +144,31 @@ describe("workflow progress helpers", () => {
     expect(summary?.title).toBe("Subtasks are underway...");
     expect(summary?.detail).toBe("Which room should I reserve?");
     expect(summary?.isWaitingClarification).toBe(true);
+  });
+
+  it("prefers active execution over queued-style shell when resuming after clarification", () => {
+    const summary = getWorkflowProgressSummary({
+      isLoading: true,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        execution_state: "RESUMING",
+        workflow_stage: "queued",
+        workflow_stage_detail: "Book the meeting room",
+      },
+      tasks: [
+        createTask({
+          id: "task-1",
+          status: "in_progress",
+          description: "Book the meeting room",
+          statusDetail: "@dispatching",
+        }),
+      ],
+      t,
+    });
+
+    expect(summary?.title).toBe("Running 1 subtask");
+    expect(summary?.detail).toBe("Dispatching task to domain agent");
+    expect(summary?.workflowStage).toBe("queued");
   });
 
   it("surfaces dependency waiting state with blocked reason", () => {

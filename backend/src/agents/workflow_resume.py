@@ -69,6 +69,8 @@ def _latest_waiting_clarification_task(state: ThreadState) -> TaskStatus | None:
     for task in reversed(task_pool):
         if not isinstance(task, dict):
             continue
+        if task.get("status") != "RUNNING":
+            continue
         prompt = task.get("clarification_prompt")
         if isinstance(prompt, str) and prompt.strip():
             return task
@@ -89,28 +91,30 @@ def _looks_like_explicit_new_request(text: str) -> bool:
     return any(marker in lowered or marker in text for marker in _EXPLICIT_NEW_REQUEST_MARKERS)
 
 
+def looks_like_explicit_new_request(text: str) -> bool:
+    return _looks_like_explicit_new_request(text)
+
+
 def latest_user_message_is_clarification_answer(state: ThreadState) -> bool:
     messages = state.get("messages") or []
-    if len(messages) < 2:
+    if not messages:
         return False
 
     last = messages[-1]
-    prev = messages[-2]
     if not is_human_message(last):
         return False
-    if not is_clarification_message(prev):
-        return False
-
-    if not workflow_has_pending_clarification(state):
-        task_pool = state.get("task_pool") or []
-        if not task_pool:
-            return False
 
     latest_input = content_to_text(getattr(last, "content", "")).strip()
     if not latest_input:
         return False
 
-    return not _looks_like_explicit_new_request(latest_input)
+    if _looks_like_explicit_new_request(latest_input):
+        return False
+
+    if len(messages) >= 2 and is_clarification_message(messages[-2]):
+        return True
+
+    return workflow_has_pending_clarification(state)
 
 
 def extract_latest_clarification_answer(state: ThreadState) -> str:

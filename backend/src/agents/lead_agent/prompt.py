@@ -291,6 +291,14 @@ Example:
 - `required_capability`: "Look up employee openId by name"
 - `expected_output`: "孙琦的 openId 字符串"
 - `candidate_agents`: ["contacts-agent"]
+
+When you have already searched rooms and the next blocker is a user decision, such as choosing among available cities or meeting rooms:
+- call `request_help`
+- set `resolution_strategy` to `"user_clarification"`
+- include a concrete `clarification_question`
+- include `clarification_options` whenever you have a bounded option list
+- include `clarification_context` summarizing why the choice is needed
+- do NOT return plain text like "请选择一个城市/会议室" as your final answer; this must be routed through `request_help`
 </meeting_agent_help_system>"""
 
 READ_ONLY_EXPLORER_RULES = """<read_only_explorer_system>
@@ -466,6 +474,11 @@ def apply_prompt_template(
             domain_agent_reminder += (
                 "- **Meeting Agent**: If a meeting tool requires an organizer or attendee `openId` that you cannot derive "
                 "inside the meeting domain, escalate that lookup to `contacts-agent` via `request_help`.\n"
+            )
+            domain_agent_reminder += (
+                "- **Meeting Agent**: If the user must choose between available cities or rooms, use "
+                "`request_help` with `resolution_strategy=\"user_clarification\"`; never return that choice request "
+                "as plain final text.\n"
             )
 
     read_only_reminder = (

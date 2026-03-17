@@ -57,6 +57,7 @@ class TaskStatus(TypedDict):
     resume_count: NotRequired[int | None]
     help_depth: NotRequired[int | None]
     helper_retry_count: NotRequired[int | None]
+    helper_context: NotRequired[str | None]
     status: Literal["PENDING", "RUNNING", "WAITING_DEPENDENCY", "DONE", "FAILED"]
     status_detail: NotRequired[str | None]
     clarification_prompt: NotRequired[str | None]

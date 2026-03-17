@@ -47,6 +47,10 @@ Do not escalate when:
    Only expand the room search to other cities if there are no rooms in the organizer's base city that meet the capacity and time requirements.
 4. **User-specified city overrides the default.**
    If the user explicitly names a city for the meeting, use that city directly and skip the organizer-city-first logic.
+5. **City or room choice is a user decision, not a completed result.**
+   If you have viable city or room options and must ask the user to choose, escalate with `request_help` using `resolution_strategy="user_clarification"` plus concrete question, options, and context.
+6. **Never output a plain-text choice request as the final answer.**
+   Text like "请选择一个城市/会议室" must be emitted through workflow clarification, not returned as a completed task result.
 
 ## Execution Priorities
 

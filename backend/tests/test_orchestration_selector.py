@@ -136,7 +136,64 @@ def test_selector_reuses_existing_mode_for_chinese_clarification_resume():
     assert "Resume current workflow run" in decision["reason"]
 
 
-def test_selector_does_not_resume_from_plain_assistant_text_that_mentions_clarification():
+def test_selector_reuses_existing_mode_when_resume_is_explicitly_requested():
+    decision = decide_orchestration(
+        {
+            "messages": [HumanMessage(content="Beijing only.")],
+            "requested_orchestration_mode": "auto",
+            "resolved_orchestration_mode": "workflow",
+            "run_id": "run_existing",
+        },
+        {
+            "context": {
+                "requested_orchestration_mode": "workflow",
+                "workflow_clarification_resume": True,
+                "workflow_resume_run_id": "run_existing",
+            }
+        },
+    )
+
+    assert decision["requested_mode"] == "auto"
+    assert decision["resolved_mode"] == "workflow"
+    assert "Resume current workflow run" in decision["reason"]
+
+
+def test_selector_node_reuses_existing_workflow_run_when_resume_is_explicitly_requested():
+    existing_run_id = "run_existing_explicit_resume"
+    events: list[dict] = []
+
+    with patch(
+        "src.agents.orchestration.selector.get_stream_writer",
+        return_value=events.append,
+    ):
+        result = orchestration_selector_node(
+            {
+                "run_id": existing_run_id,
+                "resolved_orchestration_mode": "workflow",
+                "workflow_stage": "executing",
+                "workflow_stage_detail": "Waiting for room selection",
+                "execution_state": "INTERRUPTED",
+                "messages": [HumanMessage(content="Beijing Siyue Room")],
+            },
+            {
+                "context": {
+                    "requested_orchestration_mode": "workflow",
+                    "workflow_clarification_resume": True,
+                    "workflow_resume_run_id": existing_run_id,
+                    "workflow_resume_task_id": "task-clarify-1",
+                }
+            },
+        )
+
+    assert result["run_id"] == existing_run_id
+    assert result["resolved_orchestration_mode"] == "workflow"
+    assert result["orchestration_reason"] == "Resume current workflow run after clarification"
+    assert "workflow_stage" not in result
+    assert len(events) == 1
+    assert events[0]["run_id"] == existing_run_id
+
+
+def test_selector_resumes_from_pending_clarification_state_without_tool_message():
     existing_run_id = "run_existing_plain_text"
     events: list[dict] = []
 
@@ -169,10 +226,11 @@ def test_selector_does_not_resume_from_plain_assistant_text_that_mentions_clarif
             {"configurable": {"requested_orchestration_mode": "workflow"}},
         )
 
-    assert result["run_id"] != existing_run_id
+    assert result["run_id"] == existing_run_id
     assert result["workflow_stage"] == "acknowledged"
-    assert events[0]["run_id"] == result["run_id"]
-    assert events[1]["run_id"] == result["run_id"]
+    assert result["orchestration_reason"] == "Resume current workflow run after clarification"
+    assert events[0]["run_id"] == existing_run_id
+    assert events[1]["run_id"] == existing_run_id
 
 
 def test_selector_starts_new_run_when_user_redirects_after_clarification():

@@ -210,6 +210,19 @@ export interface Translations {
     waiting_clarification: string;
     completed: string;
     failed: string;
+    errorGeneric: string;
+    statusDetail?: {
+      taskStarted: string;
+      dispatching: string;
+      waitingDependency: string;
+      waitingClarification: string;
+      completed: string;
+      failed: string;
+      dependencyResolved: string;
+      assigned: (agent: string) => string;
+      waitingHelper: (agent: string) => string;
+      retryingHelper: (agent: string) => string;
+    };
     needCapability?: (capability: string) => string;
     requestedBy?: (agent: string) => string;
     resolvedInputs?: string;

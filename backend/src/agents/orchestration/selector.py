@@ -92,6 +92,21 @@ def _normalize_requested_mode(value: object) -> RequestedOrchestrationMode:
             return lowered  # type: ignore[return-value]
     return "auto"
 
+
+def _orchestration_payload(config: RunnableConfig) -> dict:
+    configurable = config.get("configurable", {})
+    if isinstance(configurable, dict) and configurable:
+        return configurable
+    context = config.get("context", {})
+    if isinstance(context, dict):
+        return context
+    return {}
+
+
+def _workflow_clarification_resume_requested(config: RunnableConfig) -> bool:
+    payload = _orchestration_payload(config)
+    return bool(payload.get("workflow_clarification_resume"))
+
 def _count_matches(text: str, patterns: tuple[str, ...]) -> int:
     lowered = text.lower()
     return sum(1 for pattern in patterns if pattern in lowered or pattern in text)
@@ -162,7 +177,7 @@ def decide_orchestration(
     state: ThreadState,
     config: RunnableConfig,
 ) -> OrchestrationDecision:
-    configurable = config.get("configurable", {})
+    configurable = _orchestration_payload(config)
     requested_mode = _normalize_requested_mode(
         configurable.get("requested_orchestration_mode")
         or configurable.get("orchestration_mode")
@@ -171,6 +186,18 @@ def decide_orchestration(
         state.get("requested_orchestration_mode")
     )
     existing_resolved_mode = state.get("resolved_orchestration_mode")
+
+    if (
+        _workflow_clarification_resume_requested(config)
+        and existing_resolved_mode in {"leader", "workflow"}
+    ):
+        return {
+            "requested_mode": existing_requested_mode,
+            "resolved_mode": existing_resolved_mode,
+            "reason": f"Resume current {existing_resolved_mode} run after clarification",
+            "workflow_score": 0,
+            "leader_score": 0,
+        }
 
     if (
         latest_user_message_is_clarification_answer(state)
@@ -238,11 +265,19 @@ def decide_orchestration(
 def _resolve_workflow_run_id(
     state: ThreadState,
     decision: OrchestrationDecision,
+    config: RunnableConfig,
 ) -> str | None:
     if decision["resolved_mode"] != "workflow":
         return None
 
     existing_run_id = state.get("run_id")
+    if (
+        existing_run_id
+        and _workflow_clarification_resume_requested(config)
+        and state.get("resolved_orchestration_mode") == "workflow"
+    ):
+        return existing_run_id
+
     if (
         existing_run_id
         and latest_user_message_is_clarification_answer(state)
@@ -275,7 +310,7 @@ def _has_authoritative_workflow_stage(
 
 def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> dict:
     decision = decide_orchestration(state, config)
-    workflow_run_id = _resolve_workflow_run_id(state, decision)
+    workflow_run_id = _resolve_workflow_run_id(state, decision, config)
     preserve_existing_stage = (
         decision["resolved_mode"] == "workflow"
         and _has_authoritative_workflow_stage(state, workflow_run_id)

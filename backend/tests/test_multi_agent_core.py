@@ -17,6 +17,7 @@ from src.agents.graph import (
     route_after_workflow_planner,
     route_after_workflow_router,
 )
+from src.agents.lead_agent.prompt import apply_prompt_template
 from src.agents.middlewares.help_request_middleware import HelpRequestMiddleware
 from src.agents.orchestration.selector import orchestration_selector_node
 from src.agents.planner.node import planner_node
@@ -495,7 +496,7 @@ def test_planner_starts_new_run_when_user_redirects_after_clarification():
     asyncio.run(_run())
 
 
-def test_planner_treats_plain_assistant_clarification_copy_as_new_turn():
+def test_planner_resumes_when_pending_clarification_exists_even_without_tool_copy():
     async def _run():
         result = await planner_node(
             {
@@ -526,10 +527,10 @@ def test_planner_treats_plain_assistant_clarification_copy_as_new_turn():
             {"configurable": {"requested_orchestration_mode": "workflow"}},
         )
 
-        assert result["execution_state"] == "QUEUED"
-        assert result["workflow_stage"] == "queued"
-        assert result["run_id"] != "run_existing"
-        assert result["original_input"] == "Japan only."
+        assert result["execution_state"] == "RESUMING"
+        assert result["workflow_stage"] == "executing"
+        assert result["run_id"] == "run_existing"
+        assert "task_pool" not in result
 
     asyncio.run(_run())
 
@@ -722,7 +723,7 @@ def test_executor_waiting_clarification_persists_task_and_emits_protocol_fields(
         assert result["execution_state"] == "INTERRUPTED"
         assert result["task_pool"][0]["status"] == "RUNNING"
         assert result["task_pool"][0]["clarification_prompt"] == "Please confirm the employee identity."
-        assert result["task_pool"][0]["status_detail"] == "Waiting for user clarification"
+        assert result["task_pool"][0]["status_detail"] == "@waiting_clarification"
         assert [event["type"] for event in events] == ["task_started", "task_running", "task_running"]
         assert all(event["source"] == "multi_agent" for event in events)
         assert all(event["run_id"] == "run_test123" for event in events)
@@ -738,7 +739,12 @@ def test_executor_request_help_moves_task_to_waiting_dependency(monkeypatch):
             return {
                 "messages": [
                     ToolMessage(
-                        content='{"problem":"Missing organizer openId","required_capability":"contact lookup","reason":"Meeting API requires organizer identity","expected_output":"Organizer openId and city","resolution_strategy":null,"clarification_question":null,"clarification_context":null,"candidate_agents":["contacts-agent"]}',
+                        content=(
+                            '{"problem":"Missing organizer openId","required_capability":"contact lookup",'
+                            '"reason":"Meeting API requires organizer identity","expected_output":"Organizer openId and city",'
+                            '"resolution_strategy":null,"clarification_question":null,"clarification_context":null,'
+                            '"candidate_agents":["contacts-agent"]}'
+                        ),
                         tool_call_id="help-1",
                         name="request_help",
                     )
@@ -848,7 +854,15 @@ def test_executor_request_help_keeps_user_clarification_metadata(monkeypatch):
             return {
                 "messages": [
                     ToolMessage(
-                        content='{"problem":"No room available in Jinan","required_capability":"user preference confirmation","reason":"Need the user to choose another city before booking","expected_output":"Confirmed target city for booking","resolution_strategy":"user_clarification","clarification_question":"济南当前没有可用会议室，要改订哪个城市？","clarification_options":["北京","上海","深圳"],"clarification_context":"明天 9:00-10:00 时段济南无可用会议室。"}',
+                        content=(
+                            '{"problem":"No room available in Jinan","required_capability":"user preference confirmation",'
+                            '"reason":"Need the user to choose another city before booking",'
+                            '"expected_output":"Confirmed target city for booking",'
+                            '"resolution_strategy":"user_clarification",'
+                            '"clarification_question":"济南当前没有可用会议室，要改订哪个城市？",'
+                            '"clarification_options":["北京","上海","深圳"],'
+                            '"clarification_context":"明天 9:00-10:00 时段济南无可用会议室。"}'
+                        ),
                         tool_call_id="help-clarify-1",
                         name="request_help",
                     )
@@ -935,6 +949,133 @@ def test_executor_clarification_honors_non_terminal_tool_signal(monkeypatch):
     asyncio.run(_run())
 
 
+def test_executor_interrupts_on_plain_text_city_selection(monkeypatch):
+    class ClarifyingDomainAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {
+                "messages": [
+                    AIMessage(
+                        content="请选择一个城市的会议室进行预定：深圳创新会议室、广州天河会议室或北京思惠会议室，或者扩大搜索范围查看其他城市选项"
+                    )
+                ]
+            }
+
+    def _make_lead_agent(_config):
+        return ClarifyingDomainAgent()
+
+    events: list[dict] = []
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            with patch("src.agents.executor.executor.get_stream_writer", return_value=events.append):
+                result = await executor_node(
+                    {
+                        "run_id": "run_city123",
+                        "task_pool": [
+                            {
+                                "task_id": "t1",
+                                "description": "book a meeting room",
+                                "run_id": "run_city123",
+                                "assigned_agent": "meeting-agent",
+                                "status": "RUNNING",
+                            }
+                        ],
+                        "verified_facts": {},
+                    },
+                    {"configurable": {}},
+                )
+
+        task = result["task_pool"][0]
+        assert result["execution_state"] == "INTERRUPTED"
+        assert task["status"] == "RUNNING"
+        assert task["clarification_prompt"].startswith("请选择一个城市的会议室进行预定")
+        assert task["status_detail"] == "@waiting_clarification"
+        assert "verified_facts" not in result
+        assert events[-1]["status"] == "waiting_clarification"
+        assert events[-1]["status_detail"] == "@waiting_clarification"
+
+    asyncio.run(_run())
+
+
+def test_executor_plain_text_completion_still_finishes(monkeypatch):
+    class CompletingDomainAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {"messages": [AIMessage(content="会议室已预定成功，时间为明天 9:00-10:00。")]}
+
+    def _make_lead_agent(_config):
+        return CompletingDomainAgent()
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            result = await executor_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "book a meeting room",
+                            "assigned_agent": "meeting-agent",
+                            "status": "RUNNING",
+                        }
+                    ],
+                    "verified_facts": {},
+                },
+                {"configurable": {}},
+            )
+
+        task = result["task_pool"][0]
+        assert result["execution_state"] == "EXECUTING_DONE"
+        assert task["status"] == "DONE"
+        assert task["result"] == "会议室已预定成功，时间为明天 9:00-10:00。"
+
+    asyncio.run(_run())
+
+
+def test_executor_json_result_is_not_misclassified_as_clarification(monkeypatch):
+    class JsonDomainAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {"messages": [AIMessage(content='{"roomId":"r_123","status":"booked"}')]}
+
+    def _make_lead_agent(_config):
+        return JsonDomainAgent()
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            result = await executor_node(
+                {
+                    "task_pool": [
+                        {
+                            "task_id": "t1",
+                            "description": "book a meeting room",
+                            "assigned_agent": "meeting-agent",
+                            "status": "RUNNING",
+                        }
+                    ],
+                    "verified_facts": {},
+                },
+                {"configurable": {}},
+            )
+
+        task = result["task_pool"][0]
+        assert result["execution_state"] == "EXECUTING_DONE"
+        assert task["status"] == "DONE"
+        assert task["result"] == '{"roomId":"r_123","status":"booked"}'
+        assert result["verified_facts"]["t1"]["payload"] == {"roomId": "r_123", "status": "booked"}
+
+    asyncio.run(_run())
+
+
 def test_help_request_middleware_preserves_user_clarification_metadata():
     middleware = HelpRequestMiddleware()
 
@@ -994,7 +1135,7 @@ def test_router_preserves_run_id_and_adds_status_metadata():
         assert result["execution_state"] == "ROUTING_DONE"
         assert result["task_pool"][0]["status"] == "RUNNING"
         assert result["task_pool"][0]["run_id"] == "run_test123"
-        assert result["task_pool"][0]["status_detail"] == "Assigned to contacts-agent"
+        assert result["task_pool"][0]["status_detail"] == "@assigned:contacts-agent"
         assert result["task_pool"][0]["updated_at"]
 
     with patch("src.agents.router.semantic_router.list_domain_agents", return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")]):
@@ -1310,6 +1451,89 @@ def test_router_resumes_parent_after_helper_completion():
     asyncio.run(_run())
 
 
+def test_resumed_parent_interrupts_when_agent_returns_plain_text_choice(monkeypatch):
+    class ClarifyingDomainAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            return {
+                "messages": [
+                    AIMessage(
+                        content="Please choose a city for booking:\n1. Shenzhen Innovation Room\n2. Guangzhou Tianhe Room"
+                    )
+                ]
+            }
+
+    def _make_lead_agent(_config):
+        return ClarifyingDomainAgent()
+
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
+    _mcp_initialized.clear()
+
+    async def _run():
+        routed = await router_node(
+            {
+                "task_pool": [
+                    {
+                        "task_id": "parent-1",
+                        "description": "book a meeting room",
+                        "run_id": "run_help123",
+                        "assigned_agent": "meeting-agent",
+                        "status": "WAITING_DEPENDENCY",
+                        "depends_on_task_ids": ["helper-1"],
+                        "request_help": {
+                            "problem": "Missing organizer openId",
+                            "required_capability": "contact lookup",
+                            "reason": "Meeting API requires organizer identity",
+                            "expected_output": "Organizer openId and city",
+                        },
+                    },
+                    {
+                        "task_id": "helper-1",
+                        "description": "lookup organizer",
+                        "run_id": "run_help123",
+                        "assigned_agent": "contacts-agent",
+                        "status": "DONE",
+                        "result": '{"openId":"ou_123","city":"Shenzhen"}',
+                    },
+                ],
+                "verified_facts": {
+                    "helper-1": {
+                        "summary": "Organizer resolved",
+                        "payload": {"openId": "ou_123", "city": "Shenzhen"},
+                    }
+                },
+                "route_count": 0,
+            },
+            {"configurable": {}},
+        )
+
+        assert routed["execution_state"] == "ROUTING_DONE"
+        resumed_task = routed["task_pool"][0]
+        assert resumed_task["status"] == "RUNNING"
+
+        with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+            executed = await executor_node(
+                {
+                    "run_id": "run_help123",
+                    "task_pool": [resumed_task],
+                    "verified_facts": {
+                        "helper-1": {
+                            "summary": "Organizer resolved",
+                            "payload": {"openId": "ou_123", "city": "Shenzhen"},
+                        }
+                    },
+                },
+                {"configurable": {}},
+            )
+
+        assert executed["execution_state"] == "INTERRUPTED"
+        assert executed["task_pool"][0]["status"] == "RUNNING"
+        assert executed["task_pool"][0]["status_detail"] == "@waiting_clarification"
+        assert executed["task_pool"][0]["clarification_prompt"].startswith("Please choose a city for booking")
+
+    asyncio.run(_run())
+
+
 def test_route_after_workflow_router_sends_resumed_running_task_to_executor():
     assert route_after_workflow_router(
         {
@@ -1359,7 +1583,7 @@ def test_router_asks_for_clarification_after_excessive_resumes():
         assert task["status"] == "RUNNING"
         assert task["clarification_prompt"]
         assert task["request_help"] is None
-        assert task["status_detail"] == "Waiting for user clarification after helper routing budget was exhausted"
+        assert task["status_detail"] == "@waiting_clarification"
 
     with patch("src.agents.router.semantic_router.list_domain_agents", return_value=[SimpleNamespace(name="contacts-agent", description="Lookup employees")]):
         asyncio.run(_run())
@@ -1399,7 +1623,7 @@ def test_router_retries_direct_helper_once_when_budget_is_exhausted():
         helper = next(task for task in result["task_pool"] if task["task_id"] != "parent-1")
         assert parent["depends_on_task_ids"] == [helper["task_id"]]
         assert parent["helper_retry_count"] == 1
-        assert parent["status_detail"] == "Retrying helper contacts-agent after previous routing budget exhaustion"
+        assert parent["status_detail"] == "@retrying_helper:contacts-agent"
         assert helper["assigned_agent"] == "contacts-agent"
         assert helper["status"] == "RUNNING"
 
@@ -1495,7 +1719,7 @@ def test_router_retries_failed_direct_helper_once_when_hint_is_unambiguous():
         helper = next(task for task in result["task_pool"] if task["task_id"] != "parent-1")
         assert parent["helper_retry_count"] == 1
         assert parent["depends_on_task_ids"] == [helper["task_id"]]
-        assert parent["status_detail"] == "Retrying helper contacts-agent after dependency failure"
+        assert parent["status_detail"] == "@retrying_helper:contacts-agent"
         assert helper["assigned_agent"] == "contacts-agent"
         assert helper["status"] == "RUNNING"
 
@@ -1630,6 +1854,13 @@ def test_top_level_tools_keep_ask_clarification_and_hide_request_help():
 
     assert "ask_clarification" in tool_names
     assert "request_help" not in tool_names
+
+
+def test_meeting_agent_prompt_requires_request_help_for_user_choice():
+    prompt = apply_prompt_template(agent_name="meeting-agent", is_domain_agent=True)
+
+    assert 'resolution_strategy="user_clarification"' in prompt
+    assert "do NOT return plain text like \"请选择一个城市/会议室\"" in prompt
 
 
 def test_ensure_mcp_ready_retries_after_failure(monkeypatch):

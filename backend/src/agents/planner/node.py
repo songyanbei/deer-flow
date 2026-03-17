@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -205,7 +205,7 @@ def _parse_planner_output(raw: Any) -> dict:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _get_event_writer():
@@ -568,11 +568,17 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
 
     completed_tasks = [task for task in task_pool if task.get("status") == "DONE"]
     if completed_tasks:
+        last_completed_task = completed_tasks[-1]
         logger.warning(
-            "[Planner] Goal not yet achieved after %d completed task(s); generating %d follow-up task(s). "
+            "[Planner] Validation rejected prior completion and generated follow-up work. "
+            "run_id=%s goal=%r completed_count=%d follow_up_count=%d last_completed_task=%s last_completed_result=%r "
             "completed=%s follow_ups=%s",
+            run_id,
+            planner_goal[:200],
             len(completed_tasks),
             len(new_tasks),
+            f"{last_completed_task['task_id']}:{last_completed_task.get('assigned_agent') or '?'}:{last_completed_task['description'][:120]}",
+            (last_completed_task.get("result") or "")[:300],
             _summarize_tasks_for_log(completed_tasks),
             _summarize_tasks_for_log(new_tasks),
         )

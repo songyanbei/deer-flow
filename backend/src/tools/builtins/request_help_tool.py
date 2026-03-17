@@ -27,7 +27,7 @@ def request_help_tool(
     - For facts you can already obtain with your own tools
 
     Args:
-        problem: Short description of what is currently blocked.
+        problem: Short, user-friendly description of what is blocked, in the user's language. Do NOT include internal field names or API parameter names. Describe in plain business terms.
         required_capability: Capability or fact type the current agent is missing.
         reason: Why the current agent cannot continue without help.
         expected_output: What useful result should be returned to resume the parent task.

@@ -1,4 +1,5 @@
 import type { Translations } from "@/core/i18n/locales/types";
+import { localizeStatusDetail } from "@/core/tasks/status-detail";
 import type { TaskViewModel } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
 
@@ -106,6 +107,9 @@ export function getWorkflowProgressSummary({
   const dependencyTask = tasks.find(
     (task) => task.status === "waiting_dependency",
   );
+  const activeExecutionTask = activeTasks.find(
+    (task) => task.status === "in_progress" || task.status === "waiting_dependency",
+  );
   const latestCompletedTask = [...tasks]
     .reverse()
     .find((task) => task.status === "completed");
@@ -125,29 +129,36 @@ export function getWorkflowProgressSummary({
 
   let title = t.workflowStatus.processing;
   let detail: string | undefined;
+  const l = (v: string | undefined) => localizeStatusDetail(v, t);
+  const shouldPreferActiveExecution =
+    activeExecutionTask !== undefined &&
+    (executionState === "RESUMING" ||
+      workflowStage === "queued" ||
+      workflowStage === "acknowledged" ||
+      workflowStage === "planning" ||
+      workflowStage === "routing");
   const waitingTaskDetail = clarificationTask
     ? pickFirstNonEmpty([
         clarificationTask.clarificationPrompt,
-        clarificationTask.statusDetail,
-        clarificationTask.latestUpdate,
+        l(clarificationTask.statusDetail),
+        l(clarificationTask.latestUpdate),
         clarificationTask.description,
       ])
     : dependencyTask
       ? pickFirstNonEmpty([
           dependencyTask.blockedReason,
-          dependencyTask.statusDetail,
-          dependencyTask.latestUpdate,
+          l(dependencyTask.statusDetail),
+          l(dependencyTask.latestUpdate),
           dependencyTask.description,
         ])
       : undefined;
 
-  if (workflowStage) {
+  if (workflowStage && !shouldPreferActiveExecution) {
     title = getWorkflowStageTitle(workflowStage, t);
     detail = pickFirstNonEmpty([
       waitingTaskDetail,
-      threadValues.workflow_stage_detail,
-      latestCompletedTask?.latestUpdate,
-      latestCompletedTask?.result,
+      l(threadValues.workflow_stage_detail ?? undefined),
+      l(latestCompletedTask?.latestUpdate),
       latestCompletedTask?.description,
       threadValues.planner_goal,
       threadValues.orchestration_reason,
@@ -162,8 +173,8 @@ export function getWorkflowProgressSummary({
     title = t.workflowStatus.running(activeTaskCount);
     const activeTask = activeTasks[0];
     detail = pickFirstNonEmpty([
-      activeTask?.latestUpdate,
-      activeTask?.statusDetail,
+      l(activeTask?.latestUpdate),
+      l(activeTask?.statusDetail),
       activeTask?.description,
     ]);
   } else if (

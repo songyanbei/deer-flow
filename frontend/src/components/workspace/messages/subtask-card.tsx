@@ -20,6 +20,7 @@ import { hasToolCalls } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { streamdownPluginsWithWordAnimation } from "@/core/streamdown";
 import { useSubtask } from "@/core/tasks/context";
+import { localizeStatusDetail } from "@/core/tasks/status-detail";
 import { explainLastToolCall } from "@/core/tools/utils";
 import { cn } from "@/lib/utils";
 
@@ -28,34 +29,57 @@ import { FlipDisplay } from "../flip-display";
 
 import { MarkdownContent } from "./markdown-content";
 
+const INTERNAL_ERROR_PATTERNS = [
+  /domain agent returned no final answer/i,
+  /no running task found/i,
+  /mcp.*connection error/i,
+  /request_help returned invalid/i,
+  /executor.*no running/i,
+  /timeout/i,
+];
+
+function friendlyError(
+  error: string | undefined,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (!error) return t.subtasks.failed;
+  if (INTERNAL_ERROR_PATTERNS.some((p) => p.test(error))) {
+    return t.subtasks.errorGeneric;
+  }
+  return error;
+}
+
 function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeof useI18n>["t"]) {
   if (!task) {
     return "";
   }
 
+  const localizedDetail = localizeStatusDetail(task.statusDetail, t);
+  const localizedUpdate = localizeStatusDetail(task.latestUpdate, t);
+
   if (task.status === "pending") {
-    return task.statusDetail ?? t.subtasks.pending;
+    return localizedDetail ?? t.subtasks.pending;
   }
   if (task.status === "waiting_dependency") {
     return (
       task.blockedReason ??
-      task.statusDetail ??
-      task.latestUpdate ??
+      localizedDetail ??
+      localizedUpdate ??
       t.subtasks.waiting_dependency
     );
   }
   if (task.status === "waiting_clarification") {
     return (
       task.clarificationPrompt ??
-      task.statusDetail ??
-      task.latestUpdate ??
+      localizedDetail ??
+      localizedUpdate ??
       t.subtasks.waiting_clarification
     );
   }
   if (task.status === "in_progress") {
     return task.latestMessage && hasToolCalls(task.latestMessage)
       ? explainLastToolCall(task.latestMessage, t)
-      : task.latestUpdate ?? task.statusDetail ?? t.subtasks.in_progress;
+      : localizedUpdate ?? localizedDetail ?? t.subtasks.in_progress;
   }
   if (task.status === "completed") {
     return t.subtasks.completed;
@@ -264,27 +288,18 @@ export function SubtaskCard({
             ></ChainOfThoughtStep>
           )}
           {task.status === "completed" && (
-            <>
-              <ChainOfThoughtStep
-                label={t.subtasks.completed}
-                icon={<CheckCircleIcon className="size-4" />}
-              ></ChainOfThoughtStep>
-              <ChainOfThoughtStep
-                label={
-                  task.result ? (
-                    <MarkdownContent
-                      content={task.result}
-                      isLoading={false}
-                      rehypePlugins={rehypePlugins}
-                    />
-                  ) : null
-                }
-              ></ChainOfThoughtStep>
-            </>
+            <ChainOfThoughtStep
+              label={t.subtasks.completed}
+              icon={<CheckCircleIcon className="size-4" />}
+            ></ChainOfThoughtStep>
           )}
           {task.status === "failed" && (
             <ChainOfThoughtStep
-              label={<div className="text-red-500">{task.error}</div>}
+              label={
+                <div className="text-red-500">
+                  {friendlyError(task.error, t)}
+                </div>
+              }
               icon={<XCircleIcon className="size-4 text-red-500" />}
             ></ChainOfThoughtStep>
           )}

@@ -2,6 +2,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TaskUpsert, TaskViewModel } from "../tasks/types";
+
 import { useThreadStream } from "./hooks";
 
 const useStreamMock = vi.fn();
@@ -10,7 +12,33 @@ const useQueryClientMock = vi.fn(() => ({
 }));
 const hydrateTasksMock = vi.fn();
 const resetTasksBySourceMock = vi.fn();
-const upsertTaskMock = vi.fn();
+const upsertTaskMock = vi.fn<(task: TaskUpsert) => void>();
+let mockedTasksById: Record<string, TaskViewModel> = {};
+let mockedOrderedTaskIds: string[] = [];
+
+function resetMockedTasks() {
+  mockedTasksById = {};
+  mockedOrderedTaskIds = [];
+}
+
+function upsertMockedTask(task: TaskUpsert) {
+  const existing = mockedTasksById[task.id];
+  const nextTask = {
+    ...existing,
+    ...task,
+    id: task.id,
+    source: task.source ?? existing?.source ?? "multi_agent",
+    description: task.description ?? existing?.description ?? "",
+    status: task.status ?? existing?.status ?? "pending",
+  } as TaskViewModel;
+  mockedTasksById = {
+    ...mockedTasksById,
+    [task.id]: nextTask,
+  };
+  if (!mockedOrderedTaskIds.includes(task.id)) {
+    mockedOrderedTaskIds = [...mockedOrderedTaskIds, task.id];
+  }
+}
 
 vi.mock("@langchain/langgraph-sdk/react", () => ({
   useStream: (...args: unknown[]) => useStreamMock(...args),
@@ -37,10 +65,17 @@ vi.mock("../i18n/hooks", () => ({
 }));
 
 vi.mock("../tasks/context", () => ({
+  useSubtaskContext: () => ({
+    tasksById: mockedTasksById,
+    orderedTaskIds: mockedOrderedTaskIds,
+  }),
   useTaskActions: () => ({
     hydrateTasks: hydrateTasksMock,
     resetTasksBySource: resetTasksBySourceMock,
-    upsertTask: upsertTaskMock,
+    upsertTask: (task: TaskUpsert) => {
+      upsertMockedTask(task);
+      upsertTaskMock(task);
+    },
   }),
 }));
 
@@ -125,6 +160,7 @@ describe("useThreadStream orchestration hydration", () => {
     hydrateTasksMock.mockReset();
     resetTasksBySourceMock.mockReset();
     upsertTaskMock.mockReset();
+    resetMockedTasks();
     lastStreamOptions = {};
     latestThread = null;
     latestSendMessage = null;
@@ -729,7 +765,10 @@ describe("useThreadStream orchestration hydration", () => {
       requestedOrchestrationMode: "workflow",
     });
 
-    const submitMock = latestThread?.submit as ReturnType<typeof vi.fn>;
+    const submitMock = latestThread?.submit;
+    if (!submitMock) {
+      throw new Error("Expected submit mock to be available.");
+    }
 
     await act(async () => {
       await latestSendMessage?.("thread-1", {
@@ -780,6 +819,217 @@ describe("useThreadStream orchestration hydration", () => {
     }
     await act(async () => {
       await sendPromise;
+    });
+
+    rendered.cleanup();
+  });
+
+  it("does not replace an active clarification resume with a fresh acknowledged shell", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-clarify-1",
+        workflow_stage: "executing",
+        workflow_stage_detail: "Booking the meeting room",
+        execution_state: "INTERRUPTED",
+        task_pool: [
+          {
+            task_id: "task-clarify-1",
+            description: "Book the meeting room",
+            run_id: "run-clarify-1",
+            assigned_agent: "meeting-agent",
+            status: "RUNNING",
+            status_detail: "@waiting_clarification",
+            clarification_prompt: "Which city should I use?",
+          },
+        ],
+      },
+    });
+
+    await act(async () => {
+      void latestSendMessage?.("thread-1", {
+        text: "Shenzhen",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("executing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Booking the meeting room",
+    );
+    expect(upsertTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "task-clarify-1",
+        source: "multi_agent",
+        runId: "run-clarify-1",
+        status: "in_progress",
+        clarificationPrompt: undefined,
+      }),
+    );
+    expect(submitImpl).toHaveBeenCalledTimes(1);
+    expect(submitImpl.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          recursion_limit: 1000,
+        }),
+        context: expect.objectContaining({
+          workflow_clarification_resume: true,
+          workflow_resume_run_id: "run-clarify-1",
+          workflow_resume_task_id: "task-clarify-1",
+        }),
+      }),
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await submitPromise;
+    });
+
+    rendered.cleanup();
+  });
+
+  it("resumes from clarification stored in task context without creating a queued shell", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-store-1",
+        workflow_stage: "executing",
+        workflow_stage_detail: "Booking the meeting room",
+        execution_state: "INTERRUPTED",
+      },
+      isLoading: true,
+    });
+
+    act(() => {
+      const onCustomEvent = lastStreamOptions.onCustomEvent as
+        | ((event: unknown) => void)
+        | undefined;
+      onCustomEvent?.({
+        type: "task_running",
+        source: "multi_agent",
+        task_id: "task-store-1",
+        run_id: "run-store-1",
+        description: "Book the meeting room",
+        agent_name: "meeting-agent",
+        status: "waiting_clarification",
+        status_detail: "@waiting_clarification",
+        clarification_prompt: "Which city should I use?",
+      });
+    });
+
+    upsertTaskMock.mockClear();
+
+    await act(async () => {
+      void latestSendMessage?.("thread-1", {
+        text: "Beijing",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("executing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Booking the meeting room",
+    );
+    expect(upsertTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "task-store-1",
+        status: "in_progress",
+        clarificationPrompt: undefined,
+      }),
+    );
+    expect(submitImpl).toHaveBeenCalledTimes(1);
+    expect(submitImpl.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          recursion_limit: 1000,
+        }),
+        context: expect.objectContaining({
+          workflow_clarification_resume: true,
+          workflow_resume_run_id: "run-store-1",
+          workflow_resume_task_id: "task-store-1",
+        }),
+      }),
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await submitPromise;
+    });
+
+    rendered.cleanup();
+  });
+
+  it("treats interrupted workflow replies as resumes even before task_pool rehydrates", async () => {
+    let resolveSubmit: (() => void) | undefined;
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const submitImpl = vi.fn(() => submitPromise);
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      submitImpl,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-clarify-2",
+        workflow_stage: "executing",
+        workflow_stage_detail: "Resuming the meeting room booking",
+        execution_state: "INTERRUPTED",
+      },
+    });
+
+    await act(async () => {
+      void latestSendMessage?.("thread-1", {
+        text: "Shenzhen",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    expect(latestThread?.values.workflow_stage).toBe("executing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Resuming the meeting room booking",
+    );
+    expect(submitImpl).toHaveBeenCalledTimes(1);
+    expect(submitImpl.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        config: expect.objectContaining({
+          recursion_limit: 1000,
+        }),
+        context: expect.objectContaining({
+          workflow_clarification_resume: true,
+          workflow_resume_run_id: "run-clarify-2",
+        }),
+      }),
+    );
+
+    if (resolveSubmit) {
+      resolveSubmit();
+    }
+    await act(async () => {
+      await submitPromise;
     });
 
     rendered.cleanup();
@@ -841,6 +1091,45 @@ describe("useThreadStream orchestration hydration", () => {
     await act(async () => {
       await submitPromise;
     });
+
+    rendered.cleanup();
+  });
+
+  it("preserves hydrated workflow tasks during same-run loading gaps", () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-gap-1",
+        workflow_stage: "executing",
+        task_pool: [
+          {
+            task_id: "task-gap-1",
+            description: "Book the meeting room",
+            status: "RUNNING",
+          },
+        ],
+      },
+    });
+
+    expect(hydrateTasksMock).toHaveBeenCalledTimes(1);
+    hydrateTasksMock.mockClear();
+    resetTasksBySourceMock.mockClear();
+
+    rendered.rerender({
+      assistantId: "entry_graph",
+      isLoading: true,
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-gap-1",
+        workflow_stage: "executing",
+        workflow_stage_detail: "Resuming booking",
+        task_pool: [],
+      },
+    });
+
+    expect(hydrateTasksMock).not.toHaveBeenCalled();
+    expect(resetTasksBySourceMock).not.toHaveBeenCalled();
 
     rendered.cleanup();
   });

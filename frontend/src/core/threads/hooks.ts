@@ -16,7 +16,8 @@ import {
   fromMultiAgentTaskEvent,
   fromMultiAgentTaskState,
 } from "../tasks/adapters";
-import { useTaskActions } from "../tasks/context";
+import { useSubtaskContext, useTaskActions } from "../tasks/context";
+import type { TaskViewModel } from "../tasks/types";
 import type { UploadedFileInfo } from "../uploads";
 import { uploadFiles } from "../uploads";
 
@@ -91,6 +92,9 @@ type LocalWorkflowShell = {
   previousRunId: string | null;
 };
 
+type PendingClarificationTask =
+  NonNullable<AgentThreadState["task_pool"]>[number];
+
 const WORKFLOW_STAGES = new Set<
   NonNullable<AgentThreadState["workflow_stage"]>
 >([
@@ -119,10 +123,52 @@ function createLocalWorkflowShell(
 ): LocalWorkflowShell {
   return {
     stage: "acknowledged",
-    detail: detail?.trim() || undefined,
+    detail: detail?.trim() ?? undefined,
     updatedAt: new Date().toISOString(),
     previousRunId: previousRunId ?? null,
   };
+}
+
+function findPendingClarificationTask(
+  values: AgentThreadState,
+): PendingClarificationTask | null {
+  const taskPool = values.task_pool ?? [];
+  for (let idx = taskPool.length - 1; idx >= 0; idx -= 1) {
+    const task = taskPool[idx];
+    if (!task) {
+      continue;
+    }
+    if (
+      task.status === "RUNNING" &&
+      typeof task.clarification_prompt === "string" &&
+      task.clarification_prompt.trim()
+    ) {
+      return task;
+    }
+  }
+  return null;
+}
+
+function findPendingClarificationTaskFromStore(
+  tasksById: Record<string, TaskViewModel>,
+  orderedTaskIds: string[],
+  runId: string | null,
+): TaskViewModel | null {
+  for (let idx = orderedTaskIds.length - 1; idx >= 0; idx -= 1) {
+    const taskId = orderedTaskIds[idx];
+    const task = taskId ? tasksById[taskId] : undefined;
+    if (task?.source !== "multi_agent") {
+      continue;
+    }
+    if (task.status !== "waiting_clarification") {
+      continue;
+    }
+    if (runId && task.runId?.trim() && task.runId !== runId) {
+      continue;
+    }
+    return task;
+  }
+  return null;
 }
 
 function parseWorkflowStageUpdatedAt(value: string | null | undefined) {
@@ -335,6 +381,7 @@ export function useThreadStream({
   }, [_threadId, threadId]);
 
   const queryClient = useQueryClient();
+  const { orderedTaskIds, tasksById } = useSubtaskContext();
   const { hydrateTasks, resetTasksBySource, upsertTask } = useTaskActions();
   const [eventPatch, setEventPatch] = useState<ThreadEventPatch>({});
   const [localWorkflowShell, setLocalWorkflowShell] =
@@ -432,6 +479,7 @@ export function useThreadStream({
     eventPatch,
     eventPatch.workflow_stage,
     localWorkflowShell,
+    thread.values,
     thread.values.run_id,
     thread.values.workflow_stage,
   ]);
@@ -484,6 +532,12 @@ export function useThreadStream({
   useEffect(() => {
     const runId = mergedValues.run_id ?? null;
     const taskPool = mergedValues.task_pool ?? [];
+    const shouldPreserveExistingTasksDuringLoading =
+      thread.isLoading &&
+      localWorkflowShell == null &&
+      taskPool.length === 0 &&
+      hadWorkflowHydrationRef.current &&
+      (runId === null || hydratedRunIdRef.current === runId);
     const shouldHydrateWorkflow =
       mergedValues.resolved_orchestration_mode === "workflow" ||
       mergedValues.workflow_stage != null ||
@@ -510,6 +564,10 @@ export function useThreadStream({
       }
     }
 
+    if (shouldPreserveExistingTasksDuringLoading) {
+      return;
+    }
+
     hydrateTasks(
       taskPool.map((task) =>
         fromMultiAgentTaskState(task, _threadId ?? undefined),
@@ -528,7 +586,9 @@ export function useThreadStream({
     mergedValues.workflow_stage,
     mergedValues.run_id,
     mergedValues.task_pool,
+    localWorkflowShell,
     resetTasksBySource,
+    thread.isLoading,
   ]);
 
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
@@ -552,17 +612,71 @@ export function useThreadStream({
       const text = message.text.trim();
       const explicitWorkflowRequest =
         context.requested_orchestration_mode === "workflow";
+      const currentRunId = mergedValues.run_id ?? eventPatch.run_id ?? null;
+      const clarificationTaskFromStore = findPendingClarificationTaskFromStore(
+        tasksById,
+        orderedTaskIds,
+        currentRunId,
+      );
+      const clarificationTask =
+        clarificationTaskFromStore ??
+        findPendingClarificationTask(mergedValues);
+      const isClarificationResume =
+        explicitWorkflowRequest &&
+        (clarificationTask !== null ||
+          (mergedValues.resolved_orchestration_mode === "workflow" &&
+            mergedValues.execution_state === "INTERRUPTED"));
       const shouldStreamSubgraphs = !explicitWorkflowRequest;
+      const clarificationResumeTaskId =
+        clarificationTask == null
+          ? undefined
+          : ("task_id" in clarificationTask
+            ? clarificationTask.task_id
+            : clarificationTask.id);
 
       prevMsgCountRef.current = thread.messages.length;
 
-      if (explicitWorkflowRequest) {
+      if (explicitWorkflowRequest && !isClarificationResume) {
         setLocalWorkflowShell(
           createLocalWorkflowShell(
             text,
-            thread.values.run_id ?? eventPatch.run_id ?? null,
+            currentRunId,
           ),
         );
+      }
+
+      if (isClarificationResume && clarificationTask) {
+        upsertTask({
+          id:
+            "task_id" in clarificationTask
+              ? clarificationTask.task_id
+              : clarificationTask.id,
+          source: "multi_agent",
+          runId:
+            ("run_id" in clarificationTask
+              ? clarificationTask.run_id
+              : clarificationTask.runId) ??
+            currentRunId ??
+            undefined,
+          description: clarificationTask.description,
+          agentName:
+            ("assigned_agent" in clarificationTask
+              ? clarificationTask.assigned_agent
+              : clarificationTask.agentName) ?? undefined,
+          parentTaskId:
+            ("parent_task_id" in clarificationTask
+              ? clarificationTask.parent_task_id
+              : clarificationTask.parentTaskId) ?? undefined,
+          requestedByAgent:
+            ("requested_by_agent" in clarificationTask
+              ? clarificationTask.requested_by_agent
+              : clarificationTask.requestedByAgent) ?? undefined,
+          status: "in_progress",
+          statusDetail: undefined,
+          clarificationPrompt: undefined,
+          latestUpdate: undefined,
+          updatedAt: new Date().toISOString(),
+        });
       }
 
       const optimisticFiles: FileInMessage[] = (message.files ?? []).map(
@@ -716,6 +830,11 @@ export function useThreadStream({
               is_plan_mode: context.mode === "pro" || context.mode === "ultra",
               subagent_enabled: context.mode === "ultra",
               thread_id: threadId,
+              workflow_clarification_resume: isClarificationResume || undefined,
+              workflow_resume_run_id:
+                isClarificationResume ? currentRunId ?? undefined : undefined,
+              workflow_resume_task_id:
+                isClarificationResume ? clarificationResumeTaskId : undefined,
             },
           },
         );
@@ -731,8 +850,12 @@ export function useThreadStream({
       t.uploads.uploadingFiles,
       onStart,
       context,
+      tasksById,
+      orderedTaskIds,
       queryClient,
       eventPatch.run_id,
+      mergedValues,
+      upsertTask,
     ],
   );
 

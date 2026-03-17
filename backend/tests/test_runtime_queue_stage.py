@@ -179,13 +179,7 @@ def test_persist_enqueue_time_workflow_state_uses_thread_status_path_and_preserv
                 with patch.object(
                     stage_module,
                     "_load_authoritative_thread_checkpoint",
-                    AsyncMock(
-                        return_value={
-                            "values": authoritative_values,
-                            "next": [],
-                            "tasks": [],
-                        }
-                    ),
+                    AsyncMock(return_value=None),
                 ):
                     payload = await _persist_enqueue_time_workflow_state(conn, run)
 
@@ -206,6 +200,264 @@ def test_persist_enqueue_time_workflow_state_uses_thread_status_path_and_preserv
     assert updated_thread["values"]["final_result"] is None
     assert updated_thread["values"]["original_input"] == "Book a meeting room tomorrow morning."
     assert updated_thread["values"]["planner_goal"] == "Book a meeting room tomorrow morning."
+
+
+def test_persist_enqueue_time_workflow_state_skips_clarification_resume():
+    from src.agents import runtime_queue_stage as stage_module
+
+    thread_id = uuid4()
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    existing_values = {
+        "run_id": "run_existing123",
+        "requested_orchestration_mode": "workflow",
+        "resolved_orchestration_mode": "workflow",
+        "workflow_stage": "executing",
+        "workflow_stage_detail": "Please choose a room",
+        "execution_state": "INTERRUPTED",
+        "task_pool": [
+            {
+                "task_id": "task-clarify-1",
+                "description": "Book the meeting room",
+                "run_id": "run_existing123",
+                "status": "RUNNING",
+                "clarification_prompt": "Which room should I book?",
+            }
+        ],
+        "messages": [
+            {"role": "assistant", "content": "Which room should I book?"},
+        ],
+    }
+    conn = SimpleNamespace(
+        store={
+            "threads": [
+                {
+                    "thread_id": thread_id,
+                    "values": existing_values,
+                    "status": "idle",
+                    "updated_at": now - timedelta(minutes=1),
+                    "state_updated_at": now - timedelta(minutes=1),
+                }
+            ],
+            "runs": [],
+        }
+    )
+    run = {
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "status": "pending",
+        "created_at": now,
+        "kwargs": {
+            "input": [
+                {"role": "user", "content": "Shenzhen Innovation Room"},
+            ],
+            "config": {
+                "configurable": {
+                    "requested_orchestration_mode": "workflow",
+                }
+            },
+        },
+    }
+
+    async def _fake_get(_conn, requested_thread_id):
+        async def _iterator():
+            for thread in _conn.store["threads"]:
+                if thread["thread_id"] == requested_thread_id:
+                    yield thread
+                    return
+
+        return _iterator()
+
+    fake_threads = SimpleNamespace(get=_fake_get, set_status=AsyncMock())
+
+    async def _run():
+        with patch("src.agents.runtime_queue_stage._get_threads_ops", return_value=fake_threads):
+            with patch.object(
+                stage_module,
+                "_persist_enqueue_time_workflow_checkpoint",
+                AsyncMock(),
+            ) as persist_checkpoint:
+                with patch.object(
+                    stage_module,
+                    "_load_authoritative_thread_checkpoint",
+                    AsyncMock(),
+                ) as load_checkpoint:
+                    payload = await _persist_enqueue_time_workflow_state(conn, run)
+
+        assert payload is None
+        persist_checkpoint.assert_not_awaited()
+        load_checkpoint.assert_awaited_once()
+        fake_threads.set_status.assert_not_awaited()
+
+    asyncio.run(_run())
+
+    updated_thread = conn.store["threads"][0]
+    assert updated_thread["values"] == existing_values
+
+
+def test_persist_enqueue_time_workflow_state_uses_authoritative_checkpoint_for_clarification_resume():
+    from src.agents import runtime_queue_stage as stage_module
+
+    thread_id = uuid4()
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    row_values = {
+        "run_id": "run_stale_row",
+        "resolved_orchestration_mode": "workflow",
+        "workflow_stage": "summarizing",
+        "execution_state": "DONE",
+        "task_pool": [],
+    }
+    authoritative_values = {
+        "run_id": "run_existing123",
+        "requested_orchestration_mode": "workflow",
+        "resolved_orchestration_mode": "workflow",
+        "workflow_stage": "executing",
+        "workflow_stage_detail": "Please choose a room",
+        "execution_state": "INTERRUPTED",
+        "task_pool": [
+            {
+                "task_id": "task-clarify-1",
+                "description": "Book the meeting room",
+                "run_id": "run_existing123",
+                "status": "RUNNING",
+                "clarification_prompt": "Which room should I book?",
+            }
+        ],
+    }
+    conn = SimpleNamespace(
+        store={
+            "threads": [
+                {
+                    "thread_id": thread_id,
+                    "values": row_values,
+                    "status": "idle",
+                    "updated_at": now - timedelta(minutes=1),
+                    "state_updated_at": now - timedelta(minutes=1),
+                }
+            ],
+            "runs": [],
+        }
+    )
+    run = {
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "status": "pending",
+        "created_at": now,
+        "kwargs": {
+            "input": [
+                {"role": "user", "content": "Guangzhou Tianhe Room"},
+            ],
+            "config": {
+                "configurable": {
+                    "requested_orchestration_mode": "workflow",
+                }
+            },
+        },
+    }
+
+    async def _fake_get(_conn, requested_thread_id):
+        async def _iterator():
+            for thread in _conn.store["threads"]:
+                if thread["thread_id"] == requested_thread_id:
+                    yield thread
+                    return
+
+        return _iterator()
+
+    fake_threads = SimpleNamespace(get=_fake_get, set_status=AsyncMock())
+
+    async def _run():
+        with patch("src.agents.runtime_queue_stage._get_threads_ops", return_value=fake_threads):
+            with patch.object(
+                stage_module,
+                "_load_authoritative_thread_checkpoint",
+                AsyncMock(return_value={"values": authoritative_values, "next": [], "tasks": []}),
+            ):
+                with patch.object(
+                    stage_module,
+                    "_persist_enqueue_time_workflow_checkpoint",
+                    AsyncMock(),
+                ) as persist_checkpoint:
+                    payload = await _persist_enqueue_time_workflow_state(conn, run)
+
+        assert payload is None
+        persist_checkpoint.assert_not_awaited()
+        fake_threads.set_status.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_persist_enqueue_time_workflow_state_skips_when_run_is_explicitly_tagged_as_clarification_resume():
+    from src.agents import runtime_queue_stage as stage_module
+
+    thread_id = uuid4()
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    existing_values = {
+        "run_id": "run_existing123",
+        "resolved_orchestration_mode": "workflow",
+        "workflow_stage": "summarizing",
+        "execution_state": "DONE",
+        "task_pool": [],
+    }
+    conn = SimpleNamespace(
+        store={
+            "threads": [
+                {
+                    "thread_id": thread_id,
+                    "values": existing_values,
+                    "status": "idle",
+                    "updated_at": now - timedelta(minutes=1),
+                    "state_updated_at": now - timedelta(minutes=1),
+                }
+            ],
+            "runs": [],
+        }
+    )
+    run = {
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "status": "pending",
+        "created_at": now,
+        "kwargs": {
+            "input": [
+                {"role": "user", "content": "Beijing Siyue Room"},
+            ],
+            "context": {
+                "requested_orchestration_mode": "workflow",
+                "workflow_clarification_resume": True,
+                "workflow_resume_run_id": "run_existing123",
+                "workflow_resume_task_id": "task-clarify-1",
+            },
+        },
+    }
+
+    async def _fake_get(_conn, requested_thread_id):
+        async def _iterator():
+            for thread in _conn.store["threads"]:
+                if thread["thread_id"] == requested_thread_id:
+                    yield thread
+                    return
+
+        return _iterator()
+
+    fake_threads = SimpleNamespace(get=_fake_get, set_status=AsyncMock())
+
+    async def _run():
+        with patch("src.agents.runtime_queue_stage._get_threads_ops", return_value=fake_threads):
+            with patch.object(
+                stage_module,
+                "_persist_enqueue_time_workflow_checkpoint",
+                AsyncMock(),
+            ) as persist_checkpoint:
+                payload = await _persist_enqueue_time_workflow_state(conn, run)
+
+        assert payload is None
+        persist_checkpoint.assert_not_awaited()
+        fake_threads.set_status.assert_not_awaited()
+
+    asyncio.run(_run())
 
 
 def test_persist_enqueue_time_workflow_checkpoint_writes_history_with_queued_values():

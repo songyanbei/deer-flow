@@ -2,9 +2,10 @@
 
 import json
 import logging
-from collections.abc import Callable
-from datetime import datetime, timezone
+import re
 import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -26,10 +27,30 @@ logger = logging.getLogger(__name__)
 _mcp_initialized: set[str] = set()
 _NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
 SYSTEM_FALLBACK_FINAL_MESSAGE = "当前系统暂时无法处理该类问题，后续可按需扩展相关能力。"
+_IMPLICIT_CLARIFICATION_MARKERS = (
+    "请选择",
+    "请确认",
+    "请提供",
+    "请补充",
+    "请告知",
+    "please choose",
+    "please confirm",
+    "please provide",
+    "which",
+)
+_COMPLETION_TEXT_MARKERS = (
+    "已预定",
+    "预定成功",
+    "已预约",
+    "booked",
+    "confirmed",
+    "created successfully",
+)
+_NUMBERED_OPTION_PATTERN = re.compile(r"(?m)^\s*\d+[\.\)]\s+\S+")
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _content_to_text(content) -> str:
@@ -69,7 +90,9 @@ def _json_block(value: Any) -> str:
 
 
 def _build_context(task: TaskStatus, verified_facts: VerifiedFact, clarification_answer: str = "") -> str:
-    context = task["description"]
+    # For helper tasks, use the full technical context instead of the short display description
+    helper_context = task.get("helper_context")
+    context = helper_context if helper_context else task["description"]
 
     if verified_facts:
         facts_block = "\n".join(
@@ -189,7 +212,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
             "run_id": run_id,
             "status": "DONE",
             "result": final,
-            "status_detail": "系统快捷完成任务",
+            "status_detail": "@completed",
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
@@ -211,7 +234,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
         "run_id": run_id,
         "status": "DONE",
         "result": SYSTEM_FALLBACK_FINAL_MESSAGE,
-        "status_detail": "系统兜底完成任务",
+        "status_detail": "@completed_fallback",
         "clarification_prompt": None,
         "request_help": None,
         "blocked_reason": None,
@@ -223,7 +246,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
         fallback_task,
         agent_name,
         result=SYSTEM_FALLBACK_FINAL_MESSAGE,
-        status_detail="系统兜底完成任务",
+        status_detail="@completed_fallback",
     )
     _emit_workflow_stage(
         writer,
@@ -266,6 +289,58 @@ def _normalize_fact_payload(agent_output: str) -> dict[str, Any]:
     if parsed is not None:
         return parsed
     return {"text": agent_output}
+
+
+def _contains_choice_enumeration(text: str) -> bool:
+    lowered = text.lower()
+    if len(_NUMBERED_OPTION_PATTERN.findall(text)) >= 2:
+        return True
+    if "或" in text and any(separator in text for separator in ("、", "，", ",")):
+        return True
+    return " or " in lowered and "," in lowered
+
+
+def _looks_like_implicit_clarification(agent_output: str) -> bool:
+    text = agent_output.strip()
+    if not text:
+        return False
+    if _parse_json_object(text) is not None:
+        return False
+
+    lowered = text.lower()
+    if any(marker in text for marker in _COMPLETION_TEXT_MARKERS[:3]):
+        return False
+    if any(marker in lowered for marker in _COMPLETION_TEXT_MARKERS[3:]):
+        return False
+
+    has_question_signal = any(marker in text for marker in _IMPLICIT_CLARIFICATION_MARKERS[:4])
+    has_question_signal = has_question_signal or any(marker in lowered for marker in _IMPLICIT_CLARIFICATION_MARKERS[4:])
+    has_question_signal = has_question_signal or "?" in text or "？" in text
+
+    return has_question_signal or _contains_choice_enumeration(text)
+
+
+def _log_executor_decision(
+    task: TaskStatus,
+    agent_name: str,
+    messages: list[Any],
+    classification: str,
+    **extra: Any,
+) -> None:
+    last_message = messages[-1] if messages else None
+    payload = {
+        "run_id": task.get("run_id"),
+        "task_id": task["task_id"],
+        "agent_name": agent_name,
+        "task_description": task["description"][:200],
+        "message_count": len(messages),
+        "last_message_type": last_message.__class__.__name__ if last_message else None,
+        "last_message_name": getattr(last_message, "name", None) if last_message else None,
+        "classification": classification,
+    }
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    level = logging.WARNING if classification == "implicit_clarification" else logging.INFO
+    logger.log(level, "[Executor] Decision trace: %s", json.dumps(payload, ensure_ascii=False, default=str)[:4000])
 
 
 def _summarize_messages_for_log(messages: list[Any], *, limit: int = 8) -> str:
@@ -379,7 +454,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
     writer = _get_event_writer()
     logger.info("[Executor] Executing task '%s' via agent '%s'.", task["task_id"], agent_name)
-    _emit_task_event(writer, "task_started", task, agent_name, message="任务开始执行", status_detail="任务开始执行")
+    _emit_task_event(writer, "task_started", task, agent_name, message="Task execution started", status_detail="@task_started")
 
     if agent_name in ("SYSTEM_FINISH", "SYSTEM_FALLBACK"):
         return _handle_system_special(agent_name, task, state, writer)
@@ -401,13 +476,27 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         domain_agent = make_lead_agent(agent_config_override)
         clarification_answer = extract_latest_clarification_answer(state)
         context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
+        logger.info(
+            "[Executor] Dispatch context: %s",
+            json.dumps(
+                {
+                    "run_id": task_run_id,
+                    "task_id": task["task_id"],
+                    "agent_name": agent_name,
+                    "task_description": task["description"][:200],
+                    "resolved_input_keys": list((task.get("resolved_inputs") or {}).keys()),
+                    "clarification_answer_present": bool(clarification_answer),
+                },
+                ensure_ascii=False,
+            ),
+        )
         _emit_task_event(
             writer,
             "task_running",
             task,
             agent_name,
-            message="正在交给执行代理处理",
-            status_detail="正在交给执行代理处理",
+            message="Dispatching task to domain agent",
+            status_detail="@dispatching",
             clarification_answer=clarification_answer or None,
         )
 
@@ -430,6 +519,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         )
 
         terminal_tool_signal = _find_last_terminal_tool_signal(messages)
+        terminal_signal_name = terminal_tool_signal[1].name if terminal_tool_signal else None
         if terminal_tool_signal and terminal_tool_signal[1].name == "request_help":
             terminal_idx, terminal_message = terminal_tool_signal
             if terminal_idx != len(messages) - 1:
@@ -448,6 +538,15 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             help_request = _parse_request_help_message(terminal_message)
             if help_request is None:
                 raise RuntimeError("request_help returned invalid structured payload.")
+            _log_executor_decision(
+                task,
+                agent_name,
+                messages,
+                "request_help",
+                terminal_signal=terminal_signal_name,
+                help_request_reason=help_request.get("reason"),
+                help_request_expected_output=help_request.get("expected_output"),
+            )
 
             next_help_depth = int(task.get("help_depth") or 0) + 1
             waiting_task: TaskStatus = {
@@ -458,7 +557,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "blocked_reason": help_request["reason"],
                 "help_depth": next_help_depth,
                 "clarification_prompt": None,
-                "status_detail": "正在等待系统处理依赖",
+                "status_detail": "@waiting_dependency",
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
@@ -469,7 +568,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 blocked_reason=help_request["reason"],
                 request_help=help_request,
                 requested_by_agent=agent_name,
-                status_detail="正在等待系统处理依赖",
+                status_detail="@waiting_dependency",
             )
             _emit_task_event(
                 writer,
@@ -478,7 +577,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 agent_name,
                 request_help=help_request,
                 requested_by_agent=agent_name,
-                status_detail=help_request["required_capability"],
+                status_detail="@waiting_dependency",
             )
             return {
                 "task_pool": [waiting_task],
@@ -497,10 +596,18 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 )
             logger.info("[Executor] Task '%s' interrupted by ask_clarification.", task["task_id"])
             clarification_prompt = _content_to_text(terminal_message.content)
+            _log_executor_decision(
+                task,
+                agent_name,
+                messages,
+                "ask_clarification",
+                terminal_signal=terminal_signal_name,
+                clarification_prompt=clarification_prompt[:300],
+            )
             interrupted_task: TaskStatus = {
                 **task,
                 "status": "RUNNING",
-                "status_detail": "需要你补充信息",
+                "status_detail": "@waiting_clarification",
                 "clarification_prompt": clarification_prompt,
                 "request_help": None,
                 "blocked_reason": None,
@@ -514,7 +621,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 message="需要你补充信息",
                 clarification_prompt=clarification_prompt,
                 status="waiting_clarification",
-                status_detail="需要你补充信息",
+                status_detail="@waiting_clarification",
             )
             return {
                 "task_pool": [interrupted_task],
@@ -526,6 +633,48 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         if not agent_output:
             raise RuntimeError("Domain agent returned no final answer.")
 
+        if _looks_like_implicit_clarification(agent_output):
+            _log_executor_decision(
+                task,
+                agent_name,
+                messages,
+                "implicit_clarification",
+                terminal_signal=terminal_signal_name,
+                clarification_prompt=agent_output[:300],
+            )
+            interrupted_task: TaskStatus = {
+                **task,
+                "status": "RUNNING",
+                "status_detail": "@waiting_clarification",
+                "clarification_prompt": agent_output,
+                "request_help": None,
+                "blocked_reason": None,
+                "updated_at": _utc_now_iso(),
+            }
+            _emit_task_event(
+                writer,
+                "task_running",
+                interrupted_task,
+                agent_name,
+                message="Waiting for user clarification inferred from plain-text output",
+                clarification_prompt=agent_output,
+                status="waiting_clarification",
+                status_detail="@waiting_clarification",
+            )
+            return {
+                "task_pool": [interrupted_task],
+                "execution_state": "INTERRUPTED",
+                "messages": [AIMessage(content=agent_output, name="ask_clarification")],
+            }
+
+        _log_executor_decision(
+            task,
+            agent_name,
+            messages,
+            "final_output",
+            terminal_signal=terminal_signal_name,
+            final_output_preview=agent_output[:300],
+        )
         logger.info(
             "[Executor] Task '%s' via agent '%s' has no terminal tool signal; treating latest AI text as final output. "
             "output_preview=%r",
@@ -541,13 +690,13 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             **task,
             "status": "DONE",
             "result": agent_output,
-            "status_detail": "任务已完成",
+            "status_detail": "@completed",
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
             "updated_at": _utc_now_iso(),
         }
-        _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="任务已完成")
+        _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="@completed")
         return {
             "task_pool": [done_task],
             "verified_facts": {
@@ -569,13 +718,13 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             **task,
             "status": "FAILED",
             "error": str(e),
-            "status_detail": str(e),
+            "status_detail": "@failed",
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
             "updated_at": _utc_now_iso(),
         }
-        _emit_task_event(writer, "task_failed", task, agent_name, error=str(e), status_detail=str(e))
+        _emit_task_event(writer, "task_failed", task, agent_name, error=str(e), status_detail="@failed")
         return {
             "task_pool": [failed_task],
             "execution_state": "EXECUTING_DONE",

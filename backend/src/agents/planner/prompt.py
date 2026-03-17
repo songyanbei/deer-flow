@@ -76,4 +76,8 @@ Output format when done:
 {{"done": true, "summary": "<concise final answer to the user>"}}
 
 Output format when more work needed:
-{{"done": false, "tasks": [{{"description": "...", "assigned_agent": "..."}}]}}"""
+{{"done": false, "tasks": [{{"description": "...", "assigned_agent": "..."}}]}}
+
+IMPORTANT: Task descriptions MUST be written in the user's language and from the user's perspective.
+Do NOT include internal identifiers (openId, userId, staffId, etc.), resolved dependency values,
+system parameters, or API field names. Keep descriptions at the same abstraction level as the original user request."""

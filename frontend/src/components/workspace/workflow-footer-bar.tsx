@@ -17,6 +17,7 @@ import { useMemo, useState } from "react";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { useI18n } from "@/core/i18n/hooks";
 import { useSubtaskContext } from "@/core/tasks/context";
+import { localizeStatusDetail } from "@/core/tasks/status-detail";
 import type { TaskViewModel } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
@@ -48,15 +49,26 @@ function getCompactTaskTitle(task: TaskViewModel | undefined, fallback?: string)
   );
 }
 
-function getTaskDetail(task: TaskViewModel) {
-  return (
-    task.clarificationPrompt ??
-    task.blockedReason ??
-    task.latestUpdate ??
-    task.statusDetail ??
-    task.error ??
-    task.result
-  );
+function getTaskDetail(
+  task: TaskViewModel,
+  t: ReturnType<typeof useI18n>["t"],
+): string | undefined {
+  // Terminal statuses: icon + label are sufficient, no detail needed
+  if (task.status === "completed" || task.status === "failed") {
+    return undefined;
+  }
+  // User-visible prompts shown as-is
+  if (task.clarificationPrompt) return task.clarificationPrompt;
+  if (task.blockedReason) return task.blockedReason;
+  // Localize structured @key values; filter raw legacy English
+  const localized =
+    localizeStatusDetail(task.latestUpdate, t) ??
+    localizeStatusDetail(task.statusDetail, t);
+  if (localized) return localized;
+  // Don't leak unresolved @keys to UI
+  const raw = task.latestUpdate ?? task.statusDetail;
+  if (raw?.startsWith("@")) return undefined;
+  return raw;
 }
 
 function getTaskStatusLabel(
@@ -114,7 +126,7 @@ function WorkflowFooterTaskRow({
   task: TaskViewModel;
 }) {
   const { t } = useI18n();
-  const detail = getTaskDetail(task);
+  const detail = getTaskDetail(task, t);
   const isActive = isActiveWorkflowTask(task);
 
   return (

@@ -3,8 +3,8 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -24,7 +24,7 @@ MAX_HELPER_RETRY_COUNT = 1
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _resolve_run_id(state: ThreadState, task: TaskStatus) -> str:
@@ -176,12 +176,26 @@ def _build_executing_detail(task: TaskStatus) -> str | None:
 
 
 def _build_helper_description(help_request: HelpRequestPayload) -> str:
-    return (
-        f"Blocked problem: {help_request['problem']}\n"
-        f"Required capability: {help_request['required_capability']}\n"
-        f"Reason: {help_request['reason']}\n"
-        f"Expected output: {help_request['expected_output']}"
-    )
+    """Build a user-friendly, short description for the helper task card.
+
+    The full technical detail (problem, reason, expected_output) is preserved
+    in the task's ``request_help`` payload and injected into the executor
+    context via ``_build_context``, so it is still available to the agent.
+    """
+    problem = (help_request.get("problem") or "").strip()
+    if problem:
+        return problem
+    return help_request.get("required_capability", "") or "协助处理依赖任务"
+
+
+def _build_helper_context(help_request: HelpRequestPayload) -> str:
+    """Build the full technical context sent to the helper agent as prompt."""
+    lines: list[str] = []
+    for key in ("problem", "required_capability", "reason", "expected_output"):
+        value = (help_request.get(key) or "").strip()  # type: ignore[arg-type]
+        if value:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines)
 
 
 def _append_candidate_hints(task_description: str, hinted_agents: list[str]) -> str:
@@ -226,11 +240,12 @@ def _route_to_helper(
     helper_task: TaskStatus = {
         "task_id": helper_task_id,
         "description": _build_helper_description(parent_task["request_help"]),
+        "helper_context": _build_helper_context(parent_task["request_help"]),
         "run_id": run_id,
         "parent_task_id": parent_task["task_id"],
         "assigned_agent": assigned,
         "status": "RUNNING",
-        "status_detail": f"已分派给 {assigned}",
+        "status_detail": f"@assigned:{assigned}",
         "requested_by_agent": parent_task.get("requested_by_agent"),
         "help_depth": help_depth,
         "updated_at": _utc_now_iso(),
@@ -238,7 +253,7 @@ def _route_to_helper(
     updated_parent: TaskStatus = {
         **parent_task,
         "depends_on_task_ids": [helper_task_id],
-        "status_detail": status_detail or f"正在等待协作代理 {assigned} 完成",
+        "status_detail": status_detail or f"@waiting_helper:{assigned}",
         "updated_at": _utc_now_iso(),
     }
     if helper_retry_count is not None:
@@ -336,6 +351,26 @@ def _summarize_dependency_failures(dependency_tasks: list[TaskStatus]) -> str:
     return "；".join(failures) if failures else "依赖任务执行失败"
 
 
+def _collect_dependency_result_sources(
+    dependency_ids: list[str],
+    task_pool: list[TaskStatus],
+    verified_facts: dict[str, Any],
+) -> dict[str, str]:
+    sources: dict[str, str] = {}
+    tasks_by_id = {task["task_id"]: task for task in task_pool}
+    for dependency_id in dependency_ids:
+        task = tasks_by_id.get(dependency_id)
+        if task is None:
+            continue
+        if dependency_id in verified_facts:
+            sources[dependency_id] = "verified_fact"
+        elif task.get("result") is not None:
+            sources[dependency_id] = "task_result"
+        else:
+            sources[dependency_id] = "unknown"
+    return sources
+
+
 def _interrupt_for_clarification(
     parent_task: TaskStatus,
     prompt: str,
@@ -408,7 +443,7 @@ def _resume_parent_from_helper(
         "depends_on_task_ids": [],
         "blocked_reason": None,
         "clarification_prompt": None,
-        "status_detail": "依赖已解决，继续执行",
+        "status_detail": "@dependency_resolved",
         "resolved_inputs": resolved_inputs,
         "resume_count": int(parent.get("resume_count") or 0) + 1,
         "updated_at": _utc_now_iso(),
@@ -430,14 +465,20 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
 
     if _should_interrupt_for_user_clarification(help_request):
         prompt = _build_user_clarification_prompt(parent_task, help_request)
-        logger.info("[Router] Direct user clarification required for parent_task=%s", parent_task["task_id"])
+        logger.info(
+            "[Router] Direct user clarification required for parent_task=%s run_id=%s resolution_strategy=%s options=%s",
+            parent_task["task_id"],
+            parent_task.get("run_id"),
+            help_request.get("resolution_strategy"),
+            help_request.get("clarification_options"),
+        )
         return _interrupt_for_clarification(
             parent_task,
             prompt,
             route_count,
             writer,
             agent_name=parent_task.get("assigned_agent") or "workflow-router",
-            status_detail="需要你补充信息",
+            status_detail="@waiting_clarification",
         )
 
     requester = parent_task.get("requested_by_agent")
@@ -472,7 +513,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
                 state,
                 route_count,
                 direct_candidate,
-                status_detail=f"正在重试协作代理 {direct_candidate}",
+                status_detail=f"@retrying_helper:{direct_candidate}",
                 helper_retry_count=next_retry_count,
             )
         logger.info("[Router] %s for parent_task=%s", budget_reason, parent_task["task_id"])
@@ -483,7 +524,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name=parent_task.get("assigned_agent") or "workflow-router",
-            status_detail="需要你补充信息（协作代理重试次数已用尽）",
+            status_detail="@waiting_clarification",
         )
 
     if not candidate_names:
@@ -495,7 +536,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name="workflow-router",
-            status_detail="需要你补充信息（暂无可用协作代理）",
+            status_detail="@waiting_clarification",
         )
 
     if len(candidate_names) == 1:
@@ -512,7 +553,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             hinted,
         )
         assigned = await _llm_route(
-            _append_candidate_hints(_build_helper_description(help_request), hinted),
+            _append_candidate_hints(_build_helper_context(help_request), hinted),
             _build_agent_profiles(domain_agents),
             candidate_names,
             config,
@@ -532,7 +573,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             route_count,
             writer,
             agent_name="workflow-router",
-            status_detail="需要你补充信息（未找到匹配的协作代理）",
+            status_detail="@waiting_clarification",
         )
 
     return _route_to_helper(parent_task, state, route_count, assigned)
@@ -598,7 +639,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                             state,
                             route_count,
                             direct_candidate,
-                            status_detail=f"依赖失败，正在重试协作代理 {direct_candidate}",
+                            status_detail=f"@retrying_helper:{direct_candidate}",
                             helper_retry_count=next_retry_count,
                         )
                 logger.info(
@@ -613,14 +654,19 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     route_count,
                     writer,
                     agent_name=waiting_task.get("assigned_agent") or "workflow-router",
-                    status_detail=f"依赖处理失败，需要你补充信息（{failure_summary}）",
+                    status_detail="@waiting_clarification",
                 )
             resumed_task = _resume_parent_from_helper(waiting_task, dependency_ids, task_pool, verified_facts)
             if resumed_task is not None:
+                dependency_sources = _collect_dependency_result_sources(dependency_ids, task_pool, verified_facts)
                 logger.info(
-                    "[Router] Resuming parent task '%s' with resolved_input_keys=%s",
+                    "[Router] Resuming parent task '%s' run_id=%s depends_on=%s sources=%s resolved_input_keys=%s resume_count=%s",
                     waiting_task["task_id"],
+                    resumed_task.get("run_id"),
+                    dependency_ids,
+                    dependency_sources,
                     list((resumed_task.get("resolved_inputs") or {}).keys()),
+                    resumed_task.get("resume_count"),
                 )
                 _emit_task_event(
                     writer,
@@ -628,7 +674,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     resumed_task,
                     resumed_task.get("assigned_agent") or "workflow-router",
                     status="in_progress",
-                    status_detail="依赖已解决，任务已恢复",
+                    status_detail="@dependency_resolved",
                     resolved_inputs=resumed_task.get("resolved_inputs"),
                     resume_count=resumed_task.get("resume_count"),
                 )
@@ -678,7 +724,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         "run_id": run_id,
         "status": "RUNNING",
         "assigned_agent": assigned,
-        "status_detail": f"已分派给 {assigned}",
+        "status_detail": f"@assigned:{assigned}",
         "clarification_prompt": None,
         "updated_at": _utc_now_iso(),
     }
