@@ -9,8 +9,10 @@ Projection strategy (layered):
 """
 
 import logging
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timezone, tzinfo as TzInfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.agents.thread_state import (
     InterventionDisplay,
@@ -22,17 +24,62 @@ from src.agents.thread_state import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Timezone resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_display_timezone(tz: str | None = None) -> TzInfo:
+    """Resolve the timezone used for formatting timestamps in display cards.
+
+    Resolution order:
+    1. Explicit ``tz`` argument (passed through the call chain).
+    2. ``DEER_FLOW_TIMEZONE`` environment variable (e.g. ``"Asia/Shanghai"``).
+    3. System local timezone (the machine's default).
+
+    Falls back to UTC only when resolution fails.
+    """
+    # 1. Explicit argument
+    if tz:
+        try:
+            return ZoneInfo(tz)
+        except (KeyError, Exception):
+            logger.warning("[DisplayProjection] Invalid timezone '%s', falling back.", tz)
+
+    # 2. Environment variable
+    env_tz = os.environ.get("DEER_FLOW_TIMEZONE")
+    if env_tz:
+        try:
+            return ZoneInfo(env_tz)
+        except (KeyError, Exception):
+            logger.warning("[DisplayProjection] Invalid DEER_FLOW_TIMEZONE '%s', falling back.", env_tz)
+
+    # 3. System local timezone
+    try:
+        local_offset = datetime.now(timezone.utc).astimezone().tzinfo
+        if local_offset is not None:
+            return local_offset
+    except Exception:
+        pass
+
+    # 4. Last resort
+    return UTC
+
+
+# ---------------------------------------------------------------------------
 # Timestamp formatting
 # ---------------------------------------------------------------------------
 
-def _format_epoch_ms(epoch_ms: int | float | str | None) -> str:
-    """Convert epoch milliseconds to human-readable datetime string."""
+def _format_epoch_ms(epoch_ms: int | float | str | None, tz: TzInfo | None = None) -> str:
+    """Convert epoch milliseconds to human-readable datetime string.
+
+    Uses the provided timezone for display.  Falls back to
+    ``_resolve_display_timezone()`` when *tz* is ``None``.
+    """
     if epoch_ms is None:
         return ""
     try:
+        display_tz = tz or _resolve_display_timezone()
         ts = int(epoch_ms) / 1000
-        dt = datetime.fromtimestamp(ts, tz=UTC)
-        # Use a clean format: 2026-03-18 09:00
+        dt = datetime.fromtimestamp(ts, tz=display_tz)
         return dt.strftime("%Y-%m-%d %H:%M")
     except (ValueError, TypeError, OSError):
         return str(epoch_ms)
@@ -131,7 +178,7 @@ def _humanize_key(key: str) -> str:
     return key
 
 
-def _humanize_value(key: str, value: Any) -> str:
+def _humanize_value(key: str, value: Any, tz: TzInfo | None = None) -> str:
     """Convert a raw value to a human-readable string based on key hints."""
     if value is None:
         return ""
@@ -141,8 +188,8 @@ def _humanize_value(key: str, value: Any) -> str:
         if isinstance(value, (int, float)) and value > 1_000_000_000:
             # Likely epoch (seconds or milliseconds)
             if value > 1_000_000_000_000:
-                return _format_epoch_ms(value)
-            return _format_epoch_ms(value * 1000)
+                return _format_epoch_ms(value, tz=tz)
+            return _format_epoch_ms(value * 1000, tz=tz)
     # List of actors/attendees
     if key_lower in ("actors", "attendees", "participants") and isinstance(value, list):
         return _format_actors(value)
@@ -208,12 +255,12 @@ def _classify_operation(tool_name: str) -> tuple[str, str] | None:
 # Scenario-specific projections
 # ---------------------------------------------------------------------------
 
-def _project_meeting_create(tool_name: str, tool_args: dict[str, Any]) -> InterventionDisplay | None:
+def _project_meeting_create(tool_name: str, tool_args: dict[str, Any], tz: TzInfo | None = None) -> InterventionDisplay | None:
     """Scenario projection for meeting creation tools."""
     title_text = tool_args.get("title") or "未命名会议"
     person_name = tool_args.get("personName") or ""
-    start = _format_epoch_ms(tool_args.get("startDate"))
-    end = _format_epoch_ms(tool_args.get("endDate"))
+    start = _format_epoch_ms(tool_args.get("startDate"), tz=tz)
+    end = _format_epoch_ms(tool_args.get("endDate"), tz=tz)
     content = tool_args.get("content") or ""
     actors_str = _format_actors(tool_args.get("actors"))
     notice_str = _format_notice_times(tool_args.get("noticeTimes"))
@@ -267,13 +314,13 @@ def _project_meeting_create(tool_name: str, tool_args: dict[str, Any]) -> Interv
     return display
 
 
-def _project_meeting_update(tool_name: str, tool_args: dict[str, Any]) -> InterventionDisplay | None:
+def _project_meeting_update(tool_name: str, tool_args: dict[str, Any], tz: TzInfo | None = None) -> InterventionDisplay | None:
     """Scenario projection for meeting update tools."""
     items: list[InterventionDisplayItem] = []
     if tool_args.get("title"):
         items.append({"label": "会议主题", "value": tool_args["title"]})
-    start = _format_epoch_ms(tool_args.get("startDate"))
-    end = _format_epoch_ms(tool_args.get("endDate"))
+    start = _format_epoch_ms(tool_args.get("startDate"), tz=tz)
+    end = _format_epoch_ms(tool_args.get("endDate"), tz=tz)
     if start:
         items.append({"label": "开始时间", "value": start})
     if end:
@@ -306,7 +353,7 @@ def _project_meeting_update(tool_name: str, tool_args: dict[str, Any]) -> Interv
     return display
 
 
-def _project_meeting_cancel(tool_name: str, tool_args: dict[str, Any]) -> InterventionDisplay | None:
+def _project_meeting_cancel(tool_name: str, tool_args: dict[str, Any], tz: TzInfo | None = None) -> InterventionDisplay | None:
     """Scenario projection for meeting cancellation tools."""
     display: InterventionDisplay = {
         "title": "确认取消会议",
@@ -330,14 +377,14 @@ _SCENARIO_PROJECTIONS: list[tuple[str, Any]] = [
 ]
 
 
-def _try_scenario_projection(tool_name: str, tool_args: dict[str, Any]) -> InterventionDisplay | None:
+def _try_scenario_projection(tool_name: str, tool_args: dict[str, Any], tz: TzInfo | None = None) -> InterventionDisplay | None:
     """Try to find a scenario-specific projection for the tool."""
     name_lower = tool_name.lower().replace("-", "").replace("_", "")
     for pattern, projector in _SCENARIO_PROJECTIONS:
         normalized_pattern = pattern.replace("-", "").replace("_", "")
         if normalized_pattern in name_lower:
             try:
-                return projector(tool_name, tool_args)
+                return projector(tool_name, tool_args, tz=tz)
             except Exception as e:
                 logger.warning("[DisplayProjection] Scenario projection failed for '%s': %s", tool_name, e)
                 return None
@@ -353,6 +400,7 @@ def _build_operation_type_display(
     tool_args: dict[str, Any],
     operation_label: str,
     operation_summary: str,
+    tz: TzInfo | None = None,
 ) -> InterventionDisplay:
     """Build a display from operation type classification."""
     # Extract readable items from tool_args
@@ -363,7 +411,7 @@ def _build_operation_type_display(
         if value is None or value == "":
             continue
         label = _humanize_key(key)
-        display_value = _humanize_value(key, value)
+        display_value = _humanize_value(key, value, tz=tz)
         if display_value:
             items.append({"label": label, "value": display_value})
 
@@ -403,6 +451,7 @@ def _build_fallback_display(
     tool_name: str,
     tool_args: dict[str, Any],
     agent_name: str,
+    tz: TzInfo | None = None,
 ) -> InterventionDisplay:
     """Build a generic fallback display when no specialized projection exists."""
     items: list[InterventionDisplayItem] = []
@@ -412,7 +461,7 @@ def _build_fallback_display(
         if value is None or value == "":
             continue
         label = _humanize_key(key)
-        display_value = _humanize_value(key, value)
+        display_value = _humanize_value(key, value, tz=tz)
         if display_value:
             items.append({"label": label, "value": display_value})
 
@@ -445,6 +494,7 @@ def build_display_projection(
     tool_name: str,
     tool_args: dict[str, Any],
     agent_name: str = "",
+    timezone: str | None = None,
 ) -> InterventionDisplay:
     """Build a user-facing display projection for an intervention request.
 
@@ -457,12 +507,17 @@ def build_display_projection(
         tool_name: The tool being intercepted.
         tool_args: The tool call arguments.
         agent_name: The agent executing the tool.
+        timezone: IANA timezone identifier (e.g. ``"Asia/Shanghai"``).
+            When ``None``, resolved via ``DEER_FLOW_TIMEZONE`` env var
+            or the system local timezone.
 
     Returns:
         InterventionDisplay with user-readable content.
     """
+    display_tz = _resolve_display_timezone(timezone)
+
     # 1. Try scenario-specific projection
-    display = _try_scenario_projection(tool_name, tool_args)
+    display = _try_scenario_projection(tool_name, tool_args, tz=display_tz)
     if display is not None:
         logger.info("[DisplayProjection] Scenario projection matched for '%s'.", tool_name)
         return display
@@ -472,8 +527,8 @@ def build_display_projection(
     if operation is not None:
         label, summary = operation
         logger.info("[DisplayProjection] Operation-type projection '%s' for '%s'.", label, tool_name)
-        return _build_operation_type_display(tool_name, tool_args, label, summary)
+        return _build_operation_type_display(tool_name, tool_args, label, summary, tz=display_tz)
 
     # 3. Generic fallback
     logger.info("[DisplayProjection] Fallback projection for '%s'.", tool_name)
-    return _build_fallback_display(tool_name, tool_args, agent_name)
+    return _build_fallback_display(tool_name, tool_args, agent_name, tz=display_tz)

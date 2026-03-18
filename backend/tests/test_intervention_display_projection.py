@@ -15,6 +15,7 @@ def test_meeting_booking_projection_returns_user_readable_display():
             "roomId": "room_123",
         },
         "meeting-agent",
+        timezone="Asia/Shanghai",
     )
 
     assert display["title"] == "确认预定会议"
@@ -25,6 +26,8 @@ def test_meeting_booking_projection_returns_user_readable_display():
     assert display["respond_action_label"] == "修改后预定"
     items = display["sections"][0]["items"]
     assert {"label": "会议主题", "value": "产品介绍会"} in items
+    # 1773824400000 = 2026-03-18 17:00 CST, 1773828000000 = 2026-03-18 18:00 CST
+    assert {"label": "会议时间", "value": "2026-03-18 17:00 ~ 18:00"} in items
     assert {"label": "发起人", "value": "孙琦"} in items
     assert {"label": "参与人", "value": "王敏、李雷"} in items
     assert {"label": "提醒", "value": "30分钟前、2小时前"} in items
@@ -42,6 +45,7 @@ def test_operation_projection_hides_internal_ids_and_formats_timestamps():
             "openId": "ou_secret",
         },
         "ops-agent",
+        timezone="Asia/Shanghai",
     )
 
     assert display["title"] == "确认发送操作"
@@ -49,7 +53,8 @@ def test_operation_projection_hides_internal_ids_and_formats_timestamps():
     items = display["sections"][0]["items"]
     assert {"label": "收件人", "value": "全员群"} in items
     assert {"label": "消息", "value": "请按时参会"} in items
-    assert any(item["label"] == "scheduledTime" and item["value"] == "2026-03-18 09:00" for item in items)
+    # 1773824400000 = 2026-03-18 17:00 CST
+    assert any(item["label"] == "scheduledTime" and item["value"] == "2026-03-18 17:00" for item in items)
     assert all(item["label"] != "openId" for item in items)
 
 
@@ -92,3 +97,69 @@ def test_unknown_scenario_does_not_require_raw_fields_for_primary_display():
     assert {"label": "金额", "value": "3"} in items
     assert all(item["label"] != "resourceId" for item in items)
     assert display["debug"]["raw_args"]["resourceId"] == "res_123"
+
+
+def test_timezone_converts_epoch_to_correct_local_time():
+    """Verify that the same epoch renders differently in different timezones."""
+    epoch_ms = 1773824400000  # 2026-03-18 09:00 UTC
+
+    display_utc = build_display_projection(
+        "meeting_createMeeting",
+        {"title": "会议", "startDate": epoch_ms, "endDate": epoch_ms + 3600000},
+        timezone="UTC",
+    )
+    display_shanghai = build_display_projection(
+        "meeting_createMeeting",
+        {"title": "会议", "startDate": epoch_ms, "endDate": epoch_ms + 3600000},
+        timezone="Asia/Shanghai",
+    )
+    display_tokyo = build_display_projection(
+        "meeting_createMeeting",
+        {"title": "会议", "startDate": epoch_ms, "endDate": epoch_ms + 3600000},
+        timezone="Asia/Tokyo",
+    )
+
+    utc_items = display_utc["sections"][0]["items"]
+    shanghai_items = display_shanghai["sections"][0]["items"]
+    tokyo_items = display_tokyo["sections"][0]["items"]
+
+    utc_time = next(i["value"] for i in utc_items if i["label"] == "会议时间")
+    shanghai_time = next(i["value"] for i in shanghai_items if i["label"] == "会议时间")
+    tokyo_time = next(i["value"] for i in tokyo_items if i["label"] == "会议时间")
+
+    assert utc_time == "2026-03-18 09:00 ~ 10:00"
+    assert shanghai_time == "2026-03-18 17:00 ~ 18:00"
+    assert tokyo_time == "2026-03-18 18:00 ~ 19:00"
+
+
+def test_env_var_timezone_fallback(monkeypatch):
+    """Verify DEER_FLOW_TIMEZONE env var is respected when no explicit timezone."""
+    monkeypatch.setenv("DEER_FLOW_TIMEZONE", "Asia/Shanghai")
+    epoch_ms = 1773824400000  # 2026-03-18 09:00 UTC
+
+    display = build_display_projection(
+        "meeting_createMeeting",
+        {"title": "会议", "startDate": epoch_ms, "endDate": epoch_ms + 3600000},
+    )
+
+    items = display["sections"][0]["items"]
+    time_value = next(i["value"] for i in items if i["label"] == "会议时间")
+    assert time_value == "2026-03-18 17:00 ~ 18:00"
+
+
+def test_cross_day_timezone_rendering():
+    """Verify timestamps near midnight render correct date after timezone shift."""
+    # 2026-03-18 23:00 UTC = 2026-03-19 07:00 CST (crosses midnight)
+    epoch_start = 1773874800000  # 2026-03-18 23:00 UTC
+    epoch_end = 1773878400000    # 2026-03-19 00:00 UTC
+
+    display = build_display_projection(
+        "meeting_createMeeting",
+        {"title": "跨天会议", "startDate": epoch_start, "endDate": epoch_end},
+        timezone="Asia/Shanghai",
+    )
+
+    items = display["sections"][0]["items"]
+    time_value = next(i["value"] for i in items if i["label"] == "会议时间")
+    # Both land on 2026-03-19 in CST: 07:00 ~ 08:00
+    assert time_value == "2026-03-19 07:00 ~ 08:00"
