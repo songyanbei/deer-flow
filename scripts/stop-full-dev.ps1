@@ -27,6 +27,27 @@ function Stop-ProcessTree([int]$ProcessId) {
     }
 }
 
+function Stop-MatchingProcesses {
+    $patterns = @(
+        'langgraph dev',
+        'uvicorn src\.gateway\.app:app',
+        'pnpm run dev',
+        'next dev',
+        'nohup uv run langgraph dev',
+        'nohup uv run uvicorn'
+    )
+
+    $processes = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine }
+    foreach ($process in $processes) {
+        foreach ($pattern in $patterns) {
+            if ($process.CommandLine -match $pattern) {
+                Stop-ProcessTree -ProcessId $process.ProcessId
+                break
+            }
+        }
+    }
+}
+
 function Get-ListeningProcessIds([int]$Port) {
     $owners = @()
     $lines = netstat -ano -p tcp | Select-String ":$Port"
@@ -75,6 +96,8 @@ if (Test-Path -LiteralPath $stateFile) {
 else {
     Write-Info 'No state file found. Falling back to port-based cleanup.'
 }
+
+Stop-MatchingProcesses
 
 foreach ($port in 3000, 8001, 2024) {
     Stop-PortOwner -Port $port

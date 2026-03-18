@@ -26,13 +26,11 @@ from src.sandbox.middleware import SandboxMiddleware
 
 logger = logging.getLogger(__name__)
 
-_READ_ONLY_WRITE_KEYWORDS = {"write", "create", "update", "cancel", "delete", "insert", "modify"}
+from src.mcp.tool_filter import filter_read_only_tools, is_read_only_tool
 
 
 def _is_read_only_tool(tool) -> bool:
-    tool_name = getattr(tool, "name", "")
-    name_lower = str(tool_name).lower()
-    return not any(keyword in name_lower for keyword in _READ_ONLY_WRITE_KEYWORDS)
+    return is_read_only_tool(tool)
 
 
 def _resolve_model_name(requested_model_name: str | None = None) -> str:
@@ -368,16 +366,24 @@ def make_lead_agent(config: RunnableConfig):
     if agent_config and agent_config.available_skills is not None:
         available_skills = set(agent_config.available_skills)
 
-    # Fetch per-agent MCP tools from the process-level pool (already connected by executor).
+    # Fetch per-agent MCP tools from the unified runtime manager (already connected by executor).
     # We look up tools here at agent-build time rather than reading from config.configurable
     # to avoid StructuredTool objects being serialized during LangGraph checkpointing.
     extra_tools: list = []
     if agent_name:
         try:
-            from src.execution.mcp_pool import mcp_pool
-            extra_tools = mcp_pool.get_agent_tools_sync(agent_name)
+            from src.mcp.runtime_manager import mcp_runtime
+
+            scope_key = mcp_runtime.scope_key_for_agent(agent_name)
+            extra_tools = mcp_runtime.get_tools_sync(scope_key)
+
+            # Fallback to legacy mcp_pool if runtime manager has no tools
+            if not extra_tools:
+                from src.execution.mcp_pool import mcp_pool
+                extra_tools = mcp_pool.get_agent_tools_sync(agent_name)
+
             if engine_behavior.filter_read_only_tools:
-                extra_tools = [tool for tool in extra_tools if _is_read_only_tool(tool)]
+                extra_tools = filter_read_only_tools(extra_tools)
             if extra_tools:
                 logger.info("Injecting %d MCP tool(s) for agent '%s'.", len(extra_tools), agent_name)
         except Exception as e:

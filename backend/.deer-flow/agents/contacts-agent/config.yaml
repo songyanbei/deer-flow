@@ -14,6 +14,12 @@ description: |
 tool_groups: []  # only MCP tools; no web/bash
 available_skills:
   - contacts
+# Declarative MCP binding (preferred)
+mcp_binding:
+  use_global: false
+  domain:
+    - contacts
+# Legacy fallback (kept for backward compatibility)
 mcp_servers:
   - name: contacts
     command: node

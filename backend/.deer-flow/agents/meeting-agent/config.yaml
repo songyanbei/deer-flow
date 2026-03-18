@@ -7,6 +7,14 @@ description: |
 tool_groups: []  # only MCP tools; no web/bash
 available_skills:
   - meeting
+# Declarative MCP binding (preferred)
+mcp_binding:
+  use_global: false
+  domain:
+    - meeting-assistant
+  shared:
+    - time-server
+# Legacy fallback (kept for backward compatibility)
 mcp_servers:
   - name: meeting-assistant
     command: node

@@ -44,6 +44,16 @@ class McpServerConfigResponse(BaseModel):
     oauth: McpOAuthConfigResponse | None = Field(default=None, description="OAuth configuration for MCP HTTP/SSE servers")
     description: str = Field(default="", description="Human-readable description of what this MCP server provides")
 
+    # Light-management fields (new, optional for backward compatibility)
+    healthcheck_path: str | None = Field(default=None, description="Health check endpoint path for sse/http servers")
+    connect_timeout_seconds: int = Field(default=30, description="Connection timeout in seconds")
+    call_timeout_seconds: int = Field(default=60, description="Tool call timeout in seconds")
+    retry_count: int = Field(default=0, description="Number of retries on transient failures")
+    circuit_breaker_enabled: bool = Field(default=False, description="Enable circuit breaker for repeated failures")
+    category: str = Field(default="global", description="MCP server category: global, domain, shared, or ephemeral")
+    domain: str | None = Field(default=None, description="Domain label when category='domain'")
+    readonly: bool = Field(default=False, description="If True, write-like tools are filtered for read-only agents")
+
 
 class McpConfigResponse(BaseModel):
     """Response model for MCP configuration."""

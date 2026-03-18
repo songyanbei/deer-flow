@@ -86,21 +86,39 @@ def _compile_multi_agent_graph(checkpointer=None):
 
 
 async def _warmup_domain_agent_mcp() -> None:
-    agents = [agent for agent in list_domain_agents() if agent.mcp_servers]
+    agents = [agent for agent in list_domain_agents() if agent.mcp_servers or agent.mcp_binding]
     if not agents:
         return
 
+    from src.config.extensions_config import ExtensionsConfig
     from src.execution.mcp_pool import mcp_pool
+    from src.mcp.binding_resolver import resolve_binding
+    from src.mcp.runtime_manager import mcp_runtime
+
+    extensions_config = ExtensionsConfig.from_file()
+
+    async def _warmup_single(agent):
+        binding = agent.get_effective_mcp_binding()
+        resolved = resolve_binding(binding, extensions_config, agent)
+        if not resolved:
+            return True
+        scope_key = mcp_runtime.scope_key_for_agent(agent.name)
+        success = await mcp_runtime.load_scope(scope_key, resolved)
+        # Also warm up legacy pool for backward compatibility
+        if agent.mcp_servers:
+            await mcp_pool.init_agent_connections(agent.name, [s.model_dump() for s in agent.mcp_servers])
+        return success
 
     results = await asyncio.gather(
-        *(mcp_pool.init_agent_connections(agent.name, [server.model_dump() for server in agent.mcp_servers]) for agent in agents),
+        *(_warmup_single(agent) for agent in agents),
         return_exceptions=True,
     )
     for agent, result in zip(agents, results, strict=False):
         if isinstance(result, Exception):
             logger.warning("[Graph] MCP warmup failed for agent '%s': %s", agent.name, result)
         elif result is False:
-            logger.warning("[Graph] MCP warmup failed for agent '%s': %s", agent.name, mcp_pool.get_agent_error(agent.name) or "unknown error")
+            scope_key = mcp_runtime.scope_key_for_agent(agent.name)
+            logger.warning("[Graph] MCP warmup failed for agent '%s': %s", agent.name, mcp_runtime.get_scope_error(scope_key) or "unknown error")
         else:
             logger.info("[Graph] MCP warmup succeeded for agent '%s'.", agent.name)
 

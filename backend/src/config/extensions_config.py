@@ -43,6 +43,16 @@ class McpServerConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict, description="HTTP headers to send (for sse or http type)")
     oauth: McpOAuthConfig | None = Field(default=None, description="OAuth configuration (for sse or http type)")
     description: str = Field(default="", description="Human-readable description of what this MCP server provides")
+
+    # --- Light-management fields ---
+    healthcheck_path: str | None = Field(default=None, description="Health check endpoint path for sse/http servers (e.g. '/health')")
+    connect_timeout_seconds: int = Field(default=30, description="Timeout in seconds for initial connection")
+    call_timeout_seconds: int = Field(default=60, description="Timeout in seconds for individual tool calls")
+    retry_count: int = Field(default=0, description="Number of retries on transient failures")
+    circuit_breaker_enabled: bool = Field(default=False, description="Enable circuit breaker for repeated failures")
+    category: Literal["global", "domain", "shared", "ephemeral"] = Field(default="global", description="MCP server category for scoping and isolation")
+    domain: str | None = Field(default=None, description="Domain label when category='domain' (e.g. 'contacts', 'meeting')")
+    readonly: bool = Field(default=False, description="If True, write-like tools from this server will be filtered for read-only agents")
     model_config = ConfigDict(extra="allow")
 
 
@@ -173,6 +183,28 @@ class ExtensionsConfig(BaseModel):
             Dictionary of enabled MCP servers.
         """
         return {name: config for name, config in self.mcp_servers.items() if config.enabled}
+
+    def get_servers_by_category(self, category: str) -> dict[str, McpServerConfig]:
+        """Get enabled MCP servers filtered by category.
+
+        Args:
+            category: One of 'global', 'domain', 'shared', 'ephemeral'.
+
+        Returns:
+            Dictionary of matching enabled MCP servers.
+        """
+        return {name: cfg for name, cfg in self.mcp_servers.items() if cfg.enabled and cfg.category == category}
+
+    def get_servers_by_names(self, names: list[str]) -> dict[str, McpServerConfig]:
+        """Get enabled MCP servers by their registered names.
+
+        Args:
+            names: List of server names to look up.
+
+        Returns:
+            Dictionary of matching enabled MCP servers.
+        """
+        return {name: cfg for name, cfg in self.mcp_servers.items() if cfg.enabled and name in names}
 
     def is_skill_enabled(self, skill_name: str, skill_category: str) -> bool:
         """Check if a skill is enabled.

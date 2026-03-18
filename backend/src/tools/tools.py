@@ -44,11 +44,10 @@ def get_available_tools(
     config = get_app_config()
     loaded_tools = [resolve_variable(tool.use, BaseTool) for tool in config.tools if groups is None or tool.group in groups]
 
-    # Get cached MCP tools if enabled
-    # NOTE: We use ExtensionsConfig.from_file() instead of config.extensions
-    # to always read the latest configuration from disk. This ensures that changes
-    # made through the Gateway API (which runs in a separate process) are immediately
-    # reflected when loading MCP tools.
+    # Get cached MCP tools if enabled.
+    # For the main agent, only global-category MCP servers are loaded.
+    # Domain agents do NOT go through this path — they get tools via
+    # the runtime manager in lead_agent/agent.py.
     mcp_tools = []
     if include_mcp:
         try:
@@ -56,10 +55,20 @@ def get_available_tools(
             from src.mcp.cache import get_cached_mcp_tools
 
             extensions_config = ExtensionsConfig.from_file()
-            if extensions_config.get_enabled_mcp_servers():
+            # Only consider global-category servers for the main agent
+            global_servers = extensions_config.get_servers_by_category("global")
+            if global_servers:
                 mcp_tools = get_cached_mcp_tools()
                 if mcp_tools:
-                    logger.info(f"Using {len(mcp_tools)} cached MCP tool(s)")
+                    logger.info(f"Using {len(mcp_tools)} cached MCP tool(s) (global scope)")
+            elif extensions_config.get_enabled_mcp_servers():
+                # Backward compatibility: if no servers have category set,
+                # fall back to loading all enabled servers (old behavior).
+                has_any_categorized = any(s.category != "global" for s in extensions_config.mcp_servers.values())
+                if not has_any_categorized:
+                    mcp_tools = get_cached_mcp_tools()
+                    if mcp_tools:
+                        logger.info(f"Using {len(mcp_tools)} cached MCP tool(s) (legacy, no categories)")
         except ImportError:
             logger.warning("MCP module not available. Install 'langchain-mcp-adapters' package to enable MCP tools.")
         except Exception as e:

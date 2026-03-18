@@ -11,9 +11,12 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeDir = Join-Path $repoRoot '.dev-runtime'
-$logDir = Join-Path $runtimeDir 'logs'
 $stateFile = Join-Path $runtimeDir 'services.json'
 $envFile = Join-Path $repoRoot '.env'
+$backendDir = Join-Path $repoRoot 'backend'
+$frontendDir = Join-Path $repoRoot 'frontend'
+$backendLogDir = Join-Path $backendDir 'logs'
+$frontendLogDir = Join-Path $frontendDir 'logs'
 
 function Ensure-Directory([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -87,7 +90,8 @@ function Import-DotEnvFile([string]$Path) {
 }
 
 Ensure-Directory $runtimeDir
-Ensure-Directory $logDir
+Ensure-Directory $backendLogDir
+Ensure-Directory $frontendLogDir
 Import-DotEnvFile $envFile
 
 if (-not $env:NEXT_PUBLIC_BACKEND_BASE_URL) {
@@ -109,16 +113,13 @@ if (-not $NoStop) {
     & (Join-Path $PSScriptRoot 'stop-full-dev.ps1') -Quiet
 }
 
-$langgraphLog = Join-Path $logDir 'langgraph.log'
-$gatewayLog = Join-Path $logDir 'gateway.log'
-$frontendLog = Join-Path $logDir 'frontend.log'
-
-$backendDir = Join-Path $repoRoot 'backend'
-$frontendDir = Join-Path $repoRoot 'frontend'
+$langgraphLog = Join-Path $backendLogDir 'langgraph.log'
+$gatewayLog = Join-Path $backendLogDir 'gateway.log'
+$frontendLog = Join-Path $frontendLogDir 'frontend.log'
 
 $langgraphCmd = "cd /d `"$backendDir`" && uv run langgraph dev --no-browser --allow-blocking --no-reload --port $LangGraphPort > `"$langgraphLog`" 2>&1"
-$gatewayCmd = "cd /d `"$backendDir`" && uv run uvicorn src.gateway.app:app --host 127.0.0.1 --port $GatewayPort > `"$gatewayLog`" 2>&1"
-$frontendCmd = "cd /d `"$frontendDir`" && pnpm.cmd exec next dev --hostname 127.0.0.1 --port $FrontendPort > `"$frontendLog`" 2>&1"
+$gatewayCmd = "cd /d `"$backendDir`" && uv run uvicorn src.gateway.app:app --host 0.0.0.0 --port $GatewayPort > `"$gatewayLog`" 2>&1"
+$frontendCmd = "cd /d `"$frontendDir`" && pnpm run dev > `"$frontendLog`" 2>&1"
 
 Write-Host 'Starting LangGraph...'
 $langgraphProcess = Start-LoggedProcess -Name 'LangGraph' -Command $langgraphCmd
@@ -128,7 +129,7 @@ Write-Host 'Starting Gateway...'
 $gatewayProcess = Start-LoggedProcess -Name 'Gateway' -Command $gatewayCmd
 Wait-ForPort -Name 'Gateway' -Port $GatewayPort -TimeoutSeconds 60
 
-Write-Host 'Starting Frontend (non-turbo)...'
+Write-Host 'Starting Frontend...'
 $frontendProcess = Start-LoggedProcess -Name 'Frontend' -Command $frontendCmd
 Wait-ForPort -Name 'Frontend' -Port $FrontendPort -TimeoutSeconds 120
 

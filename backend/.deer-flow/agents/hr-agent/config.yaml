@@ -1,13 +1,22 @@
 name: hr-agent
 domain: hr
 description: |
-  拥有 HR 域的数据查询能力，专注于员工考勤和请假状态查询。不能执行任何修改操作。
-  核心能力：查询指定员工在指定时间段内的请假记录、考勤状态。
+  拥有 HR 域的数据查询和操作能力，覆盖员工考勤、请假、补签等场景。
+  核心能力：
+  1. 查询指定员工在指定时间段内的请假记录、考勤状态
+  2. 提交/取消请假申请，查询假期余额
+  3. 查询考勤异常（迟到、早退、缺卡），提交补签申请
   【重要边界】：本智能体不具备查询员工 openId、姓名、工号、城市、部门、联系方式等人员基础信息的能力。
   人员基础信息请找通讯录智能体（contacts-agent）。
 tool_groups: []  # only MCP tools; no web/bash
 available_skills:
-  - hr
+  - hcm
+# Declarative MCP binding (preferred)
+mcp_binding:
+  use_global: false
+  domain:
+    - hcm
+# Legacy fallback (kept for backward compatibility)
 mcp_servers:
   - name: hr-attendance
     command: uv

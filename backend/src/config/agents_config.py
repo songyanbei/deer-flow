@@ -38,12 +38,34 @@ def _resolve_env_variables(value: Any) -> Any:
 
 
 class McpServerEntry(BaseModel):
-    """Single MCP server config for a domain agent (stdio transport)."""
+    """Single MCP server config for a domain agent (stdio transport).
+
+    Kept for backward compatibility. New configs should use ``mcp_binding`` instead.
+    """
 
     name: str
     command: str
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+
+
+class McpBindingConfig(BaseModel):
+    """Declarative MCP binding for a domain agent.
+
+    Instead of embedding full server configs, agents reference server *names*
+    registered in ``extensions_config.json`` (or the legacy ``mcp_servers`` list).
+
+    Fields:
+        use_global: Whether this agent inherits global-category MCP servers.
+        domain: Server names scoped exclusively to this agent's domain.
+        shared: Server names shared across multiple agents.
+        ephemeral: Server names created on-the-fly per run (reserved).
+    """
+
+    use_global: bool = Field(default=False, description="Inherit global MCP servers")
+    domain: list[str] = Field(default_factory=list, description="Domain-scoped server names")
+    shared: list[str] = Field(default_factory=list, description="Shared server names across agents")
+    ephemeral: list[str] = Field(default_factory=list, description="Ephemeral server names (reserved)")
 
 
 class AgentConfig(BaseModel):
@@ -61,9 +83,34 @@ class AgentConfig(BaseModel):
     hitl_keywords: list[str] = Field(default_factory=list)  # Keywords triggering Human-in-the-Loop approval (backward-compatible fallback)
     intervention_policies: dict[str, Any] = Field(default_factory=dict)  # Per-tool intervention policies (Phase 1)
     max_tool_calls: int = 20                       # Per-agent safety limit for tool usage inside one task execution.
-    mcp_servers: list[McpServerEntry] = Field(default_factory=list)  # Domain-specific MCP servers (stdio connections)
+    mcp_servers: list[McpServerEntry] = Field(default_factory=list)  # Legacy: domain-specific MCP servers (stdio)
+    mcp_binding: McpBindingConfig | None = None    # Declarative MCP binding (preferred over mcp_servers)
     available_skills: list[str] | None = None      # Skill names to expose; None = all enabled skills
     requested_orchestration_mode: Literal["auto", "leader", "workflow"] | None = None
+
+    def get_effective_mcp_binding(self) -> McpBindingConfig:
+        """Return the effective MCP binding, migrating legacy ``mcp_servers`` if needed.
+
+        If ``mcp_binding`` is explicitly set, it is returned as-is.
+        Otherwise, the legacy ``mcp_servers[].name`` list is converted to
+        ``McpBindingConfig(domain=[...])`` so that downstream code only
+        deals with a single model.
+        """
+        if self.mcp_binding is not None:
+            return self.mcp_binding
+
+        if self.mcp_servers:
+            migrated_domain = [s.name for s in self.mcp_servers]
+            if migrated_domain:
+                logger.info(
+                    "Agent '%s': migrating legacy mcp_servers %s → mcp_binding.domain",
+                    self.name,
+                    migrated_domain,
+                )
+            return McpBindingConfig(domain=migrated_domain)
+
+        # No MCP at all
+        return McpBindingConfig()
 
 
 def load_agent_config(name: str | None) -> AgentConfig | None:
