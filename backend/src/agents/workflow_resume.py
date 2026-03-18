@@ -78,6 +78,14 @@ def _latest_waiting_clarification_task(state: ThreadState) -> TaskStatus | None:
 
 
 def workflow_has_pending_clarification(state: ThreadState) -> bool:
+    # Phase 2: prefer continuation_mode if present
+    task_pool = state.get("task_pool") or []
+    for task in reversed(task_pool):
+        if not isinstance(task, dict):
+            continue
+        if task.get("continuation_mode") == "continue_after_clarification":
+            return True
+    # Legacy fallback
     task = _latest_waiting_clarification_task(state)
     if task is None:
         return False
@@ -162,7 +170,13 @@ def _latest_waiting_intervention_task(state: ThreadState) -> TaskStatus | None:
 def workflow_has_pending_intervention(state: ThreadState) -> bool:
     """Check if the workflow has a pending intervention."""
     task = _latest_waiting_intervention_task(state)
-    return task is not None and task.get("intervention_status") == "pending"
+    if task is None:
+        return False
+    # Phase 2: prefer continuation_mode if present
+    if task.get("continuation_mode") == "resume_tool_call":
+        return task.get("intervention_status") == "pending"
+    # Legacy fallback
+    return task.get("intervention_status") == "pending"
 
 
 def get_pending_intervention_task(state: ThreadState) -> TaskStatus | None:

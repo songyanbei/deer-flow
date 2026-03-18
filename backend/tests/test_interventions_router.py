@@ -161,3 +161,24 @@ def test_resolve_intervention_requires_payload_object():
         )
 
     assert response.status_code == 422
+
+
+def test_resolve_intervention_returns_checkpoint_when_update_state_provides_it():
+    task = _pending_task()
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [task]})
+    client_mock.threads.update_state = AsyncMock(return_value={"checkpoint": {"thread_ts": "cp-1"}})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-1:resolve",
+                json={
+                    "fingerprint": "fp-1",
+                    "action_key": "approve",
+                    "payload": {"comment": "go ahead"},
+                },
+            )
+
+    assert response.status_code == 200
+    assert response.json()["checkpoint"] == {"thread_ts": "cp-1"}

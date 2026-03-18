@@ -275,6 +275,21 @@ When to call `request_help` - you MUST escalate when:
   User asked "帮我订个会议室" but didn't say what时间 → call `request_help` with:
   - `resolution_strategy`: "user_clarification"
   - `clarification_question`: "请问您希望预定哪天什么时间段的会议室？"
+
+**Task completion signaling:**
+When you have fully completed your task, call `task_complete` with:
+- `result_text`: A concise summary of what was accomplished (e.g. "已成功预定3月20日14:00-15:00的会议室A")
+- `fact_payload`: Optional structured data dict with key results (e.g. {"meeting_id": "mtg_123", "room": "A", "time": "14:00-15:00"})
+
+When your task cannot be completed due to an unrecoverable error, call `task_fail` with:
+- `error_message`: A clear description of why the task failed
+- `retryable`: Set to `true` if the failure is transient and retrying might succeed
+
+**HARD RULES for completion:**
+- ✅ ALWAYS call `task_complete` when you have successfully finished your work
+- ✅ ALWAYS call `task_fail` when you encounter an unrecoverable error
+- ❌ NEVER end with a plain text response without calling `task_complete` or `task_fail`
+- ❌ NEVER call `task_complete` before the actual work is done
 </clarification_system>"""
 
 MEETING_AGENT_HELP_RULES = """<meeting_agent_help_system>

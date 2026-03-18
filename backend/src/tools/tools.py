@@ -4,7 +4,7 @@ from langchain.tools import BaseTool
 
 from src.config import get_app_config
 from src.reflection import resolve_variable
-from src.tools.builtins import ask_clarification_tool, present_file_tool, request_help_tool, task_tool, view_image_tool
+from src.tools.builtins import ask_clarification_tool, present_file_tool, request_help_tool, task_complete_tool, task_fail_tool, task_tool, view_image_tool
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,8 @@ def get_available_tools(
         builtin_tools.append(ask_clarification_tool)
     else:
         builtin_tools.append(request_help_tool)
+        builtin_tools.append(task_complete_tool)
+        builtin_tools.append(task_fail_tool)
 
     # Add subagent tools only if enabled via runtime parameter
     if subagent_enabled:

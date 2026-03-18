@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from contextlib import ExitStack
 from unittest.mock import patch
@@ -239,6 +240,181 @@ def test_multi_agent_graph_request_help_round_trip():
                 "task_resumed",
                 "task_completed",
             }
+
+    asyncio.run(_run())
+
+
+def test_multi_agent_graph_intervention_fast_path_does_not_retrigger_old_room_request():
+    class PlannerLLMWithIntervention:
+        def __init__(self):
+            self.call_count = 0
+
+        async def ainvoke(self, _messages):
+            self.call_count += 1
+            if self.call_count == 1:
+                return DummyResponse('[{"description": "book a meeting room", "assigned_agent": "meeting-agent"}]')
+            return DummyResponse('{"done": true, "summary": "Meeting booked successfully."}')
+
+    class DomainAgentStubWithIntervention:
+        def __init__(self):
+            self.calls: dict[str, int] = {}
+
+        async def ainvoke(self, payload, config=None):
+            agent_name = config.get("configurable", {}).get("agent_name")
+            self.calls[agent_name] = self.calls.get(agent_name, 0) + 1
+
+            if agent_name != "meeting-agent":
+                raise AssertionError(f"Unexpected agent: {agent_name}")
+
+            if self.calls[agent_name] == 1:
+                return {
+                    "messages": [
+                        ToolMessage(
+                            content=json.dumps(
+                                {
+                                    "problem": "Need the user to select a room",
+                                    "required_capability": "room selection",
+                                    "reason": "Several rooms are available",
+                                    "expected_output": "selected room id",
+                                    "resolution_strategy": "user_clarification",
+                                    "clarification_question": "Which room should I book?",
+                                    "clarification_options": ["Room A", "Room B"],
+                                }
+                            ),
+                            tool_call_id="help-1",
+                            name="request_help",
+                        )
+                    ]
+                }
+
+            if self.calls[agent_name] == 2:
+                context = next(
+                    (m.content for m in reversed(payload["messages"]) if isinstance(m, HumanMessage)),
+                    payload["messages"][0].content,
+                )
+                assert "User clarification answer:\nRoom A" in context
+                return {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "create-1",
+                                    "name": "meeting_createMeeting",
+                                    "args": {"roomId": "room-a", "topic": "Weekly sync"},
+                                }
+                            ],
+                        ),
+                        ToolMessage(
+                            content=json.dumps(
+                                {
+                                    "request_id": "intv-1",
+                                    "fingerprint": "fp-1",
+                                    "context": {"idempotency_key": "idem-1"},
+                                    "action_schema": {
+                                        "actions": [
+                                            {
+                                                "key": "approve",
+                                                "label": "Approve",
+                                                "kind": "button",
+                                                "resolution_behavior": "resume_current_task",
+                                            },
+                                            {
+                                                "key": "reject",
+                                                "label": "Reject",
+                                                "kind": "button",
+                                                "resolution_behavior": "fail_current_task",
+                                            },
+                                        ]
+                                    },
+                                }
+                            ),
+                            tool_call_id="create-1",
+                            name="intervention_required",
+                        ),
+                    ]
+                }
+
+            tool_names = [getattr(m, "name", None) for m in payload["messages"]]
+            assert "meeting_createMeeting" in tool_names
+            assert "request_help" not in tool_names
+            return {
+                "messages": [
+                    ToolMessage(
+                        content='{"result_text":"Meeting booked successfully.","fact_payload":{"status":"booked"}}',
+                        tool_call_id="done-1",
+                        name="task_complete",
+                    )
+                ]
+            }
+
+    async def _run():
+        from src.agents.graph import build_multi_agent_graph_for_test
+
+        planner_llm = PlannerLLMWithIntervention()
+        domain_stub = DomainAgentStubWithIntervention()
+        checkpointer = MemorySaver()
+        events: list[dict] = []
+
+        async def _execute_intercepted_tool_call(stored_tool_call, _config):
+            return ToolMessage(
+                content='{"meetingId":"mtg-1","status":"booked"}',
+                tool_call_id=stored_tool_call["tool_call_id"],
+                name=stored_tool_call["tool_name"],
+            )
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("src.agents.planner.node.create_chat_model", return_value=planner_llm))
+            stack.enter_context(
+                patch(
+                    "src.agents.router.semantic_router.list_domain_agents",
+                    return_value=[type("Agent", (), {"name": "meeting-agent", "description": "Book meetings"})()],
+                )
+            )
+            stack.enter_context(patch("src.agents.executor.executor._ensure_mcp_ready", return_value=None))
+            stack.enter_context(
+                patch("src.agents.executor.executor._execute_intercepted_tool_call", new=_execute_intercepted_tool_call)
+            )
+            stack.enter_context(patch("src.agents.executor.executor.make_lead_agent", create=True, new=make_lead_agent_stub(domain_stub)))
+            stack.enter_context(patch("src.agents.lead_agent.agent.make_lead_agent", new=make_lead_agent_stub(domain_stub)))
+            stack.enter_context(patch("src.agents.executor.executor.get_stream_writer", return_value=events.append))
+            stack.enter_context(patch("src.agents.router.semantic_router.get_stream_writer", return_value=events.append))
+
+            graph = build_multi_agent_graph_for_test(checkpointer=checkpointer)
+            thread_id = str(uuid.uuid4())
+            config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+
+            first_state = await graph.ainvoke(
+                {"messages": [HumanMessage(content="Book a meeting room for next week.")]},
+                config=config,
+            )
+            first_task = first_state["task_pool"][0]
+            assert first_state["execution_state"] == "INTERRUPTED"
+            assert first_task["status"] == "RUNNING"
+            assert first_task["clarification_prompt"] == "Which room should I book?\n\n1. Room A\n2. Room B"
+
+            second_state = await graph.ainvoke(
+                {"messages": [HumanMessage(content="Room A")]},
+                config=config,
+            )
+            second_task = second_state["task_pool"][0]
+            assert second_state["execution_state"] == "INTERRUPTED"
+            assert second_task["status"] == "WAITING_INTERVENTION"
+            assert second_task["continuation_mode"] == "resume_tool_call"
+            assert second_task["pending_tool_call"]["tool_name"] == "meeting_createMeeting"
+
+            third_state = await graph.ainvoke(
+                {"messages": [HumanMessage(content="[intervention_resolved] request_id=intv-1 action_key=approve")]},
+                config=config,
+            )
+
+            assert third_state["execution_state"] == "DONE"
+            assert third_state["final_result"] == "Meeting booked successfully."
+            assert third_state["task_pool"][0]["status"] == "DONE"
+            event_types = [event["type"] for event in events]
+            assert event_types.count("task_waiting_intervention") == 1
+            assert event_types.count("task_waiting_dependency") == 1
+            assert event_types.count("task_completed") == 1
 
     asyncio.run(_run())
 

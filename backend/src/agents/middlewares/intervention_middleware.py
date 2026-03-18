@@ -106,6 +106,21 @@ def _build_default_action_schema(tool_name: str) -> InterventionActionSchema:
     }
 
 
+def _generate_idempotency_key(
+    run_id: str,
+    task_id: str,
+    tool_name: str,
+    tool_call_id: str,
+) -> str:
+    """Generate a unique idempotency key for a pending tool call.
+
+    The key is deterministic for the same tool call in the same run context,
+    enabling dedup of duplicate resume submissions.
+    """
+    raw = f"idem:{run_id}:{task_id}:{tool_name}:{tool_call_id}:{uuid.uuid4().hex[:8]}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
 def _build_intervention_request(
     run_id: str,
     task_id: str,
@@ -114,10 +129,12 @@ def _build_intervention_request(
     tool_args: dict[str, Any],
     *,
     policy: dict[str, Any] | None = None,
+    tool_call_id: str = "",
 ) -> InterventionRequest:
     """Build a structured InterventionRequest for a tool call."""
     request_id = f"intv_{uuid.uuid4().hex[:16]}"
     fingerprint = _generate_fingerprint(run_id, task_id, agent_name, tool_name, tool_args)
+    idempotency_key = _generate_idempotency_key(run_id, task_id, tool_name, tool_call_id)
 
     # Use policy overrides if available, otherwise defaults
     title = (policy or {}).get("title", f"工具 {tool_name} 需要确认")
@@ -157,6 +174,8 @@ def _build_intervention_request(
         "category": category,
         "context": {
             "tool_args": tool_args,
+            "idempotency_key": idempotency_key,
+            "tool_call_id": tool_call_id,
         },
         "action_summary": f"执行 {tool_name}",
         "action_schema": action_schema,
@@ -237,6 +256,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
 
     def _handle_intervention(self, request: ToolCallRequest, tool_name: str, tool_args: dict[str, Any], policy: dict[str, Any] | None) -> Command:
         """Build intervention request and return Command to halt execution."""
+        tool_call_id = request.tool_call.get("id", "")
         intervention_request = _build_intervention_request(
             run_id=self._run_id,
             task_id=self._task_id,
@@ -244,6 +264,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
             tool_name=tool_name,
             tool_args=tool_args,
             policy=policy,
+            tool_call_id=tool_call_id,
         )
 
         logger.info(

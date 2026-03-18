@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -12,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, messag
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
+from src.agents.executor.outcome import normalize_agent_outcome
 from src.agents.thread_state import (
     HelpRequestPayload,
     InterventionRequest,
@@ -29,26 +29,6 @@ logger = logging.getLogger(__name__)
 _mcp_initialized: set[str] = set()
 _NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
 SYSTEM_FALLBACK_FINAL_MESSAGE = "当前系统暂时无法处理该类问题，后续可按需扩展相关能力。"
-_IMPLICIT_CLARIFICATION_MARKERS = (
-    "请选择",
-    "请确认",
-    "请提供",
-    "请补充",
-    "请告知",
-    "please choose",
-    "please confirm",
-    "please provide",
-    "which",
-)
-_COMPLETION_TEXT_MARKERS = (
-    "已预定",
-    "预定成功",
-    "已预约",
-    "booked",
-    "confirmed",
-    "created successfully",
-)
-_NUMBERED_OPTION_PATTERN = re.compile(r"(?m)^\s*\d+[\.\)]\s+\S+")
 
 
 def _utc_now_iso() -> str:
@@ -295,34 +275,6 @@ def _normalize_fact_payload(agent_output: str) -> dict[str, Any]:
     return {"text": agent_output}
 
 
-def _contains_choice_enumeration(text: str) -> bool:
-    lowered = text.lower()
-    if len(_NUMBERED_OPTION_PATTERN.findall(text)) >= 2:
-        return True
-    if "或" in text and any(separator in text for separator in ("、", "，", ",")):
-        return True
-    return " or " in lowered and "," in lowered
-
-
-def _looks_like_implicit_clarification(agent_output: str) -> bool:
-    text = agent_output.strip()
-    if not text:
-        return False
-    if _parse_json_object(text) is not None:
-        return False
-
-    lowered = text.lower()
-    if any(marker in text for marker in _COMPLETION_TEXT_MARKERS[:3]):
-        return False
-    if any(marker in lowered for marker in _COMPLETION_TEXT_MARKERS[3:]):
-        return False
-
-    has_question_signal = any(marker in text for marker in _IMPLICIT_CLARIFICATION_MARKERS[:4])
-    has_question_signal = has_question_signal or any(marker in lowered for marker in _IMPLICIT_CLARIFICATION_MARKERS[4:])
-    has_question_signal = has_question_signal or "?" in text or "？" in text
-
-    return has_question_signal or _contains_choice_enumeration(text)
-
 
 def _log_executor_decision(
     task: TaskStatus,
@@ -529,12 +481,24 @@ async def _execute_intercepted_tool_call(
     intercepted: dict[str, Any],
     agent_config: RunnableConfig,
 ) -> ToolMessage:
-    """Execute a previously intercepted tool call directly, bypassing the agent."""
+    """Execute a previously intercepted tool call directly, bypassing the agent.
+
+    If the intercepted dict contains an ``idempotency_key`` it is logged for
+    traceability.  The underlying tool layer does not yet consume the key, but
+    it is available for future idempotent execution support.
+    """
     tool_name = intercepted["tool_name"]
     tool_args = intercepted["tool_args"]
-    tool_call_id = intercepted["tool_call_id"]
+    tool_call_id = intercepted.get("tool_call_id") or ""
+    idempotency_key = intercepted.get("idempotency_key")
 
     agent_name = agent_config.get("configurable", {}).get("agent_name", "")
+
+    if idempotency_key:
+        logger.info(
+            "[Executor] Executing intercepted tool '%s' with idempotency_key=%s tool_call_id=%s",
+            tool_name, idempotency_key, tool_call_id,
+        )
 
     # Load tools for this agent
     from src.config.agents_config import load_agent_config as _load_agent_cfg
@@ -575,6 +539,15 @@ async def _execute_intercepted_tool_call(
     return ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name)
 
 
+def _clear_continuation_fields() -> dict[str, Any]:
+    """Return field overrides that clear all continuation state."""
+    return {
+        "continuation_mode": None,
+        "pending_interrupt": None,
+        "pending_tool_call": None,
+    }
+
+
 async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     running = [t for t in task_pool if t["status"] == "RUNNING"]
@@ -592,7 +565,11 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     }
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
     writer = _get_event_writer()
-    logger.info("[Executor] Executing task '%s' via agent '%s'.", task["task_id"], agent_name)
+    continuation_mode = task.get("continuation_mode")
+    logger.info(
+        "[Executor] Executing task '%s' via agent '%s' continuation_mode=%s.",
+        task["task_id"], agent_name, continuation_mode,
+    )
     _emit_task_event(writer, "task_started", task, agent_name, message="Task execution started", status_detail="@task_started")
 
     if agent_name in ("SYSTEM_FINISH", "SYSTEM_FALLBACK"):
@@ -634,17 +611,22 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         clarification_answer = extract_latest_clarification_answer(state)
         context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
 
-        # Check for intervention fast-path: if we have a stored tool call and an
-        # approve resolution, execute the tool directly without re-invoking the agent.
-        intercepted = task.get("intercepted_tool_call")
-        # resolution_behavior is stored in resolved_inputs["intervention_resolution"],
-        # NOT in the top-level task.intervention_resolution (which is InterventionResolution type).
+        # ---------------------------------------------------------------
+        # Resume branch selection — prefer continuation_mode, fall back
+        # to legacy intercepted_tool_call heuristic for old tasks.
+        # ---------------------------------------------------------------
+        # Phase 2: read pending_tool_call first, fall back to intercepted_tool_call
+        stored_tool_call = task.get("pending_tool_call") or task.get("intercepted_tool_call")
         resolved_intervention = (task.get("resolved_inputs") or {}).get("intervention_resolution")
-        is_intervention_fast_path = (
-            intercepted is not None
-            and isinstance(resolved_intervention, dict)
-            and resolved_intervention.get("resolution_behavior") == "resume_current_task"
-        )
+
+        is_resume_tool_call = continuation_mode == "resume_tool_call"
+        # Legacy fallback: old tasks without continuation_mode
+        if not is_resume_tool_call and continuation_mode is None:
+            is_resume_tool_call = (
+                stored_tool_call is not None
+                and isinstance(resolved_intervention, dict)
+                and resolved_intervention.get("resolution_behavior") == "resume_current_task"
+            )
 
         logger.info(
             "[Executor] Dispatch context: %s",
@@ -656,7 +638,8 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "task_description": task["description"][:200],
                     "resolved_input_keys": list((task.get("resolved_inputs") or {}).keys()),
                     "clarification_answer_present": bool(clarification_answer),
-                    "intervention_fast_path": is_intervention_fast_path,
+                    "continuation_mode": continuation_mode,
+                    "is_resume_tool_call": is_resume_tool_call,
                     "has_agent_history": bool(task.get("agent_messages")),
                 },
                 ensure_ascii=False,
@@ -664,11 +647,12 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         )
         logger.info(
             "[Executor] Resume diagnostics run_id=%s task_id=%s assigned_agent=%s clarification_answer=%r "
-            "resolved_inputs=%s messages_count=%s latest_message_type=%s",
+            "continuation_mode=%s resolved_inputs=%s messages_count=%s latest_message_type=%s",
             task_run_id,
             task["task_id"],
             agent_name,
             clarification_answer,
+            continuation_mode,
             json.dumps(task.get("resolved_inputs") or {}, ensure_ascii=False),
             len(state.get("messages") or []),
             state.get("messages")[-1].__class__.__name__ if state.get("messages") else None,
@@ -683,19 +667,39 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             clarification_answer=clarification_answer or None,
         )
 
-        if is_intervention_fast_path:
-            # --- Intervention fast-path: execute the stored tool call directly ---
+        # ---------------------------------------------------------------
+        # Execution: select branch based on continuation_mode
+        # ---------------------------------------------------------------
+        new_messages_start: int = 0
+
+        if is_resume_tool_call and stored_tool_call:
+            # --- resume_tool_call: execute the stored tool call directly ---
+            # Dedup guard: reject if intervention was already consumed
+            if task.get("intervention_status") == "consumed":
+                idem_key = stored_tool_call.get("idempotency_key", "?")
+                logger.warning(
+                    "[Executor] Duplicate resume rejected for task '%s' — intervention already consumed (idempotency_key=%s).",
+                    task["task_id"], idem_key,
+                )
+                return {
+                    "task_pool": [task],
+                    "execution_state": "EXECUTING_DONE",
+                }
+
             logger.info(
-                "[Executor] Intervention fast-path: executing intercepted tool '%s' for task '%s'.",
-                intercepted["tool_name"],
+                "[Executor] resume_tool_call: executing intercepted tool '%s' for task '%s' idempotency_key=%s.",
+                stored_tool_call["tool_name"],
                 task["task_id"],
+                stored_tool_call.get("idempotency_key"),
             )
             await _ensure_mcp_ready(agent_name)
-            tool_result_message = await _execute_intercepted_tool_call(intercepted, agent_config_override)
+            tool_result_message = await _execute_intercepted_tool_call(stored_tool_call, agent_config_override)
+
+            # Mark intervention as consumed to prevent duplicate execution
+            task = {**task, "intervention_status": "consumed"}
 
             # Restore previous agent messages, truncate from the intervention_required
-            # ToolMessage onward (the agent may have generated trailing AIMessages after
-            # seeing the intervention response), then append the real tool result.
+            # ToolMessage onward, then append the real tool result.
             prior_messages = _deserialize_agent_messages(task.get("agent_messages"))
             truncate_idx = None
             for idx, msg in enumerate(prior_messages):
@@ -706,6 +710,8 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 prior_messages = prior_messages[:truncate_idx]
             prior_messages.append(tool_result_message)
 
+            new_messages_start = len(prior_messages)
+
             # Let the agent continue from where it left off with the tool result
             domain_agent = make_lead_agent(agent_config_override)
             result = await domain_agent.ainvoke(
@@ -714,19 +720,17 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             )
             messages = result.get("messages") or []
         else:
-            # --- Normal path: invoke domain agent ---
-            # Restore prior agent conversation history if available (avoids
-            # redundant tool calls on clarification/dependency resume).
+            # --- Normal / continue_after_dependency / continue_after_clarification ---
+            # All share the same invocation pattern: restore prior messages + new context.
             prior_messages = _deserialize_agent_messages(task.get("agent_messages"))
             if prior_messages:
                 # Strip intervention_required ToolMessage and any trailing messages
-                # (should not happen here but be safe)
                 for _idx, _msg in enumerate(prior_messages):
                     if isinstance(_msg, ToolMessage) and getattr(_msg, "name", None) == "intervention_required":
                         prior_messages = prior_messages[:_idx]
                         break
-                # Append the new context as a follow-up HumanMessage
                 input_messages = prior_messages + [HumanMessage(content=context)]
+                new_messages_start = len(prior_messages)
                 logger.info(
                     "[Executor] Resuming with %d prior messages + new context for task '%s'.",
                     len(prior_messages),
@@ -734,6 +738,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 )
             else:
                 input_messages = [HumanMessage(content=context)]
+                new_messages_start = 0
 
             domain_agent = make_lead_agent(agent_config_override)
             result = await domain_agent.ainvoke(
@@ -741,6 +746,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 config=agent_config_override,
             )
             messages = result.get("messages") or []
+
         logger.info(
             "[Executor] Agent '%s' returned %d message(s); last_type=%s last_name=%s",
             agent_name,
@@ -754,48 +760,108 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             _summarize_messages_for_log(messages),
         )
 
-        terminal_tool_signal = _find_last_terminal_tool_signal(messages)
-        terminal_signal_name = terminal_tool_signal[1].name if terminal_tool_signal else None
+        # ---------------------------------------------------------------
+        # Outcome normalization — only current-round messages are inspected
+        # ---------------------------------------------------------------
+        # Clamp new_messages_start: if the agent returned fewer messages than
+        # the prior history (e.g. the agent framework returns only new messages
+        # rather than the full conversation), treat all returned messages as
+        # current-round output.
+        if new_messages_start >= len(messages):
+            new_messages_start = 0
 
-        # --- intervention_required handling ---
-        if terminal_tool_signal and terminal_tool_signal[1].name == "intervention_required":
-            terminal_idx, terminal_message = terminal_tool_signal
-            logger.info("[Executor] Task '%s' interrupted by intervention_required.", task["task_id"])
-            intervention_request = _parse_intervention_required_message(terminal_message)
-            if intervention_request is None:
+        outcome, used_fallback = normalize_agent_outcome(
+            task=task,
+            messages=messages,
+            new_messages_start=new_messages_start,
+        )
+
+        logger.info(
+            "[Executor] Outcome normalized task_id=%s continuation_mode=%s "
+            "new_messages_start=%s outcome_kind=%s used_fallback=%s",
+            task["task_id"],
+            continuation_mode,
+            new_messages_start,
+            outcome["kind"],
+            used_fallback,
+        )
+
+        # ---------------------------------------------------------------
+        # Branch on outcome.kind
+        # ---------------------------------------------------------------
+        outcome_kind = outcome["kind"]
+
+        # --- request_intervention ---
+        if outcome_kind == "request_intervention":
+            intervention_request = outcome.get("intervention_request") or {}
+            if not intervention_request.get("request_id"):
+                # Legacy fallback: parse from ToolMessage directly
+                terminal = _find_last_terminal_tool_signal(messages)
+                if terminal and terminal[1].name == "intervention_required":
+                    intervention_request = _parse_intervention_required_message(terminal[1]) or {}
+            if not intervention_request.get("request_id"):
                 raise RuntimeError("intervention_required returned invalid structured payload.")
+
             _log_executor_decision(
-                task,
-                agent_name,
-                messages,
-                "intervention_required",
-                terminal_signal=terminal_signal_name,
-                intervention_request_id=intervention_request["request_id"],
-                intervention_fingerprint=intervention_request["fingerprint"],
+                task, agent_name, messages, "intervention_required",
+                outcome_kind=outcome_kind,
+                used_fallback=used_fallback,
+                intervention_request_id=intervention_request.get("request_id"),
+                intervention_fingerprint=intervention_request.get("fingerprint"),
             )
-            # Save agent conversation history and intercepted tool call for resume
             serialized_messages = _serialize_agent_messages(messages)
             intercepted_tool = _extract_intercepted_tool_call(messages)
+            # Extract idempotency_key from intervention_request.context (set by middleware)
+            ir_context = intervention_request.get("context") or {}
+            idempotency_key = ir_context.get("idempotency_key")
+
+            # Build pending_tool_call from outcome or legacy extraction
+            pending_tool = None
+            if outcome.get("pending_tool_call"):
+                ptc = outcome["pending_tool_call"]
+                pending_tool = {
+                    "tool_name": ptc["tool_name"],
+                    "tool_args": ptc["tool_args"],
+                    "tool_call_id": ptc.get("tool_call_id"),
+                    "idempotency_key": idempotency_key or ptc.get("idempotency_key"),
+                    "source_agent": agent_name,
+                    "source_task_id": task["task_id"],
+                }
+            elif intercepted_tool:
+                pending_tool = {
+                    **intercepted_tool,
+                    "idempotency_key": idempotency_key,
+                    "source_agent": agent_name,
+                    "source_task_id": task["task_id"],
+                }
+
             intervention_task: TaskStatus = {
                 **task,
                 "status": "WAITING_INTERVENTION",
                 "status_detail": "@waiting_intervention",
                 "intervention_request": intervention_request,
                 "intervention_status": "pending",
-                "intervention_fingerprint": intervention_request["fingerprint"],
+                "intervention_fingerprint": intervention_request.get("fingerprint"),
                 "intervention_resolution": None,
                 "clarification_prompt": None,
                 "request_help": None,
                 "blocked_reason": None,
                 "agent_messages": serialized_messages,
-                "intercepted_tool_call": intercepted_tool,
+                "intercepted_tool_call": intercepted_tool,  # keep for compatibility
+                # Phase 2: structured continuation state
+                "continuation_mode": "resume_tool_call",
+                "pending_interrupt": {
+                    "interrupt_type": "intervention",
+                    "request_id": intervention_request.get("request_id"),
+                    "fingerprint": intervention_request.get("fingerprint"),
+                    "source": agent_name,
+                    "created_at": _utc_now_iso(),
+                },
+                "pending_tool_call": pending_tool,
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
-                writer,
-                "task_waiting_intervention",
-                intervention_task,
-                agent_name,
+                writer, "task_waiting_intervention", intervention_task, agent_name,
                 status_detail="@waiting_intervention",
                 intervention_request=intervention_request,
             )
@@ -804,30 +870,30 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "execution_state": "INTERRUPTED",
             }
 
-        if terminal_tool_signal and terminal_tool_signal[1].name == "request_help":
-            terminal_idx, terminal_message = terminal_tool_signal
-            if terminal_idx != len(messages) - 1:
-                logger.warning(
-                    "[Executor] Agent '%s' emitted request_help at index %d/%d; honoring it as the terminal signal "
-                    "even though trailing messages were present.",
-                    agent_name,
-                    terminal_idx,
-                    len(messages) - 1,
-                )
-            logger.info(
-                "[Executor] Agent '%s' emitted request_help raw content: %s",
-                agent_name,
-                _content_to_text(terminal_message.content)[:2000],
-            )
-            help_request = _parse_request_help_message(terminal_message)
+        # --- request_dependency ---
+        if outcome_kind == "request_dependency":
+            help_payload = outcome.get("help_request") or {}
+            # Parse structured help request from the raw payload
+            terminal = _find_last_terminal_tool_signal(messages)
+            if terminal and terminal[1].name == "request_help":
+                help_request = _parse_request_help_message(terminal[1])
+            else:
+                help_request = None
             if help_request is None:
-                raise RuntimeError("request_help returned invalid structured payload.")
+                # Build minimal from outcome payload
+                help_request = {
+                    "problem": help_payload.get("problem", ""),
+                    "required_capability": help_payload.get("required_capability", ""),
+                    "reason": help_payload.get("reason", ""),
+                    "expected_output": help_payload.get("expected_output", ""),
+                }
+                if not (help_request["problem"] and help_request["reason"]):
+                    raise RuntimeError("request_help returned invalid structured payload.")
+
             _log_executor_decision(
-                task,
-                agent_name,
-                messages,
-                "request_help",
-                terminal_signal=terminal_signal_name,
+                task, agent_name, messages, "request_help",
+                outcome_kind=outcome_kind,
+                used_fallback=used_fallback,
                 help_request_reason=help_request.get("reason"),
                 help_request_expected_output=help_request.get("expected_output"),
             )
@@ -844,23 +910,25 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "clarification_prompt": None,
                 "status_detail": "@waiting_dependency",
                 "agent_messages": serialized_messages,
+                # Phase 2: structured continuation state
+                "continuation_mode": "continue_after_dependency",
+                "pending_interrupt": {
+                    "interrupt_type": "dependency",
+                    "source": agent_name,
+                    "created_at": _utc_now_iso(),
+                },
+                "pending_tool_call": None,
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
-                writer,
-                "task_waiting_dependency",
-                waiting_task,
-                agent_name,
+                writer, "task_waiting_dependency", waiting_task, agent_name,
                 blocked_reason=help_request["reason"],
                 request_help=help_request,
                 requested_by_agent=agent_name,
                 status_detail="@waiting_dependency",
             )
             _emit_task_event(
-                writer,
-                "task_help_requested",
-                waiting_task,
-                agent_name,
+                writer, "task_help_requested", waiting_task, agent_name,
                 request_help=help_request,
                 requested_by_agent=agent_name,
                 status_detail="@waiting_dependency",
@@ -870,24 +938,14 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "execution_state": "EXECUTING_DONE",
             }
 
-        if terminal_tool_signal and terminal_tool_signal[1].name == "ask_clarification":
-            terminal_idx, terminal_message = terminal_tool_signal
-            if terminal_idx != len(messages) - 1:
-                logger.warning(
-                    "[Executor] Task '%s' emitted ask_clarification at index %d/%d; honoring it as the terminal signal "
-                    "even though trailing messages were present.",
-                    task["task_id"],
-                    terminal_idx,
-                    len(messages) - 1,
-                )
-            logger.info("[Executor] Task '%s' interrupted by ask_clarification.", task["task_id"])
-            clarification_prompt = _content_to_text(terminal_message.content)
+        # --- request_clarification ---
+        if outcome_kind == "request_clarification":
+            clarification_prompt = outcome.get("prompt", "")
+            classification = "implicit_clarification" if used_fallback else "ask_clarification"
             _log_executor_decision(
-                task,
-                agent_name,
-                messages,
-                "ask_clarification",
-                terminal_signal=terminal_signal_name,
+                task, agent_name, messages, classification,
+                outcome_kind=outcome_kind,
+                used_fallback=used_fallback,
                 clarification_prompt=clarification_prompt[:300],
             )
             serialized_messages = _serialize_agent_messages(messages)
@@ -899,14 +957,21 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "request_help": None,
                 "blocked_reason": None,
                 "agent_messages": serialized_messages,
+                # Phase 2: structured continuation state
+                "continuation_mode": "continue_after_clarification",
+                "pending_interrupt": {
+                    "interrupt_type": "clarification",
+                    "prompt": clarification_prompt,
+                    "source": agent_name,
+                    "created_at": _utc_now_iso(),
+                },
+                "pending_tool_call": None,
                 "updated_at": _utc_now_iso(),
             }
+            event_message = "需要你补充信息" if not used_fallback else "Waiting for user clarification inferred from plain-text output"
             _emit_task_event(
-                writer,
-                "task_running",
-                task,
-                agent_name,
-                message="需要你补充信息",
+                writer, "task_running", interrupted_task, agent_name,
+                message=event_message,
                 clarification_prompt=clarification_prompt,
                 status="waiting_clarification",
                 status_detail="@waiting_clarification",
@@ -917,65 +982,45 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "messages": [AIMessage(content=clarification_prompt, name="ask_clarification")],
             }
 
-        agent_output = _extract_agent_output(messages)
-        if not agent_output:
-            raise RuntimeError("Domain agent returned no final answer.")
-
-        if _looks_like_implicit_clarification(agent_output):
+        # --- fail ---
+        if outcome_kind == "fail":
+            error_message = outcome.get("error_message", "Unknown error")
             _log_executor_decision(
-                task,
-                agent_name,
-                messages,
-                "implicit_clarification",
-                terminal_signal=terminal_signal_name,
-                clarification_prompt=agent_output[:300],
+                task, agent_name, messages, "task_fail",
+                outcome_kind=outcome_kind,
+                used_fallback=used_fallback,
+                error_message=error_message[:300],
             )
-            serialized_messages = _serialize_agent_messages(messages)
-            interrupted_task: TaskStatus = {
+            failed_task: TaskStatus = {
                 **task,
-                "status": "RUNNING",
-                "status_detail": "@waiting_clarification",
-                "clarification_prompt": agent_output,
+                "status": "FAILED",
+                "error": error_message,
+                "status_detail": "@failed",
+                "clarification_prompt": None,
                 "request_help": None,
                 "blocked_reason": None,
-                "agent_messages": serialized_messages,
+                **_clear_continuation_fields(),
                 "updated_at": _utc_now_iso(),
             }
-            _emit_task_event(
-                writer,
-                "task_running",
-                interrupted_task,
-                agent_name,
-                message="Waiting for user clarification inferred from plain-text output",
-                clarification_prompt=agent_output,
-                status="waiting_clarification",
-                status_detail="@waiting_clarification",
-            )
+            _emit_task_event(writer, "task_failed", task, agent_name, error=error_message, status_detail="@failed")
             return {
-                "task_pool": [interrupted_task],
-                "execution_state": "INTERRUPTED",
-                "messages": [AIMessage(content=agent_output, name="ask_clarification")],
+                "task_pool": [failed_task],
+                "execution_state": "EXECUTING_DONE",
             }
 
+        # --- complete (default) ---
+        agent_output = outcome.get("result_text", "")
+        fact_payload = outcome.get("fact_payload") or _normalize_fact_payload(agent_output)
+
         _log_executor_decision(
-            task,
-            agent_name,
-            messages,
-            "final_output",
-            terminal_signal=terminal_signal_name,
+            task, agent_name, messages, "final_output",
+            outcome_kind=outcome_kind,
+            used_fallback=used_fallback,
             final_output_preview=agent_output[:300],
         )
-        logger.info(
-            "[Executor] Task '%s' via agent '%s' has no terminal tool signal; treating latest AI text as final output. "
-            "output_preview=%r",
-            task["task_id"],
-            agent_name,
-            agent_output[:300],
-        )
-
         logger.info("[Executor] Task '%s' DONE. Output length=%d.", task["task_id"], len(agent_output))
         logger.info("[Executor] Agent '%s' final output: %s", agent_name, agent_output[:2000])
-        payload = _normalize_fact_payload(agent_output)
+
         done_task: TaskStatus = {
             **task,
             "status": "DONE",
@@ -986,6 +1031,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "blocked_reason": None,
             "agent_messages": None,
             "intercepted_tool_call": None,
+            **_clear_continuation_fields(),
             "updated_at": _utc_now_iso(),
         }
         _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="@completed")
@@ -996,7 +1042,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "agent": agent_name,
                     "task": task["description"],
                     "summary": agent_output,
-                    "payload": payload,
+                    "payload": fact_payload,
                     "fact_type": "task_result",
                     "source_task_id": task["task_id"],
                     "updated_at": _utc_now_iso(),
@@ -1014,6 +1060,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
+            **_clear_continuation_fields(),
             "updated_at": _utc_now_iso(),
         }
         _emit_task_event(writer, "task_failed", task, agent_name, error=str(e), status_detail="@failed")

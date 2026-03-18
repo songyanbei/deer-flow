@@ -134,6 +134,30 @@ class InterventionResolution(TypedDict):
     payload: dict[str, Any]
 
 
+# ---------------------------------------------------------------------------
+# Continuation State Types (Phase 2)
+# ---------------------------------------------------------------------------
+
+ContinuationMode = Literal[
+    "resume_tool_call",
+    "continue_after_dependency",
+    "continue_after_clarification",
+    "replan",
+]
+
+
+class PendingInterrupt(TypedDict):
+    """Describes the last unresolved blocking condition for a task."""
+
+    interrupt_type: Literal["dependency", "clarification", "intervention"]
+    request_id: NotRequired[str | None]
+    fingerprint: NotRequired[str | None]
+    prompt: NotRequired[str | None]
+    options: NotRequired[list[str] | None]
+    source: NotRequired[str | None]
+    created_at: NotRequired[str | None]
+
+
 class TaskStatus(TypedDict):
     """Status of a single sub-task in the shared task pool."""
 
@@ -166,6 +190,11 @@ class TaskStatus(TypedDict):
     agent_messages: NotRequired[list[dict[str, Any]] | None]
     # Original tool call intercepted by intervention middleware (for fast-path resume)
     intercepted_tool_call: NotRequired[dict[str, Any] | None]
+    # Continuation state (Phase 2) — explicit resume semantics
+    continuation_mode: NotRequired[ContinuationMode | None]
+    pending_interrupt: NotRequired[PendingInterrupt | None]
+    pending_tool_call: NotRequired[dict[str, Any] | None]
+    agent_history_cutoff: NotRequired[int | None]
 
 
 RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]

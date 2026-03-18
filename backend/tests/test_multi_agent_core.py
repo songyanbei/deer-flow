@@ -43,9 +43,9 @@ def test_planner_invalid_json_returns_error():
                     {"configurable": {}},
                 )
         assert result["execution_state"] == "ERROR"
-        assert result["final_result"] == "Planner failed to produce valid structured output."
+        assert result["final_result"] == "规划器输出格式异常，暂时无法继续执行。"
         assert result["workflow_stage"] == "planning"
-        assert result["workflow_stage_detail"] == "Planner failed to produce valid structured output."
+        assert result["workflow_stage_detail"] == "规划器输出格式异常，暂时无法继续执行。"
 
     asyncio.run(_run())
 
@@ -341,7 +341,7 @@ def test_planner_done_with_null_summary_falls_back_to_task_completed():
                 )
         assert result["execution_state"] == "DONE"
         assert result["final_result"] == ""
-        assert result["messages"][0].content == "Task completed."
+        assert result["messages"][0].content == "任务已完成。"
         assert result["workflow_stage"] == "summarizing"
         assert result["workflow_stage_detail"] == "Room booked"
 
