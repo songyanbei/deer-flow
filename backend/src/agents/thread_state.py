@@ -31,6 +31,21 @@ class HelpRequestPayload(TypedDict):
     candidate_agents: NotRequired[list[str] | None]
 
 
+class ClarificationQuestionEntry(TypedDict):
+    key: str
+    label: str
+    kind: Literal["input"]
+    required: NotRequired[bool | None]
+    placeholder: NotRequired[str | None]
+    help_text: NotRequired[str | None]
+
+
+class ClarificationRequest(TypedDict):
+    title: str
+    description: NotRequired[str | None]
+    questions: list[ClarificationQuestionEntry]
+
+
 class VerifiedFactEntry(TypedDict):
     agent: str
     task: str
@@ -45,10 +60,42 @@ class VerifiedFactEntry(TypedDict):
 # Intervention Protocol Types (Phase 1)
 # ---------------------------------------------------------------------------
 
-InterventionActionKind = Literal["button", "input", "select", "composite"]
+InterventionActionKind = Literal[
+    "button",
+    "input",
+    "select",
+    "composite",
+    "confirm",
+    "single_select",
+    "multi_select",
+]
 InterventionResolutionBehavior = Literal["resume_current_task", "fail_current_task", "replan_from_resolution"]
 InterventionStatusValue = Literal["pending", "resolved", "consumed", "rejected"]
 InterventionRiskLevel = Literal["medium", "high", "critical"]
+
+
+class InterventionOptionEntry(TypedDict):
+    """One selectable option inside an intervention action."""
+
+    label: str
+    value: str
+    description: NotRequired[str | None]
+
+
+class InterventionQuestionEntry(TypedDict):
+    """One question inside a multi-question intervention request."""
+
+    key: str
+    label: str
+    kind: InterventionActionKind
+    required: NotRequired[bool | None]
+    placeholder: NotRequired[str | None]
+    description: NotRequired[str | None]
+    confirm_text: NotRequired[str | None]
+    options: NotRequired[list[InterventionOptionEntry] | None]
+    min_select: NotRequired[int | None]
+    max_select: NotRequired[int | None]
+    default_value: NotRequired[Any | None]
 
 
 class InterventionActionEntry(TypedDict):
@@ -60,6 +107,13 @@ class InterventionActionEntry(TypedDict):
     resolution_behavior: InterventionResolutionBehavior
     payload_schema: NotRequired[dict[str, Any] | None]
     placeholder: NotRequired[str | None]
+    description: NotRequired[str | None]
+    confirm_text: NotRequired[str | None]
+    required: NotRequired[bool | None]
+    options: NotRequired[list[InterventionOptionEntry] | None]
+    min_select: NotRequired[int | None]
+    max_select: NotRequired[int | None]
+    default_value: NotRequired[Any | None]
 
 
 class InterventionActionSchema(TypedDict):
@@ -121,6 +175,7 @@ class InterventionRequest(TypedDict):
     context: NotRequired[dict[str, Any] | None]
     action_summary: NotRequired[str | None]
     action_schema: InterventionActionSchema
+    questions: NotRequired[list[InterventionQuestionEntry] | None]
     display: NotRequired[InterventionDisplay | None]
     created_at: str
 
@@ -178,6 +233,7 @@ class TaskStatus(TypedDict):
     status: Literal["PENDING", "RUNNING", "WAITING_DEPENDENCY", "WAITING_INTERVENTION", "DONE", "FAILED"]
     status_detail: NotRequired[str | None]
     clarification_prompt: NotRequired[str | None]
+    clarification_request: NotRequired[ClarificationRequest | None]
     updated_at: NotRequired[str | None]
     result: NotRequired[str | None]
     error: NotRequired[str | None]

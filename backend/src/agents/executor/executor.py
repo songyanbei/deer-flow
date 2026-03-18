@@ -219,6 +219,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
             "result": final,
             "status_detail": "@completed",
             "clarification_prompt": None,
+            "clarification_request": None,
             "request_help": None,
             "blocked_reason": None,
             "updated_at": _utc_now_iso(),
@@ -241,6 +242,7 @@ def _handle_system_special(agent_name: str, task: TaskStatus, state: ThreadState
         "result": SYSTEM_FALLBACK_FINAL_MESSAGE,
         "status_detail": "@completed_fallback",
         "clarification_prompt": None,
+        "clarification_request": None,
         "request_help": None,
         "blocked_reason": None,
         "updated_at": _utc_now_iso(),
@@ -631,7 +633,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
 
         from src.agents.lead_agent.agent import make_lead_agent
 
-        clarification_answer = extract_latest_clarification_answer(state)
+        clarification_answer = extract_latest_clarification_answer(state, config)
         context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
 
         # ---------------------------------------------------------------
@@ -867,6 +869,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "intervention_fingerprint": intervention_request.get("fingerprint"),
                 "intervention_resolution": None,
                 "clarification_prompt": None,
+                "clarification_request": None,
                 "request_help": None,
                 "blocked_reason": None,
                 "agent_messages": serialized_messages,
@@ -931,6 +934,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "blocked_reason": help_request["reason"],
                 "help_depth": next_help_depth,
                 "clarification_prompt": None,
+                "clarification_request": None,
                 "status_detail": "@waiting_dependency",
                 "agent_messages": serialized_messages,
                 # Phase 2: structured continuation state
@@ -977,6 +981,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "status": "RUNNING",
                 "status_detail": "@waiting_clarification",
                 "clarification_prompt": clarification_prompt,
+                "clarification_request": None,
                 "request_help": None,
                 "blocked_reason": None,
                 "agent_messages": serialized_messages,
@@ -1020,6 +1025,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "error": error_message,
                 "status_detail": "@failed",
                 "clarification_prompt": None,
+                "clarification_request": None,
                 "request_help": None,
                 "blocked_reason": None,
                 **_clear_continuation_fields(),
@@ -1050,6 +1056,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "result": agent_output,
             "status_detail": "@completed",
             "clarification_prompt": None,
+            "clarification_request": None,
             "request_help": None,
             "blocked_reason": None,
             "agent_messages": None,
@@ -1081,6 +1088,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "error": str(e),
             "status_detail": "@failed",
             "clarification_prompt": None,
+            "clarification_request": None,
             "request_help": None,
             "blocked_reason": None,
             **_clear_continuation_fields(),

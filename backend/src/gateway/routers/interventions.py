@@ -51,6 +51,116 @@ class InterventionResolveResponse(BaseModel):
     checkpoint: dict[str, Any] | None = None
 
 
+def _normalize_select_options(action: dict[str, Any]) -> set[str]:
+    options = action.get("options")
+    if not isinstance(options, list):
+        return set()
+    values: set[str] = set()
+    for option in options:
+        value = option.get("value") if isinstance(option, dict) else option
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            values.add(text)
+    return values
+
+
+def _validate_question_payload(question: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    return _validate_intervention_payload(question, payload)
+
+
+def _validate_intervention_payload(action: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    kind = str(action.get("kind") or "").strip()
+    required = action.get("required")
+    if required is None:
+        required = kind in {"confirm", "input", "single_select", "multi_select"}
+
+    if kind == "confirm":
+        if payload.get("confirmed") is not True:
+            return "Confirm payload must include confirmed=true"
+        return None
+
+    if kind == "input":
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            text = payload.get("comment")
+        if required and (not isinstance(text, str) or not text.strip()):
+            return "Input payload must include non-empty text"
+        return None
+
+    if kind in {"select", "single_select"}:
+        selected = payload.get("selected")
+        if not isinstance(selected, str) or not selected.strip():
+            return "Single-select payload must include a selected value"
+        if payload.get("custom") is True:
+            custom_text = payload.get("custom_text")
+            if not isinstance(custom_text, str) or not custom_text.strip():
+                return "Custom single-select payload must include custom_text"
+            return None
+        allowed = _normalize_select_options(action)
+        if allowed and selected not in allowed:
+            return "Selected value is not in the allowed options"
+        return None
+
+    if kind == "multi_select":
+        selected = payload.get("selected")
+        if not isinstance(selected, list) or not all(isinstance(item, str) and item.strip() for item in selected):
+            return "Multi-select payload must include a non-empty selected array"
+        normalized = [item.strip() for item in selected if item.strip()]
+        if required and not normalized:
+            return "Multi-select payload must include at least one selected value"
+        if payload.get("custom") is True:
+            custom_values = payload.get("custom_values")
+            if custom_values is not None and (
+                not isinstance(custom_values, list)
+                or not all(isinstance(item, str) and item.strip() for item in custom_values)
+            ):
+                return "Custom multi-select payload must include non-empty custom_values"
+            custom_text = payload.get("custom_text")
+            if custom_values is None and (
+                not isinstance(custom_text, str) or not custom_text.strip()
+            ):
+                return "Custom multi-select payload must include custom_text or custom_values"
+        allowed = _normalize_select_options(action)
+        if allowed and any(
+            item not in allowed
+            for item in normalized
+            if item not in (payload.get("custom_values") or [])
+        ):
+            return "Selected values must come from the allowed options"
+        min_select = action.get("min_select")
+        max_select = action.get("max_select")
+        if isinstance(min_select, int) and len(normalized) < min_select:
+            return f"Please select at least {min_select} option(s)"
+        if isinstance(max_select, int) and len(normalized) > max_select:
+            return f"Please select no more than {max_select} option(s)"
+        return None
+
+    if kind == "composite":
+        answers = payload.get("answers")
+        if not isinstance(answers, dict) or not answers:
+            return "Composite payload must include non-empty answers"
+        questions = action.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return None
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            question_key = str(question.get("key") or "").strip()
+            if not question_key:
+                continue
+            answer_payload = answers.get(question_key)
+            if not isinstance(answer_payload, dict):
+                return f"Missing answer payload for question: {question_key}"
+            question_error = _validate_question_payload(question, answer_payload)
+            if question_error is not None:
+                return f"{question_key}: {question_error}"
+        return None
+
+    return None
+
+
 @router.post("/{request_id}:resolve", response_model=InterventionResolveResponse)
 async def resolve_intervention(
     thread_id: str,
@@ -128,6 +238,18 @@ async def resolve_intervention(
 
     if matched_action is None:
         raise HTTPException(status_code=422, detail=f"Invalid action_key: {body.action_key}")
+
+    questions = intervention_request.get("questions")
+    validation_action = matched_action
+    if matched_action.get("kind") == "composite" and isinstance(questions, list):
+        validation_action = {
+            **matched_action,
+            "questions": questions,
+        }
+
+    payload_error = _validate_intervention_payload(validation_action, body.payload)
+    if payload_error is not None:
+        raise HTTPException(status_code=422, detail=payload_error)
 
     # Determine resolution behavior
     resolution_behavior = matched_action.get("resolution_behavior", "resume_current_task")

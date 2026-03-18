@@ -18,6 +18,10 @@ async def get_mcp_tools() -> list[BaseTool]:
         List of LangChain tools from all enabled MCP servers.
     """
     try:
+        # Patch MCP SDK on Windows if needed (locked-down pipe creation).
+        from src.mcp.win32_stdio_fallback import apply_win32_stdio_fallback_patch
+
+        apply_win32_stdio_fallback_patch()
         from langchain_mcp_adapters.client import MultiServerMCPClient
     except ImportError:
         logger.warning("langchain-mcp-adapters not installed. Install it to enable MCP tools: pip install langchain-mcp-adapters")

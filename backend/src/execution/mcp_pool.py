@@ -15,9 +15,12 @@ Usage (from executor.py):
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_MCP_INIT_TIMEOUT_SECONDS = float(os.getenv("DEER_FLOW_MCP_INIT_TIMEOUT_SECONDS", "15"))
 
 
 class _AgentMCPClient:
@@ -44,6 +47,10 @@ class _AgentMCPClient:
             self._last_error = None
 
             try:
+                # Patch MCP SDK on Windows if needed (locked-down pipe creation).
+                from src.mcp.win32_stdio_fallback import apply_win32_stdio_fallback_patch
+
+                apply_win32_stdio_fallback_patch()
                 from langchain_mcp_adapters.client import MultiServerMCPClient
             except ImportError:
                 self._last_error = "langchain-mcp-adapters not installed"
@@ -64,6 +71,8 @@ class _AgentMCPClient:
                     params["args"] = args
                 if env := srv.get("env"):
                     params["env"] = env
+                if cwd := srv.get("cwd"):
+                    params["cwd"] = cwd
                 server_params[name] = params
 
             if not server_params:
@@ -75,17 +84,53 @@ class _AgentMCPClient:
                 self._tools = []
                 return True
 
-            try:
-                self._client = MultiServerMCPClient(server_params)
-                self._tools = await self._client.get_tools()
-                self._last_error = None
-                logger.info("[MCPPool] Agent '%s': connected %d server(s), loaded %d tool(s).", self.agent_name, len(server_params), len(self._tools))
+            loaded_tools: list[Any] = []
+            errors: dict[str, str] = {}
+
+            # Load tools per-server so one broken server doesn't take down others.
+            # This is especially important for multi-server agents (e.g. meeting + time).
+            for server_name, params in server_params.items():
+                try:
+                    self._client = MultiServerMCPClient({server_name: params})
+                    tools = await asyncio.wait_for(
+                        self._client.get_tools(server_name=server_name),
+                        timeout=_MCP_INIT_TIMEOUT_SECONDS,
+                    )
+                    loaded_tools.extend(tools)
+                except Exception as e:
+                    errors[server_name] = str(e)
+                    logger.error(
+                        "[MCPPool] Agent '%s': server '%s' tool load failed: %s",
+                        self.agent_name,
+                        server_name,
+                        e,
+                        exc_info=True,
+                    )
+
+            if loaded_tools:
+                self._tools = loaded_tools
+                if errors:
+                    self._last_error = "; ".join(f"{k}: {v}" for k, v in errors.items())
+                    logger.warning(
+                        "[MCPPool] Agent '%s': %d server(s) ok, %d server(s) failed. Loaded %d tool(s).",
+                        self.agent_name,
+                        len(server_params) - len(errors),
+                        len(errors),
+                        len(loaded_tools),
+                    )
+                else:
+                    self._last_error = None
+                    logger.info(
+                        "[MCPPool] Agent '%s': connected %d server(s), loaded %d tool(s).",
+                        self.agent_name,
+                        len(server_params),
+                        len(loaded_tools),
+                    )
                 return True
-            except Exception as e:
-                self._last_error = str(e)
-                logger.error("[MCPPool] Agent '%s': connection failed: %s", self.agent_name, e)
-                self._tools = None
-                return False
+
+            self._last_error = "; ".join(f"{k}: {v}" for k, v in errors.items()) or "unknown MCP connection error"
+            self._tools = None
+            return False
 
     async def get_tools(self) -> list:
         """Return cached tool list (must call connect() first)."""

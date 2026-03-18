@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from src.agents.thread_state import InterventionResolution, TaskStatus, ThreadState
@@ -62,6 +63,104 @@ def extract_latest_user_input(state: ThreadState) -> str:
         if is_human_message(message):
             return content_to_text(getattr(message, "content", ""))
     return ""
+
+
+def _extract_resume_payload(config: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if not isinstance(config, Mapping):
+        return None
+
+    configurable = config.get("configurable")
+    if isinstance(configurable, Mapping):
+        return configurable
+
+    context = config.get("context")
+    if isinstance(context, Mapping):
+        return context
+
+    return None
+
+
+def extract_structured_clarification_answers(
+    state: ThreadState,
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    payload = _extract_resume_payload(config)
+    if not isinstance(payload, Mapping):
+        return {}
+
+    raw_response = payload.get("workflow_clarification_response")
+    if not isinstance(raw_response, Mapping):
+        raw_response = payload.get("clarification_response")
+    if not isinstance(raw_response, Mapping):
+        return {}
+
+    raw_answers = raw_response.get("answers")
+    if not isinstance(raw_answers, Mapping):
+        return {}
+
+    task = _latest_waiting_clarification_task(state)
+    question_keys: set[str] = set()
+    clarification_request = task.get("clarification_request") if isinstance(task, dict) else None
+    if isinstance(clarification_request, Mapping):
+        questions = clarification_request.get("questions")
+        if isinstance(questions, list):
+            for question in questions:
+                if not isinstance(question, Mapping):
+                    continue
+                key = str(question.get("key") or "").strip()
+                if key:
+                    question_keys.add(key)
+
+    answers: dict[str, str] = {}
+    for key, value in raw_answers.items():
+        normalized_key = str(key).strip()
+        if not normalized_key:
+            continue
+        if question_keys and normalized_key not in question_keys:
+            continue
+
+        text = ""
+        if isinstance(value, str):
+            text = value.strip()
+        elif isinstance(value, Mapping):
+            candidate = value.get("text")
+            if isinstance(candidate, str) and candidate.strip():
+                text = candidate.strip()
+        else:
+            text = str(value).strip()
+
+        if text:
+            answers[normalized_key] = text
+
+    return answers
+
+
+def _format_structured_clarification_answers(
+    state: ThreadState,
+    answers: Mapping[str, str],
+) -> str:
+    if not answers:
+        return ""
+
+    task = _latest_waiting_clarification_task(state)
+    label_map: dict[str, str] = {}
+    clarification_request = task.get("clarification_request") if isinstance(task, dict) else None
+    if isinstance(clarification_request, Mapping):
+        questions = clarification_request.get("questions")
+        if isinstance(questions, list):
+            for question in questions:
+                if not isinstance(question, Mapping):
+                    continue
+                key = str(question.get("key") or "").strip()
+                label = str(question.get("label") or "").strip()
+                if key and label:
+                    label_map[key] = label
+
+    lines: list[str] = []
+    for key, value in answers.items():
+        label = label_map.get(key, key)
+        lines.append(f"{label} {value}".strip())
+    return "\n".join(lines)
 
 
 def _latest_waiting_clarification_task(state: ThreadState) -> TaskStatus | None:
@@ -137,7 +236,14 @@ def latest_user_message_is_clarification_answer(state: ThreadState) -> bool:
     return workflow_has_pending_clarification(state)
 
 
-def extract_latest_clarification_answer(state: ThreadState) -> str:
+def extract_latest_clarification_answer(
+    state: ThreadState,
+    config: Mapping[str, Any] | None = None,
+) -> str:
+    structured_answers = extract_structured_clarification_answers(state, config)
+    if structured_answers:
+        return _format_structured_clarification_answers(state, structured_answers)
+
     if not latest_user_message_is_clarification_answer(state):
         return ""
     messages = state.get("messages") or []

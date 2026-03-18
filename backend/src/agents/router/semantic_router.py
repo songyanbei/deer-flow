@@ -11,7 +11,15 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
-from src.agents.thread_state import HelpRequestPayload, InterventionResolution, TaskStatus, ThreadState, WorkflowStage
+from src.agents.thread_state import (
+    ClarificationRequest,
+    HelpRequestPayload,
+    InterventionRequest,
+    InterventionResolution,
+    TaskStatus,
+    ThreadState,
+    WorkflowStage,
+)
 from src.agents.workflow_resume import is_intervention_resolution_message
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
@@ -280,9 +288,253 @@ def _normalize_clarification_options(options: Any) -> list[str]:
     return [str(option).strip() for option in options if str(option).strip()]
 
 
+def _build_intervention_options(options: list[str]) -> list[dict[str, str]]:
+    return [{"label": option, "value": option} for option in options]
+
+
+def _clean_question_segment(segment: str) -> str:
+    fullwidth_comma = chr(0xFF0C)
+    fullwidth_exclamation = chr(0xFF01)
+    fullwidth_colon = chr(0xFF1A)
+    text = str(segment or "").strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"^\s*(?:\d+[\.、\)]\s*|[-—–•·]+\s*)",
+        "",
+        text,
+    ).strip()
+    text = re.sub(
+        rf"^(?:你好[!{fullwidth_exclamation},{fullwidth_comma}\s]*|您好[!{fullwidth_exclamation},{fullwidth_comma}\s]*|麻烦您[,{fullwidth_comma}\s]*)",
+        "",
+        text,
+    ).strip()
+    if fullwidth_colon in text:
+        prefix, suffix = text.split(fullwidth_colon, 1)
+        if suffix.strip() and any(
+            token in prefix
+            for token in (
+                "请",
+                "提供",
+                "告诉",
+                "信息",
+            )
+        ):
+            text = suffix.strip()
+    return text.strip()
+
+
+def _extract_clarification_questions(question: str) -> list[str]:
+    fullwidth_qmark = chr(0xFF1F)
+    normalized = str(question or "").replace("\r\n", "\n").strip()
+    if not normalized:
+        return []
+
+    raw_lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    numbered_lines = [
+        line for line in raw_lines if re.match(r"^\d+[\.、\)]\s*", line)
+    ]
+    if len(numbered_lines) >= 2:
+        return [
+            cleaned
+            for cleaned in (_clean_question_segment(line) for line in numbered_lines)
+            if cleaned
+        ]
+
+    line_questions = [
+        _clean_question_segment(line)
+        for line in raw_lines
+        if fullwidth_qmark in line or "?" in line
+    ]
+    line_questions = [line for line in line_questions if line]
+    if len(line_questions) >= 2:
+        return line_questions
+
+    sentence_candidates: list[str] = []
+    buffer = ""
+    for char in normalized:
+        buffer += char
+        if char in {fullwidth_qmark, "?"}:
+            cleaned = _clean_question_segment(buffer)
+            if cleaned:
+                sentence_candidates.append(cleaned)
+            buffer = ""
+    if buffer.strip():
+        cleaned = _clean_question_segment(buffer)
+        if cleaned:
+            sentence_candidates.append(cleaned)
+    question_candidates = [
+        part
+        for part in sentence_candidates
+        if part and (fullwidth_qmark in part or "?" in part)
+    ]
+    if len(question_candidates) >= 2:
+        return question_candidates
+
+    cleaned = _clean_question_segment(normalized)
+    return [cleaned] if cleaned else []
+
+
+def _resolve_user_interaction_kind(help_request: HelpRequestPayload, options: list[str]) -> str:
+    strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
+    if strategy == "user_confirmation":
+        return "confirm"
+    if strategy == "user_multi_select":
+        return "multi_select"
+    if options:
+        return "single_select"
+    return "input"
+
+
+def _infer_question_kind(question: str, *, index: int, options: list[str]) -> str:
+    lowered = question.lower()
+    if index == 0 and options:
+        return "single_select"
+    if any(token in question for token in ("??", "??", "??")) or lowered.startswith("is "):
+        return "confirm"
+    return "input"
+
+
+def _is_renderable_intervention_question(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    normalized = text.lower()
+    if re.fullmatch(r"[-—–•_\s]+", text):
+        return False
+    explanatory_patterns = (
+        "请提供以下",
+        "请补充以下",
+        "我需要更多信息",
+        "我需要以下",
+        "需要以下",
+        "为了帮您",
+        "为了帮助您",
+        "为了给您",
+        "为了继续",
+        "包括",
+        "如下",
+        "基础信息",
+        "关键信息",
+        "please provide the following",
+        "please answer the following",
+        "i need more information",
+        "i need the following",
+        "to continue",
+        "to help",
+        "the following details",
+        "key information",
+        "basic information",
+    )
+    if any(pattern in text for pattern in explanatory_patterns):
+        return False
+    if text.endswith(":") or text.endswith("："):
+        return False
+    if any(token in text for token in ("？", "?")):
+        return True
+    return bool(
+        re.match(
+            r"^(请问|请填写|请提供|请补充|请输入|请选择|是否|能否|可否|what\b|when\b|where\b|who\b|which\b|how\b)",
+            normalized,
+        )
+    )
+
+
+def _build_intervention_questions(question: str, options: list[str]) -> list[dict[str, Any]]:
+    question_parts = [
+        part
+        for part in _extract_clarification_questions(question)
+        if _is_renderable_intervention_question(part)
+    ]
+    if len(question_parts) < 2:
+        return []
+
+    questions: list[dict[str, Any]] = []
+    for index, part in enumerate(question_parts):
+        kind = _infer_question_kind(part, index=index, options=options)
+        entry: dict[str, Any] = {
+            "key": f"question_{index + 1}",
+            "label": part,
+            "kind": kind,
+            "required": True,
+        }
+        if kind == "single_select":
+            entry["options"] = _build_intervention_options(options)
+            entry["min_select"] = 1
+            entry["max_select"] = 1
+        elif kind == "input":
+            entry["placeholder"] = part
+        elif kind == "confirm":
+            entry["confirm_text"] = "?????"
+        questions.append(entry)
+    return questions
+
+
+def _build_help_request_intervention(
+    parent_task: TaskStatus,
+    help_request: HelpRequestPayload,
+    *,
+    agent_name: str,
+) -> InterventionRequest:
+    question = str(help_request.get("clarification_question") or "").strip()
+    context = str(help_request.get("clarification_context") or "").strip()
+    options = _normalize_clarification_options(help_request.get("clarification_options"))
+    interaction_kind = _resolve_user_interaction_kind(help_request, options)
+    questions = _build_intervention_questions(question, options)
+    request_id = f"intv_{uuid.uuid4().hex[:12]}"
+    fingerprint = f"fp_{uuid.uuid4().hex[:12]}"
+    title = question or "??????"
+    reason = context or help_request.get("reason", "").strip() or title
+
+    action: dict[str, Any] = {
+        "key": "submit_response",
+        "label": "?????" if interaction_kind == "confirm" else "?????",
+        "kind": "composite" if questions else interaction_kind,
+        "resolution_behavior": "resume_current_task",
+        "required": True,
+    }
+
+    if questions:
+        action["confirm_text"] = "?????"
+    elif interaction_kind == "input":
+        action["placeholder"] = question or "??????????"
+        action["confirm_text"] = "?????"
+    elif interaction_kind == "confirm":
+        action["confirm_text"] = "?????"
+    elif interaction_kind == "single_select":
+        action["options"] = _build_intervention_options(options)
+        action["min_select"] = 1
+        action["max_select"] = 1
+        action["confirm_text"] = "????"
+    elif interaction_kind == "multi_select":
+        action["options"] = _build_intervention_options(options)
+        action["min_select"] = 1
+        action["max_select"] = len(options)
+        action["confirm_text"] = "????"
+
+    return {
+        "request_id": request_id,
+        "fingerprint": fingerprint,
+        "intervention_type": "clarification",
+        "title": title,
+        "reason": reason,
+        "description": context or None,
+        "source_agent": agent_name,
+        "source_task_id": parent_task["task_id"],
+        "category": "user_clarification",
+        "action_summary": title,
+        "context": help_request.get("context_payload"),
+        "action_schema": {
+            "actions": [action],
+        },
+        "questions": questions or None,
+        "created_at": _utc_now_iso(),
+    }
+
+
 def _should_interrupt_for_user_clarification(help_request: HelpRequestPayload) -> bool:
     strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
-    return strategy == "user_clarification" or bool(str(help_request.get("clarification_question") or "").strip())
+    return strategy in {"user_clarification", "user_confirmation", "user_multi_select"} or bool(str(help_request.get("clarification_question") or "").strip())
 
 
 def _build_user_clarification_prompt(parent_task: TaskStatus, help_request: HelpRequestPayload) -> str:
@@ -303,6 +555,36 @@ def _build_user_clarification_prompt(parent_task: TaskStatus, help_request: Help
         for idx, option in enumerate(options, start=1):
             lines.append(f"{idx}. {option}")
     return "\n".join(lines)
+
+
+def _build_clarification_request(
+    parent_task: TaskStatus,
+    help_request: HelpRequestPayload,
+) -> ClarificationRequest | None:
+    question = str(help_request.get("clarification_question") or "").strip()
+    context = str(help_request.get("clarification_context") or "").strip()
+    questions = [
+        {
+            "key": f"clarification_{index + 1}",
+            "label": item,
+            "kind": "input",
+            "required": True,
+            "placeholder": item,
+            "help_text": None,
+        }
+        for index, item in enumerate(_extract_clarification_questions(question))
+        if _is_renderable_intervention_question(item)
+    ]
+    if not questions:
+        return None
+
+    title = context or question or parent_task["description"]
+    description = context or "请补充以下信息后继续执行"
+    return {
+        "title": title,
+        "description": description,
+        "questions": questions,
+    }
 
 
 def _build_clarification_prompt(parent_task: TaskStatus, help_request: HelpRequestPayload) -> str:
@@ -380,6 +662,7 @@ def _interrupt_for_clarification(
     *,
     agent_name: str,
     status_detail: str,
+    clarification_request: ClarificationRequest | None = None,
 ) -> dict:
     resumed_task: TaskStatus = {
         **parent_task,
@@ -388,6 +671,7 @@ def _interrupt_for_clarification(
         "depends_on_task_ids": [],
         "blocked_reason": None,
         "clarification_prompt": prompt,
+        "clarification_request": clarification_request,
         "status_detail": status_detail,
         "updated_at": _utc_now_iso(),
     }
@@ -398,6 +682,7 @@ def _interrupt_for_clarification(
         agent_name,
         status="waiting_clarification",
         clarification_prompt=prompt,
+        clarification_request=clarification_request,
         status_detail=status_detail,
     )
     return {
@@ -405,6 +690,47 @@ def _interrupt_for_clarification(
         "execution_state": "INTERRUPTED",
         "route_count": route_count,
         "messages": [AIMessage(content=prompt, name="ask_clarification")],
+    }
+
+
+def _interrupt_for_intervention(
+    parent_task: TaskStatus,
+    intervention_request: InterventionRequest,
+    route_count: int,
+    writer,
+    *,
+    agent_name: str,
+) -> dict:
+    interrupted_task: TaskStatus = {
+        **parent_task,
+        "status": "WAITING_INTERVENTION",
+        "request_help": None,
+        "depends_on_task_ids": [],
+        "blocked_reason": None,
+        "clarification_prompt": None,
+        "clarification_request": None,
+        "intervention_request": intervention_request,
+        "intervention_status": "pending",
+        "intervention_fingerprint": intervention_request["fingerprint"],
+        "intervention_resolution": None,
+        "status_detail": "@waiting_intervention",
+        "updated_at": _utc_now_iso(),
+    }
+    _emit_task_event(
+        writer,
+        "task_waiting_intervention",
+        interrupted_task,
+        agent_name,
+        status="waiting_intervention",
+        status_detail="@waiting_intervention",
+        intervention_request=intervention_request,
+        intervention_status="pending",
+        intervention_fingerprint=intervention_request["fingerprint"],
+    )
+    return {
+        "task_pool": [interrupted_task],
+        "execution_state": "INTERRUPTED",
+        "route_count": route_count,
     }
 
 
@@ -444,6 +770,7 @@ def _resume_parent_from_helper(
         "depends_on_task_ids": [],
         "blocked_reason": None,
         "clarification_prompt": None,
+        "clarification_request": None,
         "status_detail": "@dependency_resolved",
         "resolved_inputs": resolved_inputs,
         "resume_count": int(parent.get("resume_count") or 0) + 1,
@@ -465,7 +792,8 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
     )
 
     if _should_interrupt_for_user_clarification(help_request):
-        prompt = _build_user_clarification_prompt(parent_task, help_request)
+        agent_name = parent_task.get("assigned_agent") or "workflow-router"
+        options = _normalize_clarification_options(help_request.get("clarification_options"))
         logger.info(
             "[Router] Direct user clarification required for parent_task=%s run_id=%s resolution_strategy=%s options=%s",
             parent_task["task_id"],
@@ -473,13 +801,29 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             help_request.get("resolution_strategy"),
             help_request.get("clarification_options"),
         )
+        if options or str(help_request.get("resolution_strategy") or "").strip().lower() in {"user_confirmation", "user_multi_select"}:
+            intervention_request = _build_help_request_intervention(
+                parent_task,
+                help_request,
+                agent_name=agent_name,
+            )
+            return _interrupt_for_intervention(
+                parent_task,
+                intervention_request,
+                route_count,
+                writer,
+                agent_name=agent_name,
+            )
+        prompt = _build_user_clarification_prompt(parent_task, help_request)
+        clarification_request = _build_clarification_request(parent_task, help_request)
         return _interrupt_for_clarification(
             parent_task,
             prompt,
             route_count,
             writer,
-            agent_name=parent_task.get("assigned_agent") or "workflow-router",
+            agent_name=agent_name,
             status_detail="@waiting_clarification",
+            clarification_request=clarification_request,
         )
 
     requester = parent_task.get("requested_by_agent")
@@ -836,6 +1180,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         "assigned_agent": assigned,
         "status_detail": f"@assigned:{assigned}",
         "clarification_prompt": None,
+        "clarification_request": None,
         "updated_at": _utc_now_iso(),
     }
     detail = _build_executing_detail(updated_task)

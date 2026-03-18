@@ -47,6 +47,7 @@ class McpServerEntry(BaseModel):
     command: str
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
 
 
 class McpBindingConfig(BaseModel):

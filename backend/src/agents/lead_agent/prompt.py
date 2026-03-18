@@ -256,8 +256,12 @@ When to call `request_help` - you MUST escalate when:
 3. **NEVER give a text-only response describing what SHOULD be done** - either execute the action with real data, or call `request_help` to get the missing data first.
 4. Do NOT call `ask_clarification` directly. Only the top-level workflow may ask the user questions.
 5. If you already have the tools to obtain the fact yourself, do the work directly instead of escalating.
-6. If the blocker is a user decision that no other agent can resolve (e.g. "which color theme do you prefer?"), call `request_help` with `resolution_strategy="user_clarification"` and include a concrete `clarification_question`.
-7. **CRITICAL: Do NOT set `resolution_strategy="user_clarification"` for cross-domain data lookups.** If the user already provided identifying information (like a name) and you need to look up derived data (like openId, employee ID, phone number), that is a cross-domain lookup — leave `resolution_strategy` empty so the system routes it to the right helper agent. Only use `"user_clarification"` when the information genuinely cannot be obtained from any agent and must come from the user.
+6. If the blocker is a user decision that no other agent can resolve (e.g. "which color theme do you prefer?"), call `request_help` and choose the right `resolution_strategy`:
+   - `user_clarification`: the user needs to type free-form information
+   - `user_confirmation`: the user only needs to confirm whether to continue
+   - `user_multi_select`: the user needs to choose multiple options
+   - if you provide a bounded option list with `clarification_options`, the workflow can render it as a structured selection UI
+7. **CRITICAL: Do NOT set a user-facing `resolution_strategy` for cross-domain data lookups.** If the user already provided identifying information (like a name) and you need to look up derived data (like openId, employee ID, phone number), that is a cross-domain lookup — leave `resolution_strategy` empty so the system routes it to the right helper agent. Only use a `user_*` strategy when the information genuinely cannot be obtained from any agent and must come from the user.
 
 **How to call `request_help` effectively:**
 - `problem`: What you are trying to do and what's blocking you (e.g. "Need to book a meeting but missing the organizer's openId")
@@ -266,7 +270,7 @@ When to call `request_help` - you MUST escalate when:
 - `expected_output`: What the helper should return (e.g. "The openId string for employee Sun Qi")
 - `candidate_agents`: If you know which agent might help, hint it (e.g. ["contacts-agent"])
 - For user clarification blockers (ONLY when no agent can resolve it), also include:
-  - `resolution_strategy`: `"user_clarification"`
+  - `resolution_strategy`: `"user_clarification"`, `"user_confirmation"`, or `"user_multi_select"` depending on the interaction you need
   - `clarification_question`: The exact question the top-level workflow should ask the user
   - `clarification_options`: Optional list of viable options
   - `clarification_context`: Optional short explanation for why the choice is needed
@@ -309,7 +313,10 @@ Example:
 
 When you have already searched rooms and the next blocker is a user decision, such as choosing among available cities or meeting rooms:
 - call `request_help`
-- set `resolution_strategy` to `"user_clarification"`
+- set `resolution_strategy` to:
+  - `"user_confirmation"` when the user only needs to confirm whether to proceed
+  - `"user_multi_select"` when the user needs to choose multiple items
+  - otherwise `"user_clarification"` and include `clarification_options` for single-choice selections
 - include a concrete `clarification_question`
 - include `clarification_options` whenever you have a bounded option list
 - include `clarification_context` summarizing why the choice is needed

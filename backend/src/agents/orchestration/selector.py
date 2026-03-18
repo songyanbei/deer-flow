@@ -209,7 +209,7 @@ def decide_orchestration(
         return {
             "requested_mode": existing_requested_mode,
             "resolved_mode": existing_resolved_mode,
-            "reason": f"Resume current {existing_resolved_mode} run after clarification",
+            "reason": f"已收到补充信息，继续当前 {existing_resolved_mode} 流程",
             "workflow_score": 0,
             "leader_score": 0,
         }
@@ -218,7 +218,7 @@ def decide_orchestration(
         return {
             "requested_mode": requested_mode,
             "resolved_mode": requested_mode,
-            "reason": f"User explicitly requested {requested_mode}",
+            "reason": f"用户明确选择了 {requested_mode} 模式",
             "workflow_score": 0,
             "leader_score": 0,
         }
@@ -228,7 +228,7 @@ def decide_orchestration(
         return {
             "requested_mode": requested_mode,
             "resolved_mode": agent_default_mode,
-            "reason": f"Agent default routed to {agent_default_mode}",
+            "reason": f"按智能体默认配置选择 {agent_default_mode} 模式",
             "workflow_score": 0,
             "leader_score": 0,
         }
@@ -251,7 +251,7 @@ def decide_orchestration(
         return {
             "requested_mode": requested_mode,
             "resolved_mode": "workflow",
-            "reason": "Detected structured or multi-step task; routed to workflow",
+            "reason": "检测到多步骤任务，已切换到 workflow 模式",
             "workflow_score": workflow_score,
             "leader_score": leader_score,
         }

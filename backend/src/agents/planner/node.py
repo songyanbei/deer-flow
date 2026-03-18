@@ -290,6 +290,7 @@ def _make_tasks(raw_tasks: list[dict], run_id: str) -> list[TaskStatus]:
                 status="PENDING",
                 status_detail="已规划，等待分派",
                 clarification_prompt=None,
+                clarification_request=None,
                 updated_at=now,
                 result=None,
                 error=None,
