@@ -180,12 +180,31 @@ export function InterventionCard({
   const { thread } = useThread();
   const [settings] = useLocalSettings();
   const resolveMutation = useResolveIntervention();
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
   const request = task.interventionRequest;
+  const display = request?.display;
+  const fallbackContextEntries = useMemo(
+    () => (display ? [] : Object.entries(request?.context ?? {})),
+    [display, request?.context],
+  );
+
   if (!request || !task.threadId) {
     return null;
   }
 
   const threadId = task.threadId;
+  const riskTone = getRiskTone(request.risk_level);
+  const displayTitle = display?.title ?? request.title;
+  const displaySummary =
+    display?.summary ?? request.reason ?? request.description ?? undefined;
+  const displaySections = display?.sections ?? [];
+  const buttonActions = request.action_schema.actions.filter(
+    (action) => action.kind === "button",
+  );
+  const inputActions = request.action_schema.actions.filter(
+    (action) => action.kind === "input",
+  );
 
   const handleResumeSubmit = async (response: ResolveInterventionResponse) => {
     const resumeMessage = response.resume_payload?.message;
@@ -234,23 +253,6 @@ export function InterventionCard({
       },
     );
   };
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const riskTone = getRiskTone(request.risk_level);
-  const display = request.display;
-  const displayTitle = display?.title ?? request.title;
-  const displaySummary =
-    display?.summary ?? request.reason ?? request.description ?? undefined;
-  const displaySections = display?.sections ?? [];
-  const fallbackContextEntries = useMemo(
-    () => (display ? [] : Object.entries(request.context ?? {})),
-    [display, request.context],
-  );
-  const buttonActions = request.action_schema.actions.filter(
-    (action) => action.kind === "button",
-  );
-  const inputActions = request.action_schema.actions.filter(
-    (action) => action.kind === "input",
-  );
 
   return (
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
