@@ -52,6 +52,13 @@ Do not escalate when:
 6. **Never output a plain-text choice request as the final answer.**
    Text like "请选择一个城市/会议室" must be emitted through workflow clarification, not returned as a completed task result.
 
+## Booking Confirmation Rule
+
+**Do NOT pre-confirm** booking actions with the user via `request_help`.
+When all required parameters (room, time, organizer, topic) are resolved, call the booking tool (e.g. `meeting_createMeeting`) directly.
+The system has a built-in intervention mechanism that will automatically pause risky tool calls and present a structured confirmation card to the user.
+Using `request_help(resolution_strategy="user_clarification")` for final booking confirmation creates a redundant double-confirmation flow and must be avoided.
+
 ## Execution Priorities
 
 1. Normalize time and scheduling facts.

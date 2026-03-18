@@ -238,6 +238,9 @@ export interface Translations {
     interventionRequiredLabel: string;
     interventionNextActionLabel: string;
     interventionDecisionLabel: string;
+    interventionDetailsLabel: string;
+    interventionDebugLabel: string;
+    interventionDebugSummary: string;
   };
 
   workflowStatus: {

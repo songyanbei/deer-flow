@@ -68,6 +68,42 @@ class InterventionActionSchema(TypedDict):
     actions: list[InterventionActionEntry]
 
 
+class InterventionDisplayItem(TypedDict):
+    """A single label-value pair in a display section."""
+
+    label: str
+    value: str
+
+
+class InterventionDisplaySection(TypedDict):
+    """A group of display items with an optional section title."""
+
+    title: NotRequired[str | None]
+    items: list[InterventionDisplayItem]
+
+
+class InterventionDisplayDebug(TypedDict):
+    """Debug-only raw details, collapsed by default in UI."""
+
+    source_agent: NotRequired[str | None]
+    tool_name: NotRequired[str | None]
+    raw_args: NotRequired[dict[str, Any] | None]
+
+
+class InterventionDisplay(TypedDict):
+    """User-facing display projection for an intervention card."""
+
+    title: str
+    summary: NotRequired[str | None]
+    sections: NotRequired[list[InterventionDisplaySection] | None]
+    risk_tip: NotRequired[str | None]
+    primary_action_label: NotRequired[str | None]
+    secondary_action_label: NotRequired[str | None]
+    respond_action_label: NotRequired[str | None]
+    respond_placeholder: NotRequired[str | None]
+    debug: NotRequired[InterventionDisplayDebug | None]
+
+
 class InterventionRequest(TypedDict):
     """Structured request emitted when a workflow step requires user intervention."""
 
@@ -85,6 +121,7 @@ class InterventionRequest(TypedDict):
     context: NotRequired[dict[str, Any] | None]
     action_summary: NotRequired[str | None]
     action_schema: InterventionActionSchema
+    display: NotRequired[InterventionDisplay | None]
     created_at: str
 
 
@@ -125,6 +162,10 @@ class TaskStatus(TypedDict):
     intervention_status: NotRequired[InterventionStatusValue | None]
     intervention_fingerprint: NotRequired[str | None]
     intervention_resolution: NotRequired[InterventionResolution | None]
+    # Agent conversation history for resume continuity (serialized via messages_to_dict)
+    agent_messages: NotRequired[list[dict[str, Any]] | None]
+    # Original tool call intercepted by intervention middleware (for fast-path resume)
+    intercepted_tool_call: NotRequired[dict[str, Any] | None]
 
 
 RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]

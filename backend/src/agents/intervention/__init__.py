@@ -1,0 +1,1 @@
+"""Intervention display projection module."""

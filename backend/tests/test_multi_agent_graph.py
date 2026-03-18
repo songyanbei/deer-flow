@@ -39,7 +39,12 @@ class DomainAgentStub:
     async def ainvoke(self, payload, config=None):
         agent_name = config.get("configurable", {}).get("agent_name")
         self.calls[agent_name] = self.calls.get(agent_name, 0) + 1
-        context = payload["messages"][0].content
+        # On resume, prior messages are prepended; the new context is always the last HumanMessage
+        all_messages = payload["messages"]
+        context = next(
+            (m.content for m in reversed(all_messages) if isinstance(m, HumanMessage)),
+            all_messages[0].content,
+        )
 
         if agent_name == "contacts-agent":
             if self.calls[agent_name] == 1:
@@ -153,7 +158,12 @@ def test_multi_agent_graph_request_help_round_trip():
         async def ainvoke(self, payload, config=None):
             agent_name = config.get("configurable", {}).get("agent_name")
             self.calls[agent_name] = self.calls.get(agent_name, 0) + 1
-            context = payload["messages"][0].content
+            # On resume, prior messages are prepended; the new context is always the last HumanMessage
+            all_messages = payload["messages"]
+            context = next(
+                (m.content for m in reversed(all_messages) if isinstance(m, HumanMessage)),
+                all_messages[0].content,
+            )
 
             if agent_name == "meeting-agent":
                 if self.calls[agent_name] == 1:

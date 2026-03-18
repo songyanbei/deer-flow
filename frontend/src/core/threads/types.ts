@@ -34,6 +34,28 @@ export interface InterventionActionSchema {
   }>;
 }
 
+export interface InterventionDisplay {
+  title: string;
+  summary?: string;
+  sections?: Array<{
+    title?: string;
+    items: Array<{
+      label: string;
+      value: string;
+    }>;
+  }>;
+  risk_tip?: string;
+  primary_action_label?: string;
+  secondary_action_label?: string;
+  respond_action_label?: string;
+  respond_placeholder?: string;
+  debug?: {
+    source_agent?: string;
+    tool_name?: string;
+    raw_args?: Record<string, unknown>;
+  };
+}
+
 export interface InterventionRequest {
   request_id: string;
   fingerprint: string;
@@ -48,6 +70,7 @@ export interface InterventionRequest {
   category?: string;
   context?: Record<string, unknown>;
   action_summary?: string;
+  display?: InterventionDisplay;
   action_schema: InterventionActionSchema;
   created_at: string;
 }

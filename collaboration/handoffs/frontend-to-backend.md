@@ -19,6 +19,72 @@ contracts.
 
 ## Open Items
 
+## [open] Intervention resolve accepted but runtime continuation is not yet verifiably observable
+- Date: 2026-03-17
+- Related feature:
+  - `features/workflow-intervention-flow.md`
+  - `features/workflow-intervention-display-projection.md`
+- Blocking area:
+  post-confirmation workflow continuation after `WAITING_INTERVENTION`
+- Current frontend observation:
+  in the real meeting-booking scenario, user clicks the confirm action and
+  receives a success toast (`已提交决策`), but the visible workflow task remains
+  in the waiting-intervention surface instead of clearly moving forward.
+- Confirmed frontend-side fact:
+  current frontend implementation did not originally perform any local task
+  status advancement after a successful resolve response; it only showed a
+  success toast and then waited for authoritative backend state/event updates.
+  Therefore the UI can remain visually stuck in `waiting_intervention` unless
+  backend promptly drives a visible state change back to the same thread.
+- Confirmed backend-side fact from code inspection:
+  `backend/src/gateway/routers/interventions.py` does attempt to:
+  1. update the task from `WAITING_INTERVENTION` to `RUNNING` or `FAILED`
+  2. persist `intervention_status="resolved"`
+  3. create a follow-up run via `client.runs.create(...)`
+  however, from frontend-visible behavior we cannot yet verify that the resume
+  run is actually starting successfully and producing a visible task/status
+  update for the same thread after resolve.
+- What needs backend investigation:
+  1. whether `client.threads.update_state(... values={"task_pool": [updated_task]})`
+     is replacing the whole task pool and unintentionally dropping sibling
+     tasks or authoritative state needed for continuation
+  2. whether the resume `client.runs.create(...)` call is succeeding in the
+     real environment after resolve
+  3. whether that resume run is bound to the correct assistant / graph entry
+     path for workflow continuation
+  4. whether the resumed run produces any custom/task events that the existing
+     frontend stream connection can actually receive
+  5. whether the resolved task ever transitions from:
+     - `WAITING_INTERVENTION -> RUNNING`
+     - then onward into `DONE` / downstream workflow progress
+  6. whether `workflow_resume.py` is correctly recognizing the synthetic
+     `[intervention_resolved] ...` human message and routing back into the
+     suspended task flow instead of idling or ending
+- Needed response:
+  backend should confirm, with logs or runtime evidence, which of the following
+  is true:
+  1. resolve endpoint persists state but resume run is failing to start
+  2. resume run starts but does not emit visible state updates
+  3. resume run starts and emits updates, but they are not attached to the same
+     thread/run state that frontend is hydrating from
+  4. some other backend continuation bug is preventing the task from resuming
+- Suggested backend debug evidence:
+  - resolve endpoint logs for:
+    - task status before update
+    - updated task payload written to thread state
+    - result of `client.runs.create(...)`
+  - thread state snapshot immediately after resolve
+  - follow-up run creation result / run id
+  - whether the resumed run emits:
+    - `task_running`
+    - `task_resumed`
+    - `workflow_stage_changed`
+    - task pool updates with the same task id
+- Notes:
+  frontend can add a minimal optimistic local transition to avoid stale UI, but
+  that would only mask the symptom. Backend still needs to confirm whether the
+  authoritative workflow continuation is truly happening after resolve.
+
 ## [closed] Intervention input action payload contract needs to be frozen
 - Date: 2026-03-17
 - Related feature: `features/workflow-intervention-flow.md`

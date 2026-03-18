@@ -89,6 +89,15 @@ export function shouldUseHydratedField(
     return true;
   }
 
+  // Let authoritative thread hydration clear transient waiting states when the
+  // backend has already resumed the task.
+  if (
+    existing.status === "waiting_intervention" &&
+    hydrated.status === "in_progress"
+  ) {
+    return true;
+  }
+
   const hydratedPriority = TASK_STATUS_PRIORITY[hydrated.status];
   const existingPriority = TASK_STATUS_PRIORITY[existing.status];
   return hydratedPriority > existingPriority;
@@ -151,6 +160,7 @@ export function mergeHydratedTask(
     ...richFields,
   };
 }
+
 
 export function SubtasksProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<TaskStoreState>({

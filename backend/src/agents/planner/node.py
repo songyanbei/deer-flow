@@ -449,11 +449,17 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
 
     if pending or running or waiting or waiting_intervention:
         logger.info(
-            "[Planner] Active tasks detected (pending=%d, running=%d, waiting=%d, waiting_intervention=%d), resuming.",
+            "[Planner] Active tasks detected (pending=%d, running=%d, waiting=%d, waiting_intervention=%d), resuming. "
+            "run_id=%s current_run_id=%s latest_user_input=%r clarification_resume=%s task_summary=%s",
             len(pending),
             len(running),
             len(waiting),
             len(waiting_intervention),
+            run_id,
+            current_run_id,
+            latest_user_input,
+            is_clarification_answer,
+            _summarize_tasks_for_log(task_pool),
         )
         result = {"execution_state": "RESUMING", "run_id": run_id}
         active_stage = _describe_active_stage(task_pool)

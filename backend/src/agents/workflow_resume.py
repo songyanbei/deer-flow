@@ -134,7 +134,13 @@ def extract_latest_clarification_answer(state: ThreadState) -> str:
         return ""
     messages = state.get("messages") or []
     last = messages[-1]
-    return content_to_text(getattr(last, "content", ""))
+    answer = content_to_text(getattr(last, "content", ""))
+    # Intervention resume messages reuse the clarification-resume control flow
+    # to keep the same workflow run id, but they are not user clarification
+    # content and should not be injected into the executor prompt.
+    if answer.strip().startswith("[intervention_resolved]"):
+        return ""
+    return answer
 
 
 # ---------------------------------------------------------------------------

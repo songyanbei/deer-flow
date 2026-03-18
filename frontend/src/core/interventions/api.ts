@@ -8,6 +8,20 @@ export type ResolveInterventionPayload = {
   payload: Record<string, unknown>;
 };
 
+export type ResolveInterventionResponse = {
+  ok: boolean;
+  thread_id: string;
+  request_id: string;
+  fingerprint: string;
+  accepted: boolean;
+  checkpoint: {
+    checkpoint_id: string;
+    checkpoint_ns: string;
+  } | null;
+  resume_action: "submit_resume" | null;
+  resume_payload: { message: string } | null;
+};
+
 export async function resolveIntervention({
   threadId,
   requestId,
@@ -50,5 +64,5 @@ export async function resolveIntervention({
     throw error;
   }
 
-  return data;
+  return data as ResolveInterventionResponse;
 }

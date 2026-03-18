@@ -422,6 +422,40 @@ def _latest_pending_clarification_task(
     return None
 
 
+def _is_intervention_resume_submission(
+    existing_values: Mapping[str, Any],
+    run: Mapping[str, Any],
+) -> tuple[bool, str | None]:
+    """Check if this run is an intervention resolution resume.
+
+    Intervention resume messages start with ``[intervention_resolved]`` and
+    should skip enqueue-time queue staging to avoid wiping the resolved
+    task_pool.
+    """
+    if existing_values.get("resolved_orchestration_mode") != _WORKFLOW_MODE:
+        return False, None
+
+    latest_input = _extract_original_input_from_run(run)
+    if not latest_input or not latest_input.strip().startswith("[intervention_resolved]"):
+        return False, None
+
+    # Find the intervention task that was resolved (should be RUNNING with
+    # status_detail "@intervention_resolved" after the resolve endpoint
+    # persisted the state update).
+    task_pool = existing_values.get("task_pool")
+    if isinstance(task_pool, Sequence) and not isinstance(task_pool, (str, bytes, bytearray)):
+        for task in reversed(task_pool):
+            if not isinstance(task, Mapping):
+                continue
+            if task.get("intervention_status") in ("resolved", "consumed"):
+                task_id = task.get("task_id")
+                return True, str(task_id).strip() if task_id else None
+
+    # Even without a matching task, still recognize the message pattern to
+    # prevent the queue staging from clearing state.
+    return True, None
+
+
 def _is_clarification_resume_submission(
     existing_values: Mapping[str, Any],
     run: Mapping[str, Any],
@@ -587,6 +621,26 @@ async def _persist_enqueue_time_workflow_state(
     )
 
     existing_values = await _load_existing_thread_values(conn, thread)
+
+    # Check intervention resume first — must not clear resolved task_pool
+    is_intervention_resume, intervention_task_id = _is_intervention_resume_submission(
+        existing_values,
+        run,
+    )
+    if is_intervention_resume:
+        logger.info(
+            "Skipping enqueue-time workflow queued staging for intervention resume.",
+            extra={
+                "thread_id": _stringify_uuid(thread_id),
+                "thread_run_id": _stringify_uuid(existing_values.get("run_id")),
+                "run_id": run_id,
+                "classification": "intervention_resume",
+                "action": "skip_enqueue_stage",
+                "intervention_task_id": intervention_task_id,
+            },
+        )
+        return None
+
     is_clarification_resume, clarification_task_id = _is_clarification_resume_submission(
         existing_values,
         run,

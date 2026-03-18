@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, messages_from_dict, messages_to_dict
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
@@ -475,6 +475,106 @@ def _collect_resolved_fingerprints(task_pool: list[TaskStatus]) -> set[str]:
     return fingerprints
 
 
+def _serialize_agent_messages(messages: list[Any]) -> list[dict[str, Any]]:
+    """Serialize LangChain messages to dicts for checkpoint persistence."""
+    try:
+        return messages_to_dict(messages)
+    except Exception as e:
+        logger.warning("[Executor] Failed to serialize agent messages: %s", e)
+        return []
+
+
+def _deserialize_agent_messages(data: list[dict[str, Any]] | None) -> list[Any]:
+    """Deserialize persisted message dicts back to LangChain messages."""
+    if not data:
+        return []
+    try:
+        return messages_from_dict(data)
+    except Exception as e:
+        logger.warning("[Executor] Failed to deserialize agent messages, starting fresh: %s", e)
+        return []
+
+
+def _extract_intercepted_tool_call(messages: list[Any]) -> dict[str, Any] | None:
+    """Extract the original tool call that was intercepted by intervention middleware.
+
+    Looks for the AIMessage containing the tool_call that produced the
+    intervention_required ToolMessage.
+    """
+    # Find the intervention_required ToolMessage
+    intervention_tool_call_id = None
+    for msg in reversed(messages):
+        if isinstance(msg, ToolMessage) and getattr(msg, "name", None) == "intervention_required":
+            intervention_tool_call_id = getattr(msg, "tool_call_id", None)
+            break
+
+    if not intervention_tool_call_id:
+        return None
+
+    # Find the AIMessage with that tool_call
+    for msg in reversed(messages):
+        if not isinstance(msg, AIMessage):
+            continue
+        for tc in (msg.tool_calls or []):
+            if tc.get("id") == intervention_tool_call_id:
+                return {
+                    "tool_call_id": tc["id"],
+                    "tool_name": tc["name"],
+                    "tool_args": tc.get("args", {}),
+                }
+    return None
+
+
+async def _execute_intercepted_tool_call(
+    intercepted: dict[str, Any],
+    agent_config: RunnableConfig,
+) -> ToolMessage:
+    """Execute a previously intercepted tool call directly, bypassing the agent."""
+    tool_name = intercepted["tool_name"]
+    tool_args = intercepted["tool_args"]
+    tool_call_id = intercepted["tool_call_id"]
+
+    agent_name = agent_config.get("configurable", {}).get("agent_name", "")
+
+    # Load tools for this agent
+    from src.config.agents_config import load_agent_config as _load_agent_cfg
+    agent_cfg = _load_agent_cfg(agent_name) if agent_name else None
+    mcp_servers = []
+    if agent_cfg and agent_cfg.mcp_servers:
+        mcp_servers = [s.model_dump() for s in agent_cfg.mcp_servers]
+
+    # Get MCP tools from pool
+    tools = []
+    if mcp_servers:
+        try:
+            from src.execution.mcp_pool import mcp_pool
+            tools = await mcp_pool.get_agent_tools(agent_name) or []
+        except Exception:
+            pass
+
+    # Find the matching tool
+    target_tool = None
+    for tool in tools:
+        if getattr(tool, "name", None) == tool_name:
+            target_tool = tool
+            break
+
+    if target_tool is None:
+        return ToolMessage(
+            content=json.dumps({"error": f"Tool '{tool_name}' not found for fast-path execution."}, ensure_ascii=False),
+            tool_call_id=tool_call_id,
+            name=tool_name,
+        )
+
+    try:
+        result = await target_tool.ainvoke(tool_args)
+        content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as e:
+        content = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    return ToolMessage(content=content, tool_call_id=tool_call_id, name=tool_name)
+
+
 async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     running = [t for t in task_pool if t["status"] == "RUNNING"]
@@ -531,9 +631,21 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
 
         from src.agents.lead_agent.agent import make_lead_agent
 
-        domain_agent = make_lead_agent(agent_config_override)
         clarification_answer = extract_latest_clarification_answer(state)
         context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
+
+        # Check for intervention fast-path: if we have a stored tool call and an
+        # approve resolution, execute the tool directly without re-invoking the agent.
+        intercepted = task.get("intercepted_tool_call")
+        # resolution_behavior is stored in resolved_inputs["intervention_resolution"],
+        # NOT in the top-level task.intervention_resolution (which is InterventionResolution type).
+        resolved_intervention = (task.get("resolved_inputs") or {}).get("intervention_resolution")
+        is_intervention_fast_path = (
+            intercepted is not None
+            and isinstance(resolved_intervention, dict)
+            and resolved_intervention.get("resolution_behavior") == "resume_current_task"
+        )
+
         logger.info(
             "[Executor] Dispatch context: %s",
             json.dumps(
@@ -544,9 +656,22 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "task_description": task["description"][:200],
                     "resolved_input_keys": list((task.get("resolved_inputs") or {}).keys()),
                     "clarification_answer_present": bool(clarification_answer),
+                    "intervention_fast_path": is_intervention_fast_path,
+                    "has_agent_history": bool(task.get("agent_messages")),
                 },
                 ensure_ascii=False,
             ),
+        )
+        logger.info(
+            "[Executor] Resume diagnostics run_id=%s task_id=%s assigned_agent=%s clarification_answer=%r "
+            "resolved_inputs=%s messages_count=%s latest_message_type=%s",
+            task_run_id,
+            task["task_id"],
+            agent_name,
+            clarification_answer,
+            json.dumps(task.get("resolved_inputs") or {}, ensure_ascii=False),
+            len(state.get("messages") or []),
+            state.get("messages")[-1].__class__.__name__ if state.get("messages") else None,
         )
         _emit_task_event(
             writer,
@@ -558,11 +683,64 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             clarification_answer=clarification_answer or None,
         )
 
-        result = await domain_agent.ainvoke(
-            {"messages": [HumanMessage(content=context)]},
-            config=agent_config_override,
-        )
-        messages = result.get("messages") or []
+        if is_intervention_fast_path:
+            # --- Intervention fast-path: execute the stored tool call directly ---
+            logger.info(
+                "[Executor] Intervention fast-path: executing intercepted tool '%s' for task '%s'.",
+                intercepted["tool_name"],
+                task["task_id"],
+            )
+            await _ensure_mcp_ready(agent_name)
+            tool_result_message = await _execute_intercepted_tool_call(intercepted, agent_config_override)
+
+            # Restore previous agent messages, truncate from the intervention_required
+            # ToolMessage onward (the agent may have generated trailing AIMessages after
+            # seeing the intervention response), then append the real tool result.
+            prior_messages = _deserialize_agent_messages(task.get("agent_messages"))
+            truncate_idx = None
+            for idx, msg in enumerate(prior_messages):
+                if isinstance(msg, ToolMessage) and getattr(msg, "name", None) == "intervention_required":
+                    truncate_idx = idx
+                    break
+            if truncate_idx is not None:
+                prior_messages = prior_messages[:truncate_idx]
+            prior_messages.append(tool_result_message)
+
+            # Let the agent continue from where it left off with the tool result
+            domain_agent = make_lead_agent(agent_config_override)
+            result = await domain_agent.ainvoke(
+                {"messages": prior_messages},
+                config=agent_config_override,
+            )
+            messages = result.get("messages") or []
+        else:
+            # --- Normal path: invoke domain agent ---
+            # Restore prior agent conversation history if available (avoids
+            # redundant tool calls on clarification/dependency resume).
+            prior_messages = _deserialize_agent_messages(task.get("agent_messages"))
+            if prior_messages:
+                # Strip intervention_required ToolMessage and any trailing messages
+                # (should not happen here but be safe)
+                for _idx, _msg in enumerate(prior_messages):
+                    if isinstance(_msg, ToolMessage) and getattr(_msg, "name", None) == "intervention_required":
+                        prior_messages = prior_messages[:_idx]
+                        break
+                # Append the new context as a follow-up HumanMessage
+                input_messages = prior_messages + [HumanMessage(content=context)]
+                logger.info(
+                    "[Executor] Resuming with %d prior messages + new context for task '%s'.",
+                    len(prior_messages),
+                    task["task_id"],
+                )
+            else:
+                input_messages = [HumanMessage(content=context)]
+
+            domain_agent = make_lead_agent(agent_config_override)
+            result = await domain_agent.ainvoke(
+                {"messages": input_messages},
+                config=agent_config_override,
+            )
+            messages = result.get("messages") or []
         logger.info(
             "[Executor] Agent '%s' returned %d message(s); last_type=%s last_name=%s",
             agent_name,
@@ -595,6 +773,9 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 intervention_request_id=intervention_request["request_id"],
                 intervention_fingerprint=intervention_request["fingerprint"],
             )
+            # Save agent conversation history and intercepted tool call for resume
+            serialized_messages = _serialize_agent_messages(messages)
+            intercepted_tool = _extract_intercepted_tool_call(messages)
             intervention_task: TaskStatus = {
                 **task,
                 "status": "WAITING_INTERVENTION",
@@ -606,6 +787,8 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "clarification_prompt": None,
                 "request_help": None,
                 "blocked_reason": None,
+                "agent_messages": serialized_messages,
+                "intercepted_tool_call": intercepted_tool,
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
@@ -650,6 +833,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             )
 
             next_help_depth = int(task.get("help_depth") or 0) + 1
+            serialized_messages = _serialize_agent_messages(messages)
             waiting_task: TaskStatus = {
                 **task,
                 "status": "WAITING_DEPENDENCY",
@@ -659,6 +843,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "help_depth": next_help_depth,
                 "clarification_prompt": None,
                 "status_detail": "@waiting_dependency",
+                "agent_messages": serialized_messages,
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
@@ -705,6 +890,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 terminal_signal=terminal_signal_name,
                 clarification_prompt=clarification_prompt[:300],
             )
+            serialized_messages = _serialize_agent_messages(messages)
             interrupted_task: TaskStatus = {
                 **task,
                 "status": "RUNNING",
@@ -712,6 +898,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "clarification_prompt": clarification_prompt,
                 "request_help": None,
                 "blocked_reason": None,
+                "agent_messages": serialized_messages,
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
@@ -743,6 +930,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 terminal_signal=terminal_signal_name,
                 clarification_prompt=agent_output[:300],
             )
+            serialized_messages = _serialize_agent_messages(messages)
             interrupted_task: TaskStatus = {
                 **task,
                 "status": "RUNNING",
@@ -750,6 +938,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "clarification_prompt": agent_output,
                 "request_help": None,
                 "blocked_reason": None,
+                "agent_messages": serialized_messages,
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(
@@ -795,6 +984,8 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "clarification_prompt": None,
             "request_help": None,
             "blocked_reason": None,
+            "agent_messages": None,
+            "intercepted_tool_call": None,
             "updated_at": _utc_now_iso(),
         }
         _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="@completed")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from src.agents.workflow_resume import (
     latest_user_message_is_clarification_answer,
 )
 from src.config.agents_config import load_agent_config
+
+logger = logging.getLogger(__name__)
 
 
 class OrchestrationDecision(TypedDict):
@@ -314,6 +317,18 @@ def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> d
     preserve_existing_stage = (
         decision["resolved_mode"] == "workflow"
         and _has_authoritative_workflow_stage(state, workflow_run_id)
+    )
+    logger.info(
+        "[Selector] resolved_mode=%s requested_mode=%s run_id=%s existing_run_id=%s "
+        "clarification_resume_flag=%s latest_resume_like=%s execution_state=%s task_statuses=%s",
+        decision["resolved_mode"],
+        decision["requested_mode"],
+        workflow_run_id,
+        state.get("run_id"),
+        _workflow_clarification_resume_requested(config),
+        latest_user_message_is_clarification_answer(state),
+        state.get("execution_state"),
+        [task.get("status") for task in (state.get("task_pool") or []) if isinstance(task, dict)],
     )
     try:
         writer = get_stream_writer()

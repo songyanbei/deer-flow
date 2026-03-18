@@ -156,7 +156,7 @@ clarification on how a payload will be displayed.
   4. **Resolve endpoint**:
      `POST /api/threads/{thread_id}/interventions/{request_id}:resolve`
      Body: `{ fingerprint, action_key, payload }`
-     Success: `{ ok, thread_id, request_id, fingerprint, accepted }`
+     Success: `{ ok, thread_id, request_id, fingerprint, accepted, resume_action, resume_payload }`
      Errors: 404 (not found), 409 (stale fingerprint), 422 (invalid action)
   5. **status_detail**: `@waiting_intervention` for localization
   6. **Hydration**: intervention state persists in `task_pool` and survives
@@ -171,7 +171,8 @@ clarification on how a payload will be displayed.
     `action_schema.actions[].label`
   - Phase 1 supports `button` and `input` action kinds only
   - `select` and `composite` are protocol-reserved but not rendered in Phase 1
-  - the resolve endpoint triggers a resume run automatically on success
+  - the resolve endpoint returns a `resume_action` hint; the frontend submits
+    the resume run via `thread.submit()` for SSE observability
   - frontend has confirmed this contract is sufficient for the current Phase 1
     implementation
   - clarified on 2026-03-17:
@@ -179,6 +180,100 @@ clarification on how a payload will be displayed.
     - frontend may ignore `intervention_resolution` in Phase 1
     - `422/409/404` currently return simple `{ detail: string }` bodies
   - no additional frontend-blocking contract gaps remain for intervention flow
+
+## [closed] Intervention resolve now returns resume hint instead of creating background run
+- Date: 2026-03-17
+- Related feature: `features/workflow-intervention-flow.md`
+- Blocking area: workflow continuation after intervention resolve
+- Backend question:
+  the original resolve endpoint called `client.runs.create()` to resume the
+  workflow after resolve. This created an invisible background run that the
+  frontend's SSE stream (`useStream`) could not observe, causing the UI to
+  appear stuck at `WAITING_INTERVENTION` after clicking resolve.
+- Backend changes:
+  1. **Resolve endpoint** (`gateway/routers/interventions.py`):
+     - removed `client.runs.create()` call
+     - response now includes `resume_action` and `resume_payload` fields:
+       ```json
+       {
+         "ok": true,
+         "resume_action": "submit_resume",
+         "resume_payload": { "message": "[intervention_resolved] request_id=... action_key=..." }
+       }
+       ```
+     - for reject actions (`fail_current_task`), `resume_action` is `null`
+  2. **Queue staging** (`agents/runtime_queue_stage.py`):
+     - added `_is_intervention_resume_submission()` to skip enqueue-time
+       workflow staging for intervention resume runs
+     - prevents `task_pool` from being wiped when the resume run enters the
+       queue
+  3. **Frontend** (`intervention-card.tsx`):
+     - after successful resolve with `resume_action === "submit_resume"`,
+       calls `thread.submit()` to create an observable SSE-streamed resume run
+     - uses `workflow_clarification_resume: true` context since
+       `[intervention_resolved]` messages are treated as clarification-like
+       resumes by the backend
+- Frontend decision needed: none — fix already applied
+- Notes:
+  - the `[intervention_resolved]` message prefix is recognized by
+    `latest_user_message_is_clarification_answer()` in `workflow_resume.py`
+  - orchestration selector preserves workflow mode for these resume runs
+  - planner detects RUNNING tasks and returns `execution_state: "RESUMING"`
+  - all 395 backend tests pass (4 pre-existing failures unrelated)
+  - all 73 frontend tests pass (4 pre-existing failures unrelated)
+
+## [open] Display projection layer added to intervention requests
+- Date: 2026-03-17
+- Related feature: `features/workflow-intervention-display-projection.md`
+- Blocking area: intervention card rendering
+- Backend question:
+  backend has added a `display` field to `InterventionRequest` that provides
+  user-readable content for the intervention card. Frontend should prefer
+  rendering from `display` over raw protocol fields.
+- Frontend decision needed:
+  confirm the `display` contract below is sufficient for rendering polished
+  intervention cards.
+- Backend contract summary:
+  1. **New field**: `InterventionRequest.display` (optional `InterventionDisplay`)
+  2. **Display schema** (`InterventionDisplay`):
+     - `title` (string) — user-readable card title (e.g. "确认预定会议室")
+     - `summary` (string, optional) — one-line description
+     - `sections` (list of `InterventionDisplaySection`, optional) — structured
+       label-value pairs grouped by section
+     - `risk_tip` (string, optional) — risk/warning hint
+     - `primary_action_label` (string, optional) — approve button text
+     - `secondary_action_label` (string, optional) — reject button text
+     - `respond_action_label` (string, optional) — input action button text
+     - `respond_placeholder` (string, optional) — input placeholder text
+     - `debug` (InterventionDisplayDebug, optional) — raw details for dev tools
+  3. **Section schema** (`InterventionDisplaySection`):
+     - `title` (string, optional) — section heading
+     - `items` (list of `InterventionDisplayItem`) — each has `label` and `value`
+  4. **Debug schema** (`InterventionDisplayDebug`):
+     - `source_agent` (string, optional)
+     - `tool_name` (string, optional)
+     - `raw_args` (dict, optional)
+  5. **Projection layers** (backend resolves in priority order):
+     - Scenario-specific (e.g. meeting booking → polished business fields)
+     - Operation-type (e.g. "创建操作" for create-like tools)
+     - Generic fallback (humanized key-value pairs)
+- Suggested UI behavior:
+  - if `display` is present, render `display.title` as card title instead of
+    `intervention_request.title`
+  - render `display.sections` as structured content (label-value pairs grouped
+    by optional section title)
+  - if `display.primary_action_label` is set, use it as approve button text;
+    otherwise fall back to `action_schema.actions[].label`
+  - same for `secondary_action_label` and `respond_action_label`
+  - collapse `display.debug` under a "详情" toggle, hidden by default
+  - if `display` is absent (backward compatibility), fall back to existing
+    rendering from raw `action_schema`
+- Notes:
+  - `display` is purely additive; all existing protocol fields remain unchanged
+  - `display` does not affect the resolve endpoint contract
+  - currently implemented scenario projections: meeting create/update/cancel
+  - all other tools get operation-type or generic fallback projections
+  - frontend test checklist: `workflow-intervention-display-projection-test-checklist.md`
 
 ## [open] Workflow timeline duplication rule
 - Date: 2026-03-13

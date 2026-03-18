@@ -227,4 +227,38 @@ describe("SubtasksProvider", () => {
     expect(merged.status).toBe("waiting_clarification");
     expect(merged.clarificationPrompt).toBe("Please choose the booking city.");
   });
+
+  it("lets authoritative hydration clear waiting_intervention after resume", () => {
+    const merged = mergeHydratedTask(
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_intervention",
+        interventionStatus: "pending",
+        interventionRequest: {
+          request_id: "req-1",
+          fingerprint: "fp-1",
+          intervention_type: "approval",
+          title: "Need approval",
+          reason: "Approve booking",
+          source_agent: "meeting-agent",
+          source_task_id: "task-1",
+          action_schema: { actions: [] },
+          created_at: "2026-03-17T10:00:00Z",
+        },
+      }),
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "in_progress",
+        interventionStatus: "resolved",
+        statusDetail: "@intervention_resolved",
+        updatedAt: "2026-03-17T10:01:00Z",
+      }),
+    );
+
+    expect(merged.status).toBe("in_progress");
+    expect(merged.interventionStatus).toBe("resolved");
+    expect(merged.statusDetail).toBe("@intervention_resolved");
+  });
 });

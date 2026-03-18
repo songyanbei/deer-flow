@@ -182,6 +182,22 @@ describe("filterWorkflowMessages", () => {
     ]);
   });
 
+  it("removes intervention_resolved resume messages from the transcript", () => {
+    const filtered = filterWorkflowMessages(
+      [
+        humanMessage("Book me a room.", "user-1"),
+        humanMessage(
+          "[intervention_resolved] request_id=intv_abc123 action_key=approve",
+          "resume-1",
+        ),
+        aiMessage("Room booked.", "ai-1"),
+      ],
+      [],
+    );
+
+    expect(filtered.map((message) => message.id)).toEqual(["user-1", "ai-1"]);
+  });
+
   it("keeps present_files messages so artifact outputs still render in the transcript", () => {
     const filtered = filterWorkflowMessages(
       [

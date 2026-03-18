@@ -1842,6 +1842,70 @@ def test_executor_finishes_system_fallback_with_terminal_message():
     asyncio.run(_run())
 
 
+def test_executor_does_not_treat_intervention_resume_marker_as_clarification_answer():
+    class CapturingAgent:
+        def __init__(self):
+            self.payload = None
+
+        async def ainvoke(self, payload, config=None):
+            self.payload = payload
+            return {"messages": [AIMessage(content="done")]}
+
+    agent = CapturingAgent()
+
+    def _make_lead_agent(_config):
+        return agent
+
+    async def _run():
+        with patch(
+            "src.agents.executor.executor.load_agent_config",
+            return_value=SimpleNamespace(mcp_servers=[], intervention_policies={}, hitl_keywords=[]),
+        ):
+            with patch("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent):
+                with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+                    result = await executor_node(
+                        {
+                            "run_id": "run_existing123",
+                            "task_pool": [
+                                {
+                                    "task_id": "task-1",
+                                    "description": "book meeting room",
+                                    "run_id": "run_existing123",
+                                    "assigned_agent": "meeting-agent",
+                                    "status": "RUNNING",
+                                    "status_detail": "@intervention_resolved",
+                                    "intervention_status": "resolved",
+                                    "intervention_fingerprint": "fp-1",
+                                    "resolved_inputs": {
+                                        "intervention_resolution": {
+                                            "action_key": "approve",
+                                            "payload": {"comment": "ok"},
+                                            "resolution_behavior": "resume_current_task",
+                                        }
+                                    },
+                                }
+                            ],
+                            "verified_facts": {},
+                            "messages": [
+                                HumanMessage(content="book a room"),
+                                HumanMessage(
+                                    content="[intervention_resolved] request_id=req-1 action_key=approve"
+                                ),
+                            ],
+                        },
+                        {"configurable": {}},
+                    )
+
+        assert result["execution_state"] == "EXECUTING_DONE"
+        submitted = agent.payload["messages"][0].content
+        assert "Resolved dependency inputs" in submitted
+        assert "intervention_resolution" in submitted
+        assert "User clarification answer" not in submitted
+        assert "[intervention_resolved]" not in submitted
+
+    asyncio.run(_run())
+
+
 def test_domain_agent_tools_expose_request_help_instead_of_ask_clarification():
     tool_names = {tool.name for tool in get_available_tools(is_domain_agent=True)}
 

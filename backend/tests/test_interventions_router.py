@@ -69,19 +69,19 @@ def test_resolve_intervention_accepts_valid_resume_request():
             )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": True,
-        "thread_id": "thread-1",
-        "request_id": "intv-1",
-        "fingerprint": "fp-1",
-        "accepted": True,
-    }
+    data = response.json()
+    assert data["ok"] is True
+    assert data["thread_id"] == "thread-1"
+    assert data["request_id"] == "intv-1"
+    assert data["fingerprint"] == "fp-1"
+    assert data["accepted"] is True
+    assert data["resume_action"] == "submit_resume"
+    assert data["resume_payload"]["message"].startswith("[intervention_resolved]")
     client_mock.threads.update_state.assert_awaited_once()
     updated_task = client_mock.threads.update_state.await_args.kwargs["values"]["task_pool"][0]
     assert updated_task["status"] == "RUNNING"
     assert updated_task["intervention_status"] == "resolved"
     assert updated_task["resolved_inputs"]["intervention_resolution"]["payload"] == {"comment": "go ahead"}
-    client_mock.runs.create.assert_awaited_once()
 
 
 def test_resolve_intervention_marks_task_failed_for_reject_action():

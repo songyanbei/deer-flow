@@ -7,7 +7,8 @@ Request body:
     { "fingerprint": "...", "action_key": "...", "payload": {...} }
 
 Success response:
-    { "ok": true, "thread_id": "...", "request_id": "...", "fingerprint": "...", "accepted": true }
+    { "ok": true, "thread_id": "...", "request_id": "...", "fingerprint": "...", "accepted": true,
+      "resume_action": "submit_resume" | null, "resume_payload": { "message": "..." } | null }
 
 Error responses:
     404 - thread or intervention not found
@@ -45,6 +46,9 @@ class InterventionResolveResponse(BaseModel):
     request_id: str
     fingerprint: str
     accepted: bool = True
+    resume_action: str | None = None
+    resume_payload: dict[str, Any] | None = None
+    checkpoint: dict[str, Any] | None = None
 
 
 @router.post("/{request_id}:resolve", response_model=InterventionResolveResponse)
@@ -161,37 +165,51 @@ async def resolve_intervention(
     }
 
     # Persist the resolution by updating thread state
+    checkpoint_value: dict[str, Any] | None = None
     try:
-        await client.threads.update_state(
+        update_response = await client.threads.update_state(
             thread_id,
             values={"task_pool": [updated_task]},
         )
+        if isinstance(update_response, dict):
+            checkpoint_value = update_response.get("checkpoint")
+        else:
+            checkpoint_value = getattr(update_response, "checkpoint", None)
         logger.info(
-            "[Intervention] Resolution persisted for thread='%s' request_id='%s' action_key='%s' behavior='%s'",
+            "[Intervention] Resolution persisted for thread='%s' request_id='%s' action_key='%s' behavior='%s' checkpoint=%s",
             thread_id,
             request_id,
             body.action_key,
             resolution_behavior,
+            checkpoint_value,
         )
     except Exception as e:
         logger.error("[Intervention] Failed to persist resolution for thread '%s': %s", thread_id, e)
         raise HTTPException(status_code=500, detail="Failed to persist intervention resolution") from e
 
-    # If the resolution resumes the task, trigger a new run
+    # Build resume hint for the frontend.
+    # The frontend is responsible for submitting the resume run via its own
+    # streaming connection (useStream.submit) so that SSE events are observable.
+    # The backend only persists the resolution; creating a background run via
+    # client.runs.create() would be invisible to the frontend's SSE stream.
+    resume_action_value: str | None = None
+    resume_payload_value: dict[str, Any] | None = None
     if new_status == "RUNNING":
-        try:
-            # Send a resume signal by creating a new run with the intervention answer
-            from langchain_core.messages import HumanMessage
-            resume_message = f"[intervention_resolved] request_id={request_id} action_key={body.action_key}"
-            await client.runs.create(
-                thread_id,
-                assistant_id="entry_graph",
-                input={"messages": [{"role": "human", "content": resume_message}]},
-            )
-            logger.info("[Intervention] Resume run created for thread='%s'", thread_id)
-        except Exception as e:
-            # Resolution is persisted even if resume fails; the user can retry
-            logger.warning("[Intervention] Failed to create resume run for thread '%s': %s", thread_id, e)
+        resume_message = f"[intervention_resolved] request_id={request_id} action_key={body.action_key}"
+        resume_action_value = "submit_resume"
+        resume_payload_value = {
+            "message": resume_message,
+        }
+        logger.info(
+            "[Intervention] Resolution persisted and resume hint prepared. "
+            "thread='%s' request_id='%s' task_id='%s' run_status='%s' resume_action='%s' resume_message=%r",
+            thread_id,
+            request_id,
+            updated_task.get("task_id"),
+            updated_task.get("status"),
+            resume_action_value,
+            resume_message,
+        )
 
     return InterventionResolveResponse(
         ok=True,
@@ -199,4 +217,7 @@ async def resolve_intervention(
         request_id=request_id,
         fingerprint=body.fingerprint,
         accepted=True,
+        resume_action=resume_action_value,
+        resume_payload=resume_payload_value,
+        checkpoint=checkpoint_value,
     )

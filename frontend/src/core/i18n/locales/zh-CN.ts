@@ -288,6 +288,9 @@ export const zhCN: Translations = {
     interventionRequiredLabel: "需要你的决策",
     interventionNextActionLabel: "下一步动作",
     interventionDecisionLabel: "请做出选择",
+    interventionDetailsLabel: "详细信息",
+    interventionDebugLabel: "技术细节",
+    interventionDebugSummary: "查看内部详情",
   },
 
   workflowStatus: {

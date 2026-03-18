@@ -11,7 +11,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
-from src.agents.thread_state import HelpRequestPayload, TaskStatus, ThreadState, WorkflowStage
+from src.agents.thread_state import HelpRequestPayload, InterventionResolution, TaskStatus, ThreadState, WorkflowStage
+from src.agents.workflow_resume import is_intervention_resolution_message
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 
@@ -597,9 +598,18 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
     running = [t for t in task_pool if t["status"] == "RUNNING"]
 
     if running:
-        logger.info("[Router] Found RUNNING task, forwarding to executor.")
         running_task = running[0]
         run_id = _resolve_run_id(state, running_task)
+        logger.info(
+            "[Router] Found RUNNING task, forwarding to executor. run_id=%s task_id=%s assigned_agent=%s "
+            "status_detail=%r resolved_input_keys=%s resume_count=%s",
+            run_id,
+            running_task["task_id"],
+            running_task.get("assigned_agent"),
+            running_task.get("status_detail"),
+            list((running_task.get("resolved_inputs") or {}).keys()),
+            running_task.get("resume_count"),
+        )
         detail = _build_executing_detail(running_task)
         _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
         return {
@@ -609,9 +619,100 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             **_build_workflow_stage_update("executing", detail),
         }
 
-    # WAITING_INTERVENTION tasks are blocking on user action; do not route past them.
+    # WAITING_INTERVENTION tasks: check if the latest message resolves one.
     waiting_intervention = [t for t in task_pool if t["status"] == "WAITING_INTERVENTION"]
     if waiting_intervention:
+        messages = state.get("messages") or []
+        latest_msg = messages[-1] if messages else None
+        if latest_msg and is_intervention_resolution_message(latest_msg):
+            # The user already resolved this intervention via the Gateway endpoint.
+            # The update_state() from the Gateway may have created a branch checkpoint
+            # that this graph run didn't pick up, so we apply the transition here.
+            task = waiting_intervention[0]
+            intervention_request = task.get("intervention_request") or {}
+            intervention_resolution = task.get("intervention_resolution")
+
+            # If the Gateway's update_state was visible, intervention_resolution would
+            # already be set.  If not, reconstruct the resolution from the message.
+            if not isinstance(intervention_resolution, dict):
+                # Parse the resolution from the [intervention_resolved] message text
+                msg_text = getattr(latest_msg, "content", "") if latest_msg else ""
+                import re as _re
+                req_id_match = _re.search(r"request_id=(\S+)", msg_text)
+                action_key_match = _re.search(r"action_key=(\S+)", msg_text)
+                request_id = req_id_match.group(1) if req_id_match else intervention_request.get("request_id", "")
+                action_key = action_key_match.group(1) if action_key_match else "approve"
+
+                intervention_resolution: InterventionResolution = {
+                    "request_id": request_id,
+                    "fingerprint": intervention_request.get("fingerprint", ""),
+                    "action_key": action_key,
+                    "payload": {},
+                }
+
+            # Determine resolution behavior from action_schema
+            action_key = intervention_resolution.get("action_key", "approve")
+            action_schema = intervention_request.get("action_schema", {})
+            actions = action_schema.get("actions", [])
+            resolution_behavior = "resume_current_task"
+            for action in actions:
+                if action.get("key") == action_key:
+                    resolution_behavior = action.get("resolution_behavior", "resume_current_task")
+                    break
+
+            if resolution_behavior == "fail_current_task":
+                new_status = "FAILED"
+                status_detail = "@failed"
+            else:
+                new_status = "RUNNING"
+                status_detail = "@intervention_resolved"
+
+            # Build resolved_inputs with intervention_resolution info
+            existing_resolved = dict(task.get("resolved_inputs") or {})
+            existing_resolved["intervention_resolution"] = {
+                "action_key": action_key,
+                "payload": intervention_resolution.get("payload", {}),
+                "resolution_behavior": resolution_behavior,
+            }
+
+            updated_task: TaskStatus = {
+                **task,
+                "status": new_status,
+                "intervention_status": "resolved",
+                "intervention_resolution": intervention_resolution,
+                "resolved_inputs": existing_resolved,
+                "status_detail": status_detail,
+                "updated_at": _utc_now_iso(),
+            }
+
+            run_id = _resolve_run_id(state, task)
+            logger.info(
+                "[Router] Resolved intervention in-graph: task_id=%s request_id=%s action_key=%s behavior=%s new_status=%s",
+                task["task_id"],
+                intervention_resolution.get("request_id"),
+                action_key,
+                resolution_behavior,
+                new_status,
+            )
+            _emit_task_event(writer, "task_resumed", updated_task, task.get("assigned_agent", ""), status_detail=status_detail)
+
+            if new_status == "RUNNING":
+                detail = _build_executing_detail(updated_task)
+                _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
+                return {
+                    "task_pool": [updated_task],
+                    "execution_state": "ROUTING_DONE",
+                    "route_count": route_count,
+                    "run_id": run_id,
+                    **_build_workflow_stage_update("executing", detail),
+                }
+            else:
+                return {
+                    "task_pool": [updated_task],
+                    "execution_state": "EXECUTING_DONE",
+                    "route_count": route_count,
+                }
+
         logger.info("[Router] Found %d WAITING_INTERVENTION task(s), waiting for user resolution.", len(waiting_intervention))
         return {
             "execution_state": "INTERRUPTED",

@@ -303,6 +303,9 @@ export const enUS: Translations = {
     interventionRequiredLabel: "Intervention Required",
     interventionNextActionLabel: "Next Action",
     interventionDecisionLabel: "Your Decision",
+    interventionDetailsLabel: "Details",
+    interventionDebugLabel: "Technical details",
+    interventionDebugSummary: "Show internal details",
   },
 
   workflowStatus: {

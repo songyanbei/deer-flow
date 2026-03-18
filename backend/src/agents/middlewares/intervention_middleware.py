@@ -20,6 +20,7 @@ from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from src.agents.intervention.display_projection import build_display_projection
 from src.agents.thread_state import InterventionActionSchema, InterventionRequest
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,24 @@ def _build_intervention_request(
     category = (policy or {}).get("category", "tool_execution")
     action_schema = (policy or {}).get("action_schema") or _build_default_action_schema(tool_name)
 
+    # Build display projection (user-readable content)
+    display = build_display_projection(tool_name, tool_args, agent_name)
+
+    # Override display action labels from action_schema if display didn't set them
+    if display and action_schema:
+        actions = action_schema.get("actions", [])
+        for action in actions:
+            kind = action.get("kind")
+            behavior = action.get("resolution_behavior")
+            if kind == "button" and behavior == "resume_current_task" and not display.get("primary_action_label"):
+                display["primary_action_label"] = action.get("label")
+            elif kind == "button" and behavior == "fail_current_task" and not display.get("secondary_action_label"):
+                display["secondary_action_label"] = action.get("label")
+            elif kind == "input" and not display.get("respond_action_label"):
+                display["respond_action_label"] = action.get("label")
+                if action.get("placeholder") and not display.get("respond_placeholder"):
+                    display["respond_placeholder"] = action["placeholder"]
+
     request: InterventionRequest = {
         "request_id": request_id,
         "fingerprint": fingerprint,
@@ -141,6 +160,7 @@ def _build_intervention_request(
         },
         "action_summary": f"执行 {tool_name}",
         "action_schema": action_schema,
+        "display": display,
         "created_at": _utc_now_iso(),
     }
     return request
