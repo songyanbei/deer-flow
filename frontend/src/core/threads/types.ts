@@ -21,7 +21,30 @@ export type InterventionActionKind =
   | "button"
   | "input"
   | "select"
-  | "composite";
+  | "composite"
+  | "confirm"
+  | "single_select"
+  | "multi_select";
+
+export interface InterventionOption {
+  label: string;
+  value: string;
+  description?: string;
+}
+
+export interface InterventionQuestion {
+  key: string;
+  label: string;
+  kind: InterventionActionKind;
+  required?: boolean;
+  placeholder?: string;
+  description?: string;
+  confirm_text?: string;
+  options?: InterventionOption[];
+  min_select?: number;
+  max_select?: number;
+  default_value?: unknown;
+}
 
 export interface InterventionActionSchema {
   actions: Array<{
@@ -31,6 +54,13 @@ export interface InterventionActionSchema {
     resolution_behavior: InterventionResolutionBehavior;
     payload_schema?: Record<string, unknown>;
     placeholder?: string;
+    description?: string;
+    confirm_text?: string;
+    required?: boolean;
+    options?: InterventionOption[];
+    min_select?: number;
+    max_select?: number;
+    default_value?: unknown;
   }>;
 }
 
@@ -70,9 +100,25 @@ export interface InterventionRequest {
   category?: string;
   context?: Record<string, unknown>;
   action_summary?: string;
+  questions?: InterventionQuestion[];
   display?: InterventionDisplay;
   action_schema: InterventionActionSchema;
   created_at: string;
+}
+
+export interface ClarificationQuestion {
+  key: string;
+  label: string;
+  kind: "input";
+  required?: boolean;
+  placeholder?: string;
+  help_text?: string;
+}
+
+export interface ClarificationRequest {
+  title: string;
+  description?: string;
+  questions: ClarificationQuestion[];
 }
 
 export interface ThreadTaskState {
@@ -104,6 +150,7 @@ export interface ThreadTaskState {
     | "FAILED";
   status_detail?: string | null;
   clarification_prompt?: string | null;
+  clarification_request?: ClarificationRequest | null;
   intervention_request?: InterventionRequest | null;
   intervention_status?: "pending" | "resolved" | "consumed" | "rejected" | null;
   intervention_fingerprint?: string | null;

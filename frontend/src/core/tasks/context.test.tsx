@@ -228,6 +228,36 @@ describe("SubtasksProvider", () => {
     expect(merged.clarificationPrompt).toBe("Please choose the booking city.");
   });
 
+  it("preserves structured clarification metadata when hydration omits it", () => {
+    const merged = mergeHydratedTask(
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_clarification",
+        clarificationRequest: {
+          title: "Need booking details",
+          description: "Please answer the following questions.",
+          questions: [
+            {
+              key: "meeting_time",
+              label: "What time should I book?",
+              kind: "input",
+            },
+          ],
+        },
+      }),
+      createTask({
+        id: "task-1",
+        source: "multi_agent",
+        status: "waiting_clarification",
+        updatedAt: "2026-03-18T10:00:00Z",
+      }),
+    );
+
+    expect(merged.clarificationRequest?.title).toBe("Need booking details");
+    expect(merged.clarificationRequest?.questions[0]?.key).toBe("meeting_time");
+  });
+
   it("lets authoritative hydration clear waiting_intervention after resume", () => {
     const merged = mergeHydratedTask(
       createTask({

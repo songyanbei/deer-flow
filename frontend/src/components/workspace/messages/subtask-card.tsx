@@ -72,6 +72,8 @@ function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeo
   }
   if (task.status === "waiting_clarification") {
     return (
+      task.clarificationRequest?.description ??
+      task.clarificationRequest?.title ??
       task.clarificationPrompt ??
       localizedDetail ??
       localizedUpdate ??

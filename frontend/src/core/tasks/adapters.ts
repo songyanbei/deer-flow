@@ -49,6 +49,7 @@ export type MultiAgentTaskEvent = BaseTaskEvent & {
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
+  clarification_request?: ThreadTaskState["clarification_request"];
   intervention_request?: ThreadTaskState["intervention_request"];
   intervention_status?: ThreadTaskState["intervention_status"];
   intervention_fingerprint?: string;
@@ -213,11 +214,13 @@ export function fromMultiAgentTaskState(
     status,
     statusDetail: task.status_detail ?? undefined,
     clarificationPrompt: task.clarification_prompt ?? undefined,
+    clarificationRequest: task.clarification_request ?? undefined,
     interventionRequest: task.intervention_request ?? undefined,
     interventionStatus: task.intervention_status ?? undefined,
     interventionFingerprint: task.intervention_fingerprint ?? undefined,
     latestUpdate:
       task.intervention_request?.reason ??
+      task.clarification_request?.description ??
       task.clarification_prompt ??
       task.status_detail ??
       undefined,
@@ -258,6 +261,7 @@ export function fromMultiAgentTaskEvent(
     status: mapEventStatus(event),
     statusDetail: event.status_detail ?? getTaskUpdateText(event.message),
     clarificationPrompt: event.clarification_prompt ?? undefined,
+    clarificationRequest: event.clarification_request ?? undefined,
     interventionRequest: event.intervention_request ?? undefined,
     interventionStatus: event.intervention_status ?? undefined,
     interventionFingerprint: event.intervention_fingerprint ?? undefined,

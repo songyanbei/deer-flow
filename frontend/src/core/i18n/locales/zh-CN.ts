@@ -291,6 +291,16 @@ export const zhCN: Translations = {
     interventionDetailsLabel: "详细信息",
     interventionDebugLabel: "技术细节",
     interventionDebugSummary: "查看内部详情",
+    interventionCopy: {
+      confirmTitle: "请确认是否继续",
+      confirmHint: "确认后，我们会继续执行当前任务。",
+      inputTitle: "请补充必要信息",
+      singleSelectHint: "请选择一项；如果列表里没有合适的内容，也可以直接填写。",
+      multiSelectHint: "可选择多项；如果列表里没有合适的内容，也可以手动补充。",
+      customSectionTitle: "自定义补充",
+      singleCustomPlaceholder: "请输入你的选择",
+      multiCustomPlaceholder: "可逐行输入，或用逗号分隔多个自定义选项",
+    },
   },
 
   workflowStatus: {
@@ -306,6 +316,8 @@ export const zhCN: Translations = {
     waitingDependency: "正在等待相关任务完成…",
     waitingIntervention: "等待你的决策",
     waitingClarification: "需要你提供更多信息",
+    stopped: "对话已终止",
+    stoppedDescription: "当前对话已被手动终止。",
     running: (count: number) => `正在执行 ${count} 个子任务`,
     completedSummary: (completed: number, total: number) =>
       `已完成 ${completed} / ${total}`,

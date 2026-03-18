@@ -94,6 +94,28 @@ export default function AgentChatPage() {
     },
     [sendMessage, threadId, agent_name],
   );
+  const handleSubmitClarification = useCallback(
+    ({
+      text,
+      answers,
+    }: {
+      text: string;
+      answers: Record<string, { text: string }>;
+    }) => {
+      setStoppedByUser(false);
+      void sendMessage(
+        threadId,
+        { text, files: [] },
+        {
+          agent_name,
+          workflow_clarification_response: {
+            answers,
+          },
+        },
+      );
+    },
+    [agent_name, sendMessage, threadId],
+  );
 
   const handleStop = useCallback(async () => {
     setStoppedByUser(true);
@@ -170,6 +192,7 @@ export default function AgentChatPage() {
                 thread={thread}
                 stoppedByUser={stoppedByUser}
                 paddingBottom={paddingBottom}
+                onSubmitClarification={handleSubmitClarification}
               />
             </div>
 

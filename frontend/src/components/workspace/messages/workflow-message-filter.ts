@@ -22,6 +22,9 @@ export function filterWorkflowMessages(
   messages: Message[],
   workflowTasks: WorkflowMessageTask[],
 ) {
+  const hasPendingClarification = workflowTasks.some((task) =>
+    Boolean(normalizeContent(task.clarificationPrompt)),
+  );
   const taskDescriptions = new Set(
     workflowTasks
       .map((task) => normalizeContent(task.description))
@@ -68,7 +71,10 @@ export function filterWorkflowMessages(
     }
 
     if (message.type === "tool") {
-      return message.name === "ask_clarification";
+      if (message.name === "ask_clarification") {
+        return !hasPendingClarification;
+      }
+      return false;
     }
 
     if (message.type !== "ai") {
@@ -76,7 +82,7 @@ export function filterWorkflowMessages(
     }
 
     if (message.name === "ask_clarification") {
-      return true;
+      return !hasPendingClarification;
     }
 
     if (message.tool_calls?.length && !hasPresentFiles(message)) {

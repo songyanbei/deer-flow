@@ -85,6 +85,27 @@ export default function ChatPage() {
     },
     [sendMessage, threadId],
   );
+  const handleSubmitClarification = useCallback(
+    ({
+      text,
+      answers,
+    }: {
+      text: string;
+      answers: Record<string, { text: string }>;
+    }) => {
+      setStoppedByUser(false);
+      void sendMessage(
+        threadId,
+        { text, files: [] },
+        {
+          workflow_clarification_response: {
+            answers,
+          },
+        },
+      );
+    },
+    [sendMessage, threadId],
+  );
   const handleStop = useCallback(async () => {
     setStoppedByUser(true);
     await thread.stop();
@@ -140,6 +161,7 @@ export default function ChatPage() {
                 thread={thread}
                 stoppedByUser={stoppedByUser}
                 paddingBottom={paddingBottom}
+                onSubmitClarification={handleSubmitClarification}
               />
             </div>
             <div

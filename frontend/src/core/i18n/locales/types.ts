@@ -241,6 +241,16 @@ export interface Translations {
     interventionDetailsLabel: string;
     interventionDebugLabel: string;
     interventionDebugSummary: string;
+    interventionCopy: {
+      confirmTitle: string;
+      confirmHint: string;
+      inputTitle: string;
+      singleSelectHint: string;
+      multiSelectHint: string;
+      customSectionTitle: string;
+      singleCustomPlaceholder: string;
+      multiCustomPlaceholder: string;
+    };
   };
 
   workflowStatus: {
@@ -256,6 +266,8 @@ export interface Translations {
     waitingDependency: string;
     waitingIntervention: string;
     waitingClarification: string;
+    stopped: string;
+    stoppedDescription: string;
     running: (count: number) => string;
     completedSummary: (completed: number, total: number) => string;
   };

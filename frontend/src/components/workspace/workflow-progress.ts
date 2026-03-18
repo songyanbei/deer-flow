@@ -153,6 +153,8 @@ export function getWorkflowProgressSummary({
       ])
     : clarificationTask
     ? pickFirstNonEmpty([
+        clarificationTask.clarificationRequest?.description,
+        clarificationTask.clarificationRequest?.title,
         clarificationTask.clarificationPrompt,
         l(clarificationTask.statusDetail),
         l(clarificationTask.latestUpdate),

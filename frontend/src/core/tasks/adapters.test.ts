@@ -49,6 +49,35 @@ describe("task adapters", () => {
     expect(task.clarificationPrompt).toBe("Need the target market.");
   });
 
+  it("maps structured clarification requests from custom events", () => {
+    const event: MultiAgentTaskEvent = {
+      type: "task_running",
+      source: "multi_agent",
+      task_id: "task-clar-1",
+      run_id: "run-1",
+      description: "Collect booking details",
+      status: "waiting_clarification",
+      clarification_request: {
+        title: "Need a few more details",
+        description: "Please answer the following questions.",
+        questions: [
+          {
+            key: "meeting_time",
+            label: "What time should I book?",
+            kind: "input",
+            placeholder: "e.g. Today 14:00-15:00",
+          },
+        ],
+      },
+    };
+
+    const task = fromMultiAgentTaskEvent(event);
+
+    expect(task.status).toBe("waiting_clarification");
+    expect(task.clarificationRequest?.title).toBe("Need a few more details");
+    expect(task.clarificationRequest?.questions[0]?.key).toBe("meeting_time");
+  });
+
   it("keeps task_help_requested in waiting_dependency status", () => {
     const task = fromMultiAgentTaskEvent({
       type: "task_help_requested",

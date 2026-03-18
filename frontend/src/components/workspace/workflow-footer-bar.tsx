@@ -23,7 +23,6 @@ import type { AgentThreadState } from "@/core/threads";
 import { cn } from "@/lib/utils";
 
 import { FlipDisplay } from "./flip-display";
-import { InterventionCard } from "./messages/intervention-card";
 import {
   filterWorkflowTasks,
   getWorkflowProgressSummary,
@@ -58,6 +57,8 @@ function getTaskDetail(
   if (task.status === "completed" || task.status === "failed") {
     return undefined;
   }
+  if (task.clarificationRequest?.description) return task.clarificationRequest.description;
+  if (task.clarificationRequest?.title) return task.clarificationRequest.title;
   if (task.clarificationPrompt) return task.clarificationPrompt;
   if (task.blockedReason) return task.blockedReason;
   if (task.interventionRequest?.reason) return task.interventionRequest.reason;
@@ -148,7 +149,9 @@ function WorkflowFooterTaskRow({
   const { t } = useI18n();
   const detail = getTaskDetail(task, t);
   const isActive = !stopped && isActiveWorkflowTask(task);
-  const statusLabel = stopped ? "已终止" : getTaskStatusLabel(task, t);
+  const statusLabel = stopped
+    ? t.workflowStatus.stopped
+    : getTaskStatusLabel(task, t);
 
   return (
     <div
@@ -224,24 +227,19 @@ export function WorkflowFooterBar({
   ).length;
   const totalCount = progress?.totalTaskCount ?? workflowTasks.length;
   const summaryLabel = stopped
-    ? "对话已终止"
+    ? t.workflowStatus.stopped
     : totalCount > 0
       ? t.workflowStatus.completedSummary(completedCount, totalCount)
       : t.workflowStatus.initializing;
   const summaryKey =
     totalCount > 0 && !stopped ? `${completedCount}-${totalCount}` : summaryLabel;
   const headerTitle = stopped
-    ? "当前对话已被手动终止"
+    ? t.workflowStatus.stoppedDescription
     : compactTitle ?? progress?.title ?? t.workflowStatus.processing;
   const titleKey = primaryTask?.id ?? headerTitle;
   const showShimmer =
     !stopped &&
     (isActiveWorkflowTask(primaryTask) || Boolean(progress && !primaryTask));
-  const shouldShowPrimaryInterventionCard =
-    !stopped &&
-    primaryTask?.status === "waiting_intervention" &&
-    primaryTask.interventionRequest != null;
-
   if (hidden || (workflowTasks.length === 0 && !progress && !stopped)) {
     return null;
   }
@@ -290,14 +288,6 @@ export function WorkflowFooterBar({
         </div>
       </button>
 
-      {shouldShowPrimaryInterventionCard && primaryTask ? (
-        <div className="border-border/60 border-t bg-muted/25 px-3 py-3">
-          <div className="max-h-[min(52vh,36rem)] overflow-y-auto pr-1">
-            <InterventionCard task={primaryTask} />
-          </div>
-        </div>
-      ) : null}
-
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -311,7 +301,7 @@ export function WorkflowFooterBar({
               {(progress || stopped) && (
                 <div className="text-muted-foreground px-2 text-xs leading-4">
                   <span className="font-medium text-foreground">
-                    {stopped ? "对话已终止" : progress?.title}
+                    {stopped ? t.workflowStatus.stopped : progress?.title}
                   </span>
                   {!stopped && progress?.detail ? ` - ${progress.detail}` : ""}
                 </div>

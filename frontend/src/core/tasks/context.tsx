@@ -138,6 +138,10 @@ export function mergeHydratedTask(
       existing.clarificationPrompt,
       hydrated.clarificationPrompt,
     ),
+    clarificationRequest: selectRichField(
+      existing.clarificationRequest,
+      hydrated.clarificationRequest,
+    ),
     interventionRequest: selectRichField(
       existing.interventionRequest,
       hydrated.interventionRequest,

@@ -37,6 +37,12 @@ import { MessageListItem } from "./message-list-item";
 import { MessageListSkeleton } from "./skeleton";
 import { SubtaskCard } from "./subtask-card";
 import { filterWorkflowMessages } from "./workflow-message-filter";
+import { InterventionCard } from "./intervention-card";
+import {
+  ClarificationCard,
+  type ClarificationSubmitPayload,
+  splitClarificationQuestions,
+} from "./clarification-card";
 
 export function MessageList({
   className,
@@ -44,12 +50,14 @@ export function MessageList({
   thread,
   stoppedByUser = false,
   paddingBottom = 160,
+  onSubmitClarification,
 }: {
   className?: string;
   threadId: string;
   thread: BaseStream<AgentThreadState>;
   stoppedByUser?: boolean;
   paddingBottom?: number;
+  onSubmitClarification?: (payload: ClarificationSubmitPayload) => void;
 }) {
   const { t } = useI18n();
   const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
@@ -90,6 +98,19 @@ export function MessageList({
     !hasVisibleAssistantContent;
   const shouldShowStoppedNotice =
     stoppedByUser && !thread.isLoading && !hasVisibleAssistantContent;
+  const inlineInterventionTask = workflowTasks.find(
+    (task) =>
+      task.status === "waiting_intervention" &&
+      task.interventionRequest != null &&
+      Boolean(task.threadId),
+  );
+  const inlineClarificationTask = workflowTasks.find(
+    (task) =>
+      task.status === "waiting_clarification" &&
+      ((task.clarificationRequest?.questions?.length ?? 0) > 0 ||
+        splitClarificationQuestions(task.clarificationPrompt?.trim() ?? "")
+          .length > 0),
+  );
   const legacySubagentGroups = useMemo(
     () =>
       groupedMessages.map((group) => {
@@ -281,10 +302,35 @@ export function MessageList({
           ) : (
             <StreamingIndicator className="my-4" />
           ))}
+        {isWorkflowMode &&
+          !stoppedByUser &&
+          inlineInterventionTask &&
+          !hasVisibleAssistantContent && (
+            <div className="my-4 w-full">
+              <InterventionCard task={inlineInterventionTask} />
+            </div>
+          )}
+        {isWorkflowMode &&
+          !stoppedByUser &&
+          inlineClarificationTask &&
+          onSubmitClarification && (
+            <div className="my-4 w-full">
+              <ClarificationCard
+                task={inlineClarificationTask}
+                disabled={thread.isLoading}
+                onSubmit={onSubmitClarification}
+              />
+            </div>
+          )}
         {shouldShowStoppedNotice && (
           <div className="bg-background/85 border-border/60 my-4 flex max-w-xl flex-col gap-2 rounded-2xl border px-4 py-3 shadow-sm backdrop-blur-sm">
             <div className="min-w-0">
-              <div className="text-sm font-medium">对话已终止</div>
+              <div className="text-sm font-medium">
+                {t.workflowStatus.stopped}
+              </div>
+              <div className="text-muted-foreground mt-1 text-sm">
+                {t.workflowStatus.stoppedDescription}
+              </div>
             </div>
           </div>
         )}

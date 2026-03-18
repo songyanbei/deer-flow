@@ -306,6 +306,19 @@ export const enUS: Translations = {
     interventionDetailsLabel: "Details",
     interventionDebugLabel: "Technical details",
     interventionDebugSummary: "Show internal details",
+    interventionCopy: {
+      confirmTitle: "Please confirm whether to continue",
+      confirmHint: "After you confirm, we'll continue with the current task.",
+      inputTitle: "Please provide the required information",
+      singleSelectHint:
+        "Choose one option. If none of them fit, you can also enter your own.",
+      multiSelectHint:
+        "Choose one or more options. If the list is incomplete, you can add your own items.",
+      customSectionTitle: "Custom input",
+      singleCustomPlaceholder: "Enter your choice",
+      multiCustomPlaceholder:
+        "Enter one item per line, or separate multiple custom items with commas",
+    },
   },
 
   workflowStatus: {
@@ -321,6 +334,8 @@ export const enUS: Translations = {
     waitingDependency: "Waiting for a related task to finish…",
     waitingIntervention: "Waiting for your decision",
     waitingClarification: "Need more information from you",
+    stopped: "Conversation stopped",
+    stoppedDescription: "This conversation was stopped manually.",
     running: (count: number) =>
       `Running ${count} subtask${count === 1 ? "" : "s"}`,
     completedSummary: (completed: number, total: number) =>
