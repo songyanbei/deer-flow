@@ -67,6 +67,13 @@ function isBrokenDisplayText(value: unknown): boolean {
   return /^[?？]+$/.test(text);
 }
 
+function safeDisplayText(value: unknown, fallback = ""): string {
+  if (!isBrokenDisplayText(value)) {
+    return String(value).trim();
+  }
+  return fallback;
+}
+
 function extractNumberedOptions(text: string): InterventionOption[] {
   const matches = Array.from(
     text.matchAll(/(?:^|\n)\s*\d+[\.\)、]\s+(.+?)(?=\n\s*\d+[\.\)、]\s+|$)/g),
@@ -161,7 +168,10 @@ function getActionHint(
   action: InterventionActionSchema["actions"][number],
   fallback: string,
 ) {
-  return action.description ?? action.placeholder ?? fallback;
+  return safeDisplayText(
+    action.description,
+    safeDisplayText(action.placeholder, fallback),
+  );
 }
 
 function getActionButtonLabel(
@@ -383,6 +393,27 @@ export function InterventionCard({
   const compositeAction = request.action_schema.actions[0];
   const display = request.display;
   const riskTone = getRiskTone(request.risk_level);
+  const isClarificationIntervention =
+    request.intervention_type === "clarification" ||
+    request.category === "user_clarification";
+  const confirmTitleText = isClarificationIntervention
+    ? interactionCopy.clarificationConfirmTitle
+    : interactionCopy.confirmTitle;
+  const confirmHintText = isClarificationIntervention
+    ? interactionCopy.clarificationConfirmHint
+    : interactionCopy.confirmHint;
+  const singleSelectHintText = isClarificationIntervention
+    ? interactionCopy.clarificationSingleSelectHint
+    : interactionCopy.singleSelectHint;
+  const multiSelectHintText = isClarificationIntervention
+    ? interactionCopy.clarificationMultiSelectHint
+    : interactionCopy.multiSelectHint;
+  const customSectionTitleText = isClarificationIntervention
+    ? interactionCopy.clarificationCustomSectionTitle
+    : interactionCopy.customSectionTitle;
+  const singleSubmitFallbackText = isClarificationIntervention
+    ? interactionCopy.clarificationSubmitLabel
+    : t.subtasks.interventionActionFallback;
 
   if (questions.length > 0 && compositeAction) {
     const activeQuestion = questions[activeQuestionIndex] ?? questions[0];
@@ -476,7 +507,10 @@ export function InterventionCard({
               {t.subtasks.interventionRequiredLabel}
             </div>
             <div className="truncate text-[13px] font-semibold leading-5 text-foreground">
-              {explanatoryQuestion?.label || display?.title || request.title}
+              {safeDisplayText(
+                explanatoryQuestion?.label,
+                safeDisplayText(display?.title, safeDisplayText(request.title)),
+              )}
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -513,11 +547,11 @@ export function InterventionCard({
             <AlertTriangleIcon className={`mt-0.5 size-4 shrink-0 ${riskTone.icon}`} />
             <div className="space-y-1">
               <div className="text-sm leading-6 text-foreground">
-                {activeQuestion?.label}
+                {safeDisplayText(activeQuestion?.label)}
               </div>
-              {activeQuestion?.description ? (
+              {safeDisplayText(activeQuestion?.description) ? (
                 <div className="text-xs leading-5 text-muted-foreground">
-                  {activeQuestion.description}
+                  {safeDisplayText(activeQuestion?.description)}
                 </div>
               ) : null}
             </div>
@@ -528,7 +562,10 @@ export function InterventionCard({
               <Input
                 value={activeQuestionDraft}
                 placeholder={
-                  activeQuestion.placeholder ?? t.subtasks.interventionPlaceholder
+                  safeDisplayText(
+                    activeQuestion.placeholder,
+                    t.subtasks.interventionPlaceholder,
+                  )
                 }
                 className="h-10 rounded-lg border-border/70 bg-background text-sm"
                 onChange={(event) =>
@@ -581,9 +618,9 @@ export function InterventionCard({
                   ? getDisplayActionLabel(
                       display,
                       compositeAction,
-                      t.subtasks.interventionActionFallback,
+                      singleSubmitFallbackText,
                     )
-                  : "Next"}
+                  : interactionCopy.nextStepLabel}
               </Button>
             </div>
           ) : null}
@@ -626,11 +663,11 @@ export function InterventionCard({
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-medium text-foreground">
-                          {option.label}
+                          {safeDisplayText(option.label, option.value)}
                         </span>
-                        {option.description ? (
+                        {safeDisplayText(option.description) ? (
                           <span className="text-muted-foreground mt-1 block text-xs leading-4">
-                            {option.description}
+                            {safeDisplayText(option.description)}
                           </span>
                         ) : null}
                       </span>
@@ -641,7 +678,7 @@ export function InterventionCard({
               <div className="space-y-2 rounded-xl border border-dashed border-border/70 bg-muted/10 p-3">
                 <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   <PlusCircleIcon className="size-3.5" />
-                  {interactionCopy.customSectionTitle}
+                  {customSectionTitleText}
                 </div>
                 <Input
                   value={activeQuestionCustom}
@@ -700,7 +737,7 @@ export function InterventionCard({
                       compositeAction,
                       t.subtasks.interventionActionFallback,
                     )
-                  : "Next"}
+                  : interactionCopy.nextStepLabel}
               </Button>
             </div>
           ) : null}
@@ -742,7 +779,7 @@ export function InterventionCard({
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-medium text-foreground">
-                          {option.label}
+                          {safeDisplayText(option.label, option.value)}
                         </span>
                       </span>
                     </button>
@@ -799,7 +836,7 @@ export function InterventionCard({
                       compositeAction,
                       t.subtasks.interventionActionFallback,
                     )
-                  : "Next"}
+                  : interactionCopy.nextStepLabel}
               </Button>
             </div>
           ) : null}
@@ -843,7 +880,7 @@ export function InterventionCard({
                     compositeAction,
                     t.subtasks.interventionActionFallback,
                   )
-                : "Next"}
+                : interactionCopy.nextStepLabel}
             </Button>
           ) : null}
         </div>
@@ -866,11 +903,24 @@ export function InterventionCard({
   const multiSelectActions = request.action_schema.actions.filter(
     (action) => action.kind === "multi_select",
   );
+  const clarificationTitle = safeDisplayText(
+    display?.title,
+    safeDisplayText(request.title, "请补充信息"),
+  );
+  const interventionTitle = safeDisplayText(
+    display?.title,
+    safeDisplayText(request.title, t.subtasks.interventionRequiredLabel),
+  );
   const summaryText =
-    display?.summary ??
-    (singleSelectActions.length > 0 || multiSelectActions.length > 0
-      ? stripNumberedOptions(request.reason)
-      : request.reason);
+    safeDisplayText(
+      display?.summary,
+      singleSelectActions.length > 0 || multiSelectActions.length > 0
+        ? safeDisplayText(
+            stripNumberedOptions(request.reason),
+            safeDisplayText(request.reason),
+          )
+        : safeDisplayText(request.reason),
+    );
   const displaySections = display?.sections ?? [];
   const showProtocolMeta = !display;
 
@@ -885,10 +935,12 @@ export function InterventionCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-            {t.subtasks.interventionRequiredLabel}
+            {isClarificationIntervention
+              ? t.subtasks.waiting_clarification
+              : t.subtasks.interventionRequiredLabel}
           </div>
           <div className="truncate text-[13px] font-semibold leading-5 text-foreground">
-            {display?.title ?? request.title}
+            {isClarificationIntervention ? clarificationTitle : interventionTitle}
           </div>
         </div>
         {request.risk_level ? (
@@ -899,104 +951,113 @@ export function InterventionCard({
       </div>
 
       <div className="space-y-3 p-3">
-        <div className="space-y-1.5">
-          {showProtocolMeta ? (
-            <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-              <AlertTriangleIcon className={`size-3 ${riskTone.icon}`} />
-              <span className="truncate">{request.source_agent}</span>
-              {request.tool_name ? (
-                <>
-                  <span className="text-border">/</span>
-                  <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground/70">
-                    {request.tool_name}
+        {!isClarificationIntervention ? (
+          <>
+            <div className="space-y-1.5">
+              {showProtocolMeta ? (
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <AlertTriangleIcon className={`size-3 ${riskTone.icon}`} />
+                  <span className="truncate">
+                    {safeDisplayText(request.source_agent, "workflow")}
                   </span>
-                </>
+                  {request.tool_name ? (
+                    <>
+                      <span className="text-border">/</span>
+                      <span className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground/70">
+                        {request.tool_name}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
               ) : null}
+              <div className="text-[13px] leading-5 text-foreground/88">
+                {summaryText}
+              </div>
             </div>
-          ) : null}
-          <div className="text-[13px] leading-5 text-foreground/88">
-            {summaryText}
-          </div>
-        </div>
 
-        {displaySections.length > 0 ? (
-          <div className="grid gap-2 md:grid-cols-2">
-            {displaySections.map((section, index) => (
-              <div
-                key={`${section.title ?? "section"}-${index}`}
-                className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2"
-              >
-                {section.title ? (
-                  <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                    {section.title}
+            {displaySections.length > 0 ? (
+              <div className="grid gap-2 md:grid-cols-2">
+                {displaySections.map((section, index) => (
+                  <div
+                    key={`${safeDisplayText(section.title, "section")}-${index}`}
+                    className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2"
+                  >
+                    {safeDisplayText(section.title) ? (
+                      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                        {safeDisplayText(section.title)}
+                      </div>
+                    ) : null}
+                    <div className="space-y-2">
+                      {section.items.map((item) => (
+                        <div
+                          key={`${safeDisplayText(item.label, "item")}-${safeDisplayText(item.value, "value")}`}
+                        >
+                          <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                            {safeDisplayText(item.label, "Item")}
+                          </div>
+                          <div className="mt-1 text-[12px] leading-5 text-foreground/88">
+                            {safeDisplayText(item.value)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {(safeDisplayText(request.description) ||
+              safeDisplayText(request.action_summary)) && (
+              <div className="grid gap-2 md:grid-cols-2">
+                {safeDisplayText(request.description) ? (
+                  <div className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
+                    {safeDisplayText(request.description)}
                   </div>
                 ) : null}
-                <div className="space-y-2">
-                  {section.items.map((item) => (
-                    <div key={`${item.label}-${item.value}`}>
-                      <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                        {item.label}
-                      </div>
-                      <div className="mt-1 text-[12px] leading-5 text-foreground/88">
-                        {item.value}
-                      </div>
+                {safeDisplayText(request.action_summary) ? (
+                  <div className="rounded-lg border border-border/60 bg-muted/12 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                      <ArrowRightIcon className="size-3" />
+                      {t.subtasks.interventionNextActionLabel}
                     </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {(request.description || request.action_summary) && (
-          <div className="grid gap-2 md:grid-cols-2">
-            {request.description ? (
-              <div className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
-                {request.description}
-              </div>
-            ) : null}
-            {request.action_summary ? (
-              <div className="rounded-lg border border-border/60 bg-muted/12 px-3 py-2">
-                <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                  <ArrowRightIcon className="size-3" />
-                  {t.subtasks.interventionNextActionLabel}
-                </div>
-                <div className="mt-1 text-[12px] leading-5 text-foreground/88">
-                  {request.action_summary}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        )}
-
-        {contextEntries.length > 0 ? (
-          <div className="grid gap-2 md:grid-cols-2">
-            {contextEntries.map(([key, value]) => (
-              <div
-                key={key}
-                className="rounded-lg border border-border/60 bg-muted/8 px-2.5 py-2"
-              >
-                <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
-                  {formatContextLabel(key)}
-                </div>
-                {typeof value === "object" && value !== null ? (
-                  <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-4.5 text-foreground/80">
-                    {formatContextValue(value)}
-                  </pre>
-                ) : (
-                  <div className="mt-1 whitespace-pre-wrap break-all text-[12px] leading-5 text-foreground/85">
-                    {formatContextValue(value)}
+                    <div className="mt-1 text-[12px] leading-5 text-foreground/88">
+                      {safeDisplayText(request.action_summary)}
+                    </div>
                   </div>
-                )}
+                ) : null}
               </div>
-            ))}
-          </div>
-        ) : null}
+            )}
 
-        {display?.risk_tip ? (
-          <div className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
-            {display.risk_tip}
-          </div>
+            {contextEntries.length > 0 ? (
+              <div className="grid gap-2 md:grid-cols-2">
+                {contextEntries.map(([key, value]) => (
+                  <div
+                    key={key}
+                    className="rounded-lg border border-border/60 bg-muted/8 px-2.5 py-2"
+                  >
+                    <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                      {formatContextLabel(key)}
+                    </div>
+                    {typeof value === "object" && value !== null ? (
+                      <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-4.5 text-foreground/80">
+                        {formatContextValue(value)}
+                      </pre>
+                    ) : (
+                      <div className="mt-1 whitespace-pre-wrap break-all text-[12px] leading-5 text-foreground/85">
+                        {formatContextValue(value)}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {safeDisplayText(display?.risk_tip) ? (
+              <div className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
+                {safeDisplayText(display?.risk_tip)}
+              </div>
+            ) : null}
+          </>
         ) : null}
 
         <div className="space-y-2 rounded-lg border border-border/60 bg-muted/6 p-2.5">
@@ -1014,10 +1075,10 @@ export function InterventionCard({
                 >
                   <div className="space-y-1">
                     <div className="text-sm font-medium text-foreground">
-                      {action.label || interactionCopy.confirmTitle}
+                      {safeDisplayText(action.label, confirmTitleText)}
                     </div>
                     <div className="text-xs leading-5 text-muted-foreground">
-                      {getActionHint(action, interactionCopy.confirmHint)}
+                      {getActionHint(action, confirmHintText)}
                     </div>
                   </div>
                   <Button
@@ -1043,7 +1104,7 @@ export function InterventionCard({
                     {getDisplayActionLabel(
                       display,
                       action,
-                      t.subtasks.interventionActionFallback,
+                      singleSubmitFallbackText,
                     )}
                   </Button>
                 </div>
@@ -1109,7 +1170,7 @@ export function InterventionCard({
                   >
                     <div className="space-y-1">
                       <div className="text-sm font-medium text-foreground">
-                        {action.label || interactionCopy.inputTitle}
+                        {safeDisplayText(action.label, interactionCopy.inputTitle)}
                       </div>
                       <div className="text-xs leading-5 text-muted-foreground">
                         {getActionHint(
@@ -1122,9 +1183,13 @@ export function InterventionCard({
                       <Textarea
                         value={draft}
                         placeholder={
-                          display?.respond_placeholder ??
-                          action.placeholder ??
-                          t.subtasks.interventionPlaceholder
+                          safeDisplayText(
+                            display?.respond_placeholder,
+                            safeDisplayText(
+                              action.placeholder,
+                              t.subtasks.interventionPlaceholder,
+                            ),
+                          )
                         }
                         rows={3}
                         className="min-h-0 rounded-lg border-border/70 bg-background px-3 py-2 text-[12px] leading-5 shadow-none focus-visible:ring-1 focus-visible:ring-foreground/15"
@@ -1186,7 +1251,7 @@ export function InterventionCard({
                     <div className="text-xs leading-5 text-muted-foreground">
                       {getActionHint(
                         action,
-                        interactionCopy.singleSelectHint,
+                        singleSelectHintText,
                       )}
                     </div>
                     <div className="space-y-2">
@@ -1223,11 +1288,11 @@ export function InterventionCard({
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="block text-sm font-medium text-foreground">
-                                {option.label}
+                                {safeDisplayText(option.label, option.value)}
                               </span>
-                              {option.description ? (
+                              {safeDisplayText(option.description) ? (
                                 <span className="text-muted-foreground mt-1 block text-xs leading-4">
-                                  {option.description}
+                                  {safeDisplayText(option.description)}
                                 </span>
                               ) : null}
                             </span>
@@ -1238,7 +1303,7 @@ export function InterventionCard({
                     <div className="space-y-2 rounded-xl border border-dashed border-border/70 bg-muted/10 p-3">
                       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                         <PlusCircleIcon className="size-3.5" />
-                        {interactionCopy.customSectionTitle}
+                        {customSectionTitleText}
                       </div>
                       <Input
                         value={customValue}
@@ -1301,7 +1366,7 @@ export function InterventionCard({
                       {getDisplayActionLabel(
                         display,
                         action,
-                        t.subtasks.interventionActionFallback,
+                        singleSubmitFallbackText,
                       )}
                     </Button>
                   </div>
@@ -1334,7 +1399,7 @@ export function InterventionCard({
                 return (
                   <div key={action.key} className="space-y-3">
                     <div className="text-xs leading-5 text-muted-foreground">
-                      {getActionHint(action, interactionCopy.multiSelectHint)}
+                      {getActionHint(action, multiSelectHintText)}
                     </div>
                     <div className="space-y-2">
                       {options.map((option) => {
@@ -1375,11 +1440,11 @@ export function InterventionCard({
                             </span>
                             <span className="min-w-0 flex-1">
                               <span className="block text-sm font-medium text-foreground">
-                                {option.label}
+                                {safeDisplayText(option.label, option.value)}
                               </span>
-                              {option.description ? (
+                              {safeDisplayText(option.description) ? (
                                 <span className="text-muted-foreground mt-1 block text-xs leading-4">
-                                  {option.description}
+                                  {safeDisplayText(option.description)}
                                 </span>
                               ) : null}
                             </span>
@@ -1390,7 +1455,7 @@ export function InterventionCard({
                     <div className="space-y-2 rounded-xl border border-dashed border-border/70 bg-muted/10 p-3">
                       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                         <PlusCircleIcon className="size-3.5" />
-                        {interactionCopy.customSectionTitle}
+                        {customSectionTitleText}
                       </div>
                       <Textarea
                         value={customValue}
@@ -1454,7 +1519,7 @@ export function InterventionCard({
                       {getDisplayActionLabel(
                         display,
                         action,
-                        t.subtasks.interventionActionFallback,
+                        singleSubmitFallbackText,
                       )}
                     </Button>
                   </div>

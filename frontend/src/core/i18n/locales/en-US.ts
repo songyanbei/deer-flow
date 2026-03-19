@@ -318,6 +318,16 @@ export const enUS: Translations = {
       singleCustomPlaceholder: "Enter your choice",
       multiCustomPlaceholder:
         "Enter one item per line, or separate multiple custom items with commas",
+      clarificationConfirmTitle: "Please confirm the information you provided",
+      clarificationConfirmHint:
+        "After you confirm, we'll continue using the information you provided.",
+      clarificationSingleSelectHint:
+        "Please provide or choose one item. If none of them fit, you can also enter your own.",
+      clarificationMultiSelectHint:
+        "Please provide any useful information. You can choose multiple items, or add your own if needed.",
+      clarificationCustomSectionTitle: "Additional information",
+      clarificationSubmitLabel: "Confirm and continue",
+      nextStepLabel: "Next",
     },
   },
 

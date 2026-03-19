@@ -250,6 +250,13 @@ export interface Translations {
       customSectionTitle: string;
       singleCustomPlaceholder: string;
       multiCustomPlaceholder: string;
+      clarificationConfirmTitle: string;
+      clarificationConfirmHint: string;
+      clarificationSingleSelectHint: string;
+      clarificationMultiSelectHint: string;
+      clarificationCustomSectionTitle: string;
+      clarificationSubmitLabel: string;
+      nextStepLabel: string;
     };
   };
 

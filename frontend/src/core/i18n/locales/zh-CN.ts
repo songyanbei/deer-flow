@@ -1,4 +1,4 @@
-import {
+﻿import {
   CompassIcon,
   GraduationCapIcon,
   ImageIcon,
@@ -300,6 +300,13 @@ export const zhCN: Translations = {
       customSectionTitle: "自定义补充",
       singleCustomPlaceholder: "请输入你的选择",
       multiCustomPlaceholder: "可逐行输入，或用逗号分隔多个自定义选项",
+      clarificationConfirmTitle: "请确认补充信息",
+      clarificationConfirmHint: "确认后，我们会根据你补充的信息继续执行。",
+      clarificationSingleSelectHint: "请补充或选择一项信息；如果列表里没有合适的内容，也可以直接填写。",
+      clarificationMultiSelectHint: "请补充可用的信息，可选择多项；如果列表里没有合适的内容，也可以手动补充。",
+      clarificationCustomSectionTitle: "补充信息",
+      clarificationSubmitLabel: "确认并继续",
+      nextStepLabel: "下一步",
     },
   },
 
