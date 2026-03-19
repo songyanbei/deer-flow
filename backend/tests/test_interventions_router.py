@@ -18,8 +18,27 @@ def _pending_task(
     request_id: str = "intv-1",
     fingerprint: str = "fp-1",
     action_key: str = "approve",
+    action_kind: str = "button",
     resolution_behavior: str = "resume_current_task",
+    options: list[str] | None = None,
+    required: bool | None = None,
+    min_select: int | None = None,
+    max_select: int | None = None,
 ):
+    action = {
+        "key": action_key,
+        "label": action_key,
+        "kind": action_kind,
+        "resolution_behavior": resolution_behavior,
+    }
+    if options is not None:
+        action["options"] = options
+    if required is not None:
+        action["required"] = required
+    if min_select is not None:
+        action["min_select"] = min_select
+    if max_select is not None:
+        action["max_select"] = max_select
     return {
         "task_id": "task-1",
         "description": "execute risky tool",
@@ -29,14 +48,7 @@ def _pending_task(
             "request_id": request_id,
             "fingerprint": fingerprint,
             "action_schema": {
-                "actions": [
-                    {
-                        "key": action_key,
-                        "label": action_key,
-                        "kind": "button",
-                        "resolution_behavior": resolution_behavior,
-                    }
-                ]
+                "actions": [action]
             },
         },
         "resolved_inputs": {},
@@ -182,3 +194,126 @@ def test_resolve_intervention_returns_checkpoint_when_update_state_provides_it()
 
     assert response.status_code == 200
     assert response.json()["checkpoint"] == {"thread_ts": "cp-1"}
+
+
+def test_resolve_intervention_accepts_single_select_payload():
+    task = _pending_task(
+        action_key="submit_response",
+        action_kind="single_select",
+        options=["Room A", "Room B"],
+    )
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [task]})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-1:resolve",
+                json={
+                    "fingerprint": "fp-1",
+                    "action_key": "submit_response",
+                    "payload": {"selected": "Room A"},
+                },
+            )
+
+    assert response.status_code == 200
+    updated_task = client_mock.threads.update_state.await_args.kwargs["values"]["task_pool"][0]
+    assert updated_task["resolved_inputs"]["intervention_resolution"]["payload"] == {"selected": "Room A"}
+
+
+def test_resolve_intervention_accepts_multi_select_payload():
+    task = _pending_task(
+        action_key="submit_response",
+        action_kind="multi_select",
+        options=["Alice", "Bob", "Charlie"],
+        min_select=1,
+        max_select=2,
+    )
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [task]})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-1:resolve",
+                json={
+                    "fingerprint": "fp-1",
+                    "action_key": "submit_response",
+                    "payload": {"selected": ["Alice", "Bob"]},
+                },
+            )
+
+    assert response.status_code == 200
+    updated_task = client_mock.threads.update_state.await_args.kwargs["values"]["task_pool"][0]
+    assert updated_task["resolved_inputs"]["intervention_resolution"]["payload"] == {
+        "selected": ["Alice", "Bob"]
+    }
+
+
+def test_resolve_intervention_accepts_confirm_payload():
+    task = _pending_task(
+        action_key="approve",
+        action_kind="confirm",
+    )
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [task]})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-1:resolve",
+                json={
+                    "fingerprint": "fp-1",
+                    "action_key": "approve",
+                    "payload": {"confirmed": True},
+                },
+            )
+
+    assert response.status_code == 200
+
+
+def test_resolve_intervention_accepts_input_payload():
+    task = _pending_task(
+        action_key="submit_response",
+        action_kind="input",
+    )
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [task]})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-1:resolve",
+                json={
+                    "fingerprint": "fp-1",
+                    "action_key": "submit_response",
+                    "payload": {"text": "Project kickoff"},
+                },
+            )
+
+    assert response.status_code == 200
+
+
+def test_resolve_intervention_rejects_duplicate_submit_when_task_already_resolved():
+    resolved_task = {
+        **_pending_task(),
+        "status": "RUNNING",
+        "intervention_status": "resolved",
+    }
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [resolved_task]})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-1:resolve",
+                json={
+                    "fingerprint": "fp-1",
+                    "action_key": "approve",
+                    "payload": {"comment": "go ahead"},
+                },
+            )
+
+    assert response.status_code == 404
+    assert "No pending intervention found" in response.json()["detail"]
+    client_mock.threads.update_state.assert_not_awaited()

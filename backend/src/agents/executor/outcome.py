@@ -95,6 +95,29 @@ _TERMINAL_TOOL_NAMES = frozenset(
 )
 
 # ---------------------------------------------------------------------------
+# Error detection for ToolMessage
+# ---------------------------------------------------------------------------
+
+_TOOL_ERROR_CONTENT_PREFIXES = (
+    "Error invoking tool",
+    "Error: ",
+)
+
+
+def _is_tool_invocation_error(msg: ToolMessage) -> bool:
+    """Detect whether a ToolMessage represents a failed tool invocation.
+
+    Uses dual detection: LangGraph's ``status`` field (primary) and
+    content-based prefix matching (fallback for paths where status may
+    not be persisted).
+    """
+    if getattr(msg, "status", None) == "error":
+        return True
+    content = _content_to_text(msg.content)
+    return any(content.startswith(prefix) for prefix in _TOOL_ERROR_CONTENT_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -185,6 +208,24 @@ def normalize_agent_outcome(
         terminal_idx, terminal_msg = terminal
         tool_name = getattr(terminal_msg, "name", None)
         raw_content = _content_to_text(terminal_msg.content)
+
+        # Priority 0: detect tool invocation errors (validation failures, etc.)
+        # before classifying by tool name.  A failed tool call should never be
+        # treated as a successful signal.
+        if _is_tool_invocation_error(terminal_msg):
+            logger.warning(
+                "[Outcome] Terminal tool '%s' has invocation error, "
+                "classifying as retryable failure. content=%s",
+                tool_name,
+                raw_content[:300],
+            )
+            return FailOutcome(
+                kind="fail",
+                messages=messages,
+                new_messages_start=new_messages_start,
+                error_message=raw_content,
+                retryable=True,
+            ), False
 
         # 1. intervention_required
         if tool_name == "intervention_required":

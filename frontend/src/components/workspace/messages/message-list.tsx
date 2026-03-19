@@ -304,8 +304,7 @@ export function MessageList({
           ))}
         {isWorkflowMode &&
           !stoppedByUser &&
-          inlineInterventionTask &&
-          !hasVisibleAssistantContent && (
+          inlineInterventionTask && (
             <div className="my-4 w-full">
               <InterventionCard task={inlineInterventionTask} />
             </div>

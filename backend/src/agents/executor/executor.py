@@ -926,6 +926,72 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
 
             next_help_depth = int(task.get("help_depth") or 0) + 1
             serialized_messages = _serialize_agent_messages(messages)
+
+            # ── User-owned help request normalization ──
+            # Detect user-owned blocking (user_clarification, user_confirmation,
+            # user_multi_select, or presence of clarification_options) and write
+            # WAITING_INTERVENTION directly instead of WAITING_DEPENDENCY.
+            # This prevents the mixed-state bug where status=WAITING_DEPENDENCY
+            # but intervention payload is active.
+            from src.agents.intervention.help_request_builder import (
+                build_help_request_intervention,
+                normalize_clarification_options,
+                should_interrupt_for_user_clarification,
+            )
+
+            if should_interrupt_for_user_clarification(help_request):
+                options = normalize_clarification_options(help_request.get("clarification_options"))
+                strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
+                if options or strategy in {"user_confirmation", "user_multi_select"}:
+                    intervention_request = build_help_request_intervention(
+                        task, help_request, agent_name=agent_name,
+                    )
+                    intervention_task: TaskStatus = {
+                        **task,
+                        "status": "WAITING_INTERVENTION",
+                        "requested_by_agent": agent_name,
+                        "request_help": help_request,
+                        "blocked_reason": None,
+                        "help_depth": next_help_depth,
+                        "clarification_prompt": None,
+                        "clarification_request": None,
+                        "intervention_request": intervention_request,
+                        "intervention_status": "pending",
+                        "intervention_fingerprint": intervention_request["fingerprint"],
+                        "intervention_resolution": None,
+                        "status_detail": "@waiting_intervention",
+                        "agent_messages": serialized_messages,
+                        "continuation_mode": "continue_after_dependency",
+                        "pending_interrupt": {
+                            "interrupt_type": "intervention",
+                            "request_id": intervention_request["request_id"],
+                            "fingerprint": intervention_request["fingerprint"],
+                            "source": agent_name,
+                            "created_at": _utc_now_iso(),
+                        },
+                        "pending_tool_call": None,
+                        "updated_at": _utc_now_iso(),
+                    }
+                    _emit_task_event(
+                        writer, "task_waiting_intervention", intervention_task, agent_name,
+                        status_detail="@waiting_intervention",
+                        intervention_request=intervention_request,
+                        intervention_status="pending",
+                        intervention_fingerprint=intervention_request["fingerprint"],
+                    )
+                    _emit_task_event(
+                        writer, "task_help_requested", intervention_task, agent_name,
+                        request_help=help_request,
+                        requested_by_agent=agent_name,
+                        status_detail="@waiting_intervention",
+                    )
+                    return {
+                        "task_pool": [intervention_task],
+                        "execution_state": "INTERRUPTED",
+                    }
+
+            # ── True system dependency ──
+            # Only system-owned blocking reaches WAITING_DEPENDENCY.
             waiting_task: TaskStatus = {
                 **task,
                 "status": "WAITING_DEPENDENCY",

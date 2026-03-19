@@ -443,6 +443,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "run_id": next_run_id,
             "planner_goal": latest_user_input,
             "route_count": 0,
+            "validate_retries": 0,
             "final_result": None,
             "execution_state": "QUEUED",
             **_build_workflow_stage_update("queued", queued_detail),
@@ -569,6 +570,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "original_input": original_input,
             "run_id": run_id,
             "planner_goal": planner_goal,
+            "validate_retries": 0,
             **_build_workflow_stage_update("summarizing", terminal_detail),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }
@@ -591,21 +593,48 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         }
 
     completed_tasks = [task for task in task_pool if task.get("status") == "DONE"]
+    validate_retries = state.get("validate_retries") or 0
     if completed_tasks:
         last_completed_task = completed_tasks[-1]
+        validate_retries += 1
         logger.warning(
             "[Planner] Validation rejected prior completion and generated follow-up work. "
-            "run_id=%s goal=%r completed_count=%d follow_up_count=%d last_completed_task=%s last_completed_result=%r "
+            "run_id=%s goal=%r completed_count=%d follow_up_count=%d validate_retries=%d "
+            "last_completed_task=%s last_completed_result=%r "
             "completed=%s follow_ups=%s",
             run_id,
             planner_goal[:200],
             len(completed_tasks),
             len(new_tasks),
+            validate_retries,
             f"{last_completed_task['task_id']}:{last_completed_task.get('assigned_agent') or '?'}:{last_completed_task['description'][:120]}",
             (last_completed_task.get("result") or "")[:300],
             _summarize_tasks_for_log(completed_tasks),
             _summarize_tasks_for_log(new_tasks),
         )
+
+        # Circuit breaker: stop infinite validate→retry loops
+        max_validate_retries = 3
+        if validate_retries >= max_validate_retries:
+            error_message = (
+                f"工作流验证已连续重试 {validate_retries} 次仍未达成目标，已自动终止。"
+                f"最近一次任务结果：{(last_completed_task.get('result') or '')[:200]}"
+            )
+            logger.error(
+                "[Planner] validate_retries=%d reached limit=%d, aborting workflow. run_id=%s",
+                validate_retries, max_validate_retries, run_id,
+            )
+            _emit_workflow_stage(writer, "summarizing", error_message, run_id=run_id)
+            return {
+                "execution_state": "ERROR",
+                "final_result": error_message,
+                "messages": [AIMessage(content=error_message)],
+                "original_input": original_input,
+                "run_id": run_id,
+                "planner_goal": planner_goal,
+                "validate_retries": validate_retries,
+                **_build_workflow_stage_update("summarizing", error_message),
+            }
 
     logger.info("[Planner] Generated %d task(s): %s", len(new_tasks), _summarize_tasks_for_log(new_tasks))
     _emit_workflow_stage(
@@ -621,6 +650,7 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
         "run_id": run_id,
         "planner_goal": planner_goal,
         "route_count": 0,
+        "validate_retries": validate_retries,
         **_build_workflow_stage_update(
             "routing",
             _pick_first_non_empty(new_tasks[0].get("description"), planner_goal),

@@ -6,7 +6,7 @@
   Loader2Icon,
   XCircleIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
 
 import {
@@ -141,6 +141,11 @@ export function SubtaskCard({
   const [collapsed, setCollapsed] = useState(true);
   const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
   const task = useSubtask(taskId);
+  useEffect(() => {
+    if (task?.status === "waiting_intervention") {
+      setCollapsed(false);
+    }
+  }, [task?.status]);
   if (!task) {
     return null;
   }

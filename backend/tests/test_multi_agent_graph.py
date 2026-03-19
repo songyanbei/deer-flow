@@ -245,6 +245,18 @@ def test_multi_agent_graph_request_help_round_trip():
 
 
 def test_multi_agent_graph_intervention_fast_path_does_not_retrigger_old_room_request():
+    """Verify the full intervention flow after executor normalization:
+
+    1. Agent returns request_help with user_clarification + options
+       → executor directly writes WAITING_INTERVENTION (not WAITING_DEPENDENCY)
+    2. User resolves the room-selection intervention
+       → agent resumes, returns meeting creation with before-tool intervention
+    3. User approves the meeting creation
+       → agent completes the task
+
+    The key assertion: request_help is NOT re-triggered after room selection
+    is resolved, and no mixed WAITING_DEPENDENCY/intervention state occurs.
+    """
     class PlannerLLMWithIntervention:
         def __init__(self):
             self.call_count = 0
@@ -288,11 +300,13 @@ def test_multi_agent_graph_intervention_fast_path_does_not_retrigger_old_room_re
                 }
 
             if self.calls[agent_name] == 2:
+                # After room-selection intervention is resolved, the agent
+                # resumes with intervention_resolution in resolved_inputs.
                 context = next(
                     (m.content for m in reversed(payload["messages"]) if isinstance(m, HumanMessage)),
                     payload["messages"][0].content,
                 )
-                assert "User clarification answer:\nRoom A" in context
+                assert "intervention_resolution" in context
                 return {
                     "messages": [
                         AIMessage(
@@ -384,17 +398,26 @@ def test_multi_agent_graph_intervention_fast_path_does_not_retrigger_old_room_re
             thread_id = str(uuid.uuid4())
             config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
 
+            # Step 1: Agent returns request_help with user_clarification
+            # → executor now directly writes WAITING_INTERVENTION
             first_state = await graph.ainvoke(
                 {"messages": [HumanMessage(content="Book a meeting room for next week.")]},
                 config=config,
             )
             first_task = first_state["task_pool"][0]
             assert first_state["execution_state"] == "INTERRUPTED"
-            assert first_task["status"] == "RUNNING"
-            assert first_task["clarification_prompt"] == "Which room should I book?\n\n1. Room A\n2. Room B"
+            assert first_task["status"] == "WAITING_INTERVENTION"
+            assert first_task["intervention_request"] is not None
+            assert first_task["intervention_status"] == "pending"
+            assert first_task["intervention_request"]["category"] == "user_clarification"
 
+            # Extract the dynamically generated request_id for resolution
+            room_request_id = first_task["intervention_request"]["request_id"]
+
+            # Step 2: Resolve room-selection intervention
+            # → agent resumes, returns meeting creation with before-tool intervention
             second_state = await graph.ainvoke(
-                {"messages": [HumanMessage(content="Room A")]},
+                {"messages": [HumanMessage(content=f"[intervention_resolved] request_id={room_request_id} action_key=submit_response")]},
                 config=config,
             )
             second_task = second_state["task_pool"][0]
@@ -403,6 +426,7 @@ def test_multi_agent_graph_intervention_fast_path_does_not_retrigger_old_room_re
             assert second_task["continuation_mode"] == "resume_tool_call"
             assert second_task["pending_tool_call"]["tool_name"] == "meeting_createMeeting"
 
+            # Step 3: Approve the meeting creation
             third_state = await graph.ainvoke(
                 {"messages": [HumanMessage(content="[intervention_resolved] request_id=intv-1 action_key=approve")]},
                 config=config,
@@ -412,8 +436,10 @@ def test_multi_agent_graph_intervention_fast_path_does_not_retrigger_old_room_re
             assert third_state["final_result"] == "Meeting booked successfully."
             assert third_state["task_pool"][0]["status"] == "DONE"
             event_types = [event["type"] for event in events]
-            assert event_types.count("task_waiting_intervention") == 1
-            assert event_types.count("task_waiting_dependency") == 1
+            # Now: 2 WAITING_INTERVENTION events (room selection + meeting creation)
+            # and 0 WAITING_DEPENDENCY events (user-owned goes directly to intervention)
+            assert event_types.count("task_waiting_intervention") == 2
+            assert event_types.count("task_waiting_dependency") == 0
             assert event_types.count("task_completed") == 1
 
     asyncio.run(_run())

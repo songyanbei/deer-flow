@@ -11,6 +11,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
+from src.agents.intervention.help_request_builder import (
+    build_help_request_intervention,
+    normalize_clarification_options,
+    resolve_user_interaction_kind,
+    should_interrupt_for_user_clarification,
+)
 from src.agents.thread_state import (
     ClarificationRequest,
     HelpRequestPayload,
@@ -283,13 +289,12 @@ def _route_to_helper(
 
 
 def _normalize_clarification_options(options: Any) -> list[str]:
-    if not isinstance(options, list):
-        return []
-    return [str(option).strip() for option in options if str(option).strip()]
+    return normalize_clarification_options(options)
 
 
 def _build_intervention_options(options: list[str]) -> list[dict[str, str]]:
-    return [{"label": option, "value": option} for option in options]
+    from src.agents.intervention.help_request_builder import build_intervention_options
+    return build_intervention_options(options)
 
 
 def _clean_question_segment(segment: str) -> str:
@@ -376,14 +381,7 @@ def _extract_clarification_questions(question: str) -> list[str]:
 
 
 def _resolve_user_interaction_kind(help_request: HelpRequestPayload, options: list[str]) -> str:
-    strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
-    if strategy == "user_confirmation":
-        return "confirm"
-    if strategy == "user_multi_select":
-        return "multi_select"
-    if options:
-        return "single_select"
-    return "input"
+    return resolve_user_interaction_kind(help_request, options)
 
 
 def _infer_question_kind(question: str, *, index: int, options: list[str]) -> str:
@@ -476,65 +474,17 @@ def _build_help_request_intervention(
     *,
     agent_name: str,
 ) -> InterventionRequest:
-    question = str(help_request.get("clarification_question") or "").strip()
-    context = str(help_request.get("clarification_context") or "").strip()
-    options = _normalize_clarification_options(help_request.get("clarification_options"))
-    interaction_kind = _resolve_user_interaction_kind(help_request, options)
-    questions = _build_intervention_questions(question, options)
-    request_id = f"intv_{uuid.uuid4().hex[:12]}"
-    fingerprint = f"fp_{uuid.uuid4().hex[:12]}"
-    title = question or "??????"
-    reason = context or help_request.get("reason", "").strip() or title
+    """Compatibility wrapper — delegates to shared builder.
 
-    action: dict[str, Any] = {
-        "key": "submit_response",
-        "label": "?????" if interaction_kind == "confirm" else "?????",
-        "kind": "composite" if questions else interaction_kind,
-        "resolution_behavior": "resume_current_task",
-        "required": True,
-    }
-
-    if questions:
-        action["confirm_text"] = "?????"
-    elif interaction_kind == "input":
-        action["placeholder"] = question or "??????????"
-        action["confirm_text"] = "?????"
-    elif interaction_kind == "confirm":
-        action["confirm_text"] = "?????"
-    elif interaction_kind == "single_select":
-        action["options"] = _build_intervention_options(options)
-        action["min_select"] = 1
-        action["max_select"] = 1
-        action["confirm_text"] = "????"
-    elif interaction_kind == "multi_select":
-        action["options"] = _build_intervention_options(options)
-        action["min_select"] = 1
-        action["max_select"] = len(options)
-        action["confirm_text"] = "????"
-
-    return {
-        "request_id": request_id,
-        "fingerprint": fingerprint,
-        "intervention_type": "clarification",
-        "title": title,
-        "reason": reason,
-        "description": context or None,
-        "source_agent": agent_name,
-        "source_task_id": parent_task["task_id"],
-        "category": "user_clarification",
-        "action_summary": title,
-        "context": help_request.get("context_payload"),
-        "action_schema": {
-            "actions": [action],
-        },
-        "questions": questions or None,
-        "created_at": _utc_now_iso(),
-    }
+    The router retains this path as a fallback for old checkpoints or
+    legacy state recovery where a WAITING_DEPENDENCY task was already
+    persisted before executor normalization was available.
+    """
+    return build_help_request_intervention(parent_task, help_request, agent_name=agent_name)
 
 
 def _should_interrupt_for_user_clarification(help_request: HelpRequestPayload) -> bool:
-    strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
-    return strategy in {"user_clarification", "user_confirmation", "user_multi_select"} or bool(str(help_request.get("clarification_question") or "").strip())
+    return should_interrupt_for_user_clarification(help_request)
 
 
 def _build_user_clarification_prompt(parent_task: TaskStatus, help_request: HelpRequestPayload) -> str:
@@ -791,11 +741,18 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
         json.dumps(help_request, ensure_ascii=False)[:2000],
     )
 
+    # ── Compatibility / fallback path ──
+    # After the executor normalization refactor, user-owned help requests
+    # should arrive here already as WAITING_INTERVENTION.  This branch is
+    # retained for old checkpoints or edge cases where a WAITING_DEPENDENCY
+    # task was persisted before executor normalization was deployed.  New
+    # runtime flow should NOT rely on this router reclassification.
     if _should_interrupt_for_user_clarification(help_request):
         agent_name = parent_task.get("assigned_agent") or "workflow-router"
         options = _normalize_clarification_options(help_request.get("clarification_options"))
         logger.info(
-            "[Router] Direct user clarification required for parent_task=%s run_id=%s resolution_strategy=%s options=%s",
+            "[Router] Compatibility path: user clarification for WAITING_DEPENDENCY parent_task=%s "
+            "run_id=%s resolution_strategy=%s options=%s",
             parent_task["task_id"],
             parent_task.get("run_id"),
             help_request.get("resolution_strategy"),

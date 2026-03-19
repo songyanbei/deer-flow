@@ -1185,6 +1185,12 @@ def test_router_routes_waiting_dependency_task_to_helper():
 
 
 def test_router_interrupts_for_user_clarification_help_request():
+    """Router compatibility path: a WAITING_DEPENDENCY task with user-owned
+    help request is upgraded to WAITING_INTERVENTION by the router fallback.
+
+    After the executor normalization refactor, new tasks should already arrive
+    as WAITING_INTERVENTION.  This test exercises the router fallback for old
+    checkpoints or edge cases."""
     async def _run():
         result = await router_node(
             {
@@ -1216,16 +1222,16 @@ def test_router_interrupts_for_user_clarification_help_request():
 
         assert result["execution_state"] == "INTERRUPTED"
         task = result["task_pool"][0]
-        assert task["status"] == "RUNNING"
-        assert task["request_help"] is None
-        assert task["clarification_prompt"] == (
-            "明天 9:00-10:00 时段济南无可用会议室。\n\n"
-            "济南当前没有可用会议室，要改订哪个城市？\n\n"
-            "1. 北京\n"
-            "2. 上海\n"
-            "3. 深圳"
-        )
-        assert result["messages"][0].name == "ask_clarification"
+        assert task["status"] == "WAITING_INTERVENTION"
+        assert task["intervention_request"] is not None
+        assert task["intervention_status"] == "pending"
+        intervention = task["intervention_request"]
+        assert intervention["intervention_type"] == "clarification"
+        assert intervention["category"] == "user_clarification"
+        actions = intervention["action_schema"]["actions"]
+        assert len(actions) == 1
+        assert actions[0]["kind"] == "single_select"
+        assert len(actions[0]["options"]) == 3
 
     asyncio.run(_run())
 

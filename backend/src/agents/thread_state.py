@@ -360,5 +360,6 @@ class ThreadState(AgentState):
     task_pool: Annotated[list[TaskStatus], merge_task_pool]
     verified_facts: Annotated[VerifiedFact, merge_verified_facts]
     route_count: NotRequired[int]
+    validate_retries: NotRequired[int]
     execution_state: NotRequired[str | None]
     final_result: NotRequired[str | None]
