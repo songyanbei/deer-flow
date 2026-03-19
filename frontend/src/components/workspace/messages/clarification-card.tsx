@@ -110,9 +110,24 @@ function buildClarificationAnswer(
   questions: Array<{ label: string }>,
   answers: string[],
 ) {
-  return questions
-    .map((question, index) => `${question.label} ${answers[index]?.trim() ?? ""}`.trim())
-    .filter(Boolean)
+  const filledAnswers = questions
+    .map((question, index) => {
+      const answer = answers[index]?.trim() ?? "";
+      if (!answer) {
+        return "";
+      }
+      const label = question.label
+        .trim()
+        .replace(/[？?：:]\s*$/g, "")
+        .replace(/^\d+[\.\)、]\s*/, "");
+      return label ? `${label}：${answer}` : answer;
+    })
+    .filter(Boolean);
+  if (filledAnswers.length <= 1) {
+    return filledAnswers[0] ?? "";
+  }
+  return filledAnswers
+    .map((answer, index) => `${index + 1}. ${answer}`)
     .join("\n");
 }
 
