@@ -130,6 +130,16 @@ function getQuestionOptions(question: InterventionQuestion): InterventionOption[
   return [];
 }
 
+function getVisibleOptions(
+  options: InterventionOption[],
+  limitOptions: boolean,
+): InterventionOption[] {
+  if (!limitOptions || options.length <= 3) {
+    return options;
+  }
+  return options.slice(0, 3);
+}
+
 function isRenderableQuestion(question: InterventionQuestion) {
   const label = question.label.trim();
   if (!label) {
@@ -425,6 +435,10 @@ export function InterventionCard({
     const activeQuestionOptions = activeQuestion
       ? getQuestionOptions(activeQuestion)
       : [];
+    const visibleActiveQuestionOptions = getVisibleOptions(
+      activeQuestionOptions,
+      isClarificationIntervention,
+    );
     const activeQuestionCustomItems = activeQuestionCustom
       .split(/[\n,，]/)
       .map((item) => item.trim())
@@ -629,7 +643,7 @@ export function InterventionCard({
             activeQuestion?.kind === "select") && activeQuestion ? (
             <div className="space-y-3">
               <div className="space-y-2">
-                {activeQuestionOptions.map((option) => {
+                {visibleActiveQuestionOptions.map((option) => {
                   const checked =
                     !activeQuestionCustom.trim() &&
                     activeQuestionSelected === option.value;
@@ -745,7 +759,7 @@ export function InterventionCard({
           {activeQuestion?.kind === "multi_select" && activeQuestion ? (
             <div className="space-y-3">
               <div className="space-y-2">
-                {activeQuestionOptions.map((option) => {
+                {visibleActiveQuestionOptions.map((option) => {
                   const checked = activeQuestionMulti.includes(option.value);
                   return (
                     <button
@@ -1240,6 +1254,10 @@ export function InterventionCard({
             <div className="space-y-3 border-t border-border/60 pt-3">
               {singleSelectActions.map((action) => {
                 const options = getActionOptions(action, request);
+                const visibleOptions = getVisibleOptions(
+                  options,
+                  isClarificationIntervention,
+                );
                 const selectedValue = selectedValues[action.key] ?? "";
                 const customValue = customValues[action.key] ?? "";
                 const effectiveValue = customValue.trim() || selectedValue;
@@ -1255,7 +1273,7 @@ export function InterventionCard({
                       )}
                     </div>
                     <div className="space-y-2">
-                      {options.map((option) => {
+                      {visibleOptions.map((option) => {
                         const checked =
                           !customValue.trim() && selectedValue === option.value;
                         return (
@@ -1379,6 +1397,10 @@ export function InterventionCard({
             <div className="space-y-3 border-t border-border/60 pt-3">
               {multiSelectActions.map((action) => {
                 const options = getActionOptions(action, request);
+                const visibleOptions = getVisibleOptions(
+                  options,
+                  isClarificationIntervention,
+                );
                 const selected = multiSelectedValues[action.key] ?? [];
                 const customValue = customValues[action.key] ?? "";
                 const customItems = customValue
@@ -1402,7 +1424,7 @@ export function InterventionCard({
                       {getActionHint(action, multiSelectHintText)}
                     </div>
                     <div className="space-y-2">
-                      {options.map((option) => {
+                      {visibleOptions.map((option) => {
                         const checked = selected.includes(option.value);
                         return (
                           <button
