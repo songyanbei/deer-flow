@@ -50,9 +50,11 @@ export type MultiAgentTaskEvent = BaseTaskEvent & {
   status_detail?: string;
   clarification_prompt?: string;
   clarification_request?: ThreadTaskState["clarification_request"];
+  pending_interrupt?: ThreadTaskState["pending_interrupt"];
   intervention_request?: ThreadTaskState["intervention_request"];
   intervention_status?: ThreadTaskState["intervention_status"];
   intervention_fingerprint?: string;
+  intervention_resolution?: ThreadTaskState["intervention_resolution"];
 };
 
 export type LegacyTaskEvent = BaseTaskEvent & {
@@ -215,9 +217,11 @@ export function fromMultiAgentTaskState(
     statusDetail: task.status_detail ?? undefined,
     clarificationPrompt: task.clarification_prompt ?? undefined,
     clarificationRequest: task.clarification_request ?? undefined,
+    pendingInterrupt: task.pending_interrupt ?? undefined,
     interventionRequest: task.intervention_request ?? undefined,
     interventionStatus: task.intervention_status ?? undefined,
     interventionFingerprint: task.intervention_fingerprint ?? undefined,
+    interventionResolution: task.intervention_resolution ?? undefined,
     latestUpdate:
       task.intervention_request?.reason ??
       task.clarification_request?.description ??
@@ -262,9 +266,11 @@ export function fromMultiAgentTaskEvent(
     statusDetail: event.status_detail ?? getTaskUpdateText(event.message),
     clarificationPrompt: event.clarification_prompt ?? undefined,
     clarificationRequest: event.clarification_request ?? undefined,
+    pendingInterrupt: event.pending_interrupt ?? undefined,
     interventionRequest: event.intervention_request ?? undefined,
     interventionStatus: event.intervention_status ?? undefined,
     interventionFingerprint: event.intervention_fingerprint ?? undefined,
+    interventionResolution: event.intervention_resolution ?? undefined,
     latestMessage:
       typeof event.message === "object" && event.message !== null
         ? event.message

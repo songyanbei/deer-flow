@@ -108,3 +108,87 @@ def test_normalize_agent_outcome_falls_back_to_plain_text_clarification_for_lega
     assert outcome["kind"] == "request_clarification"
     assert outcome["prompt"].startswith("Please choose one room")
 
+
+def test_normalize_agent_outcome_prioritizes_intervention_over_followup_request_help():
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "tc-1", "name": "meeting_createMeeting", "args": {"roomId": "A"}},
+            ],
+        ),
+        ToolMessage(
+            name="intervention_required",
+            tool_call_id="tc-1",
+            content='{"request_id":"req-1","fingerprint":"fp-1","intervention_type":"before_tool","title":"approve","reason":"r","source_agent":"meeting-agent","source_task_id":"task-1","action_schema":{"actions":[{"key":"approve","resolution_behavior":"resume_current_task"}]},"created_at":"2026-03-19T00:00:00+00:00"}',
+        ),
+        ToolMessage(
+            name="request_help",
+            tool_call_id="help-1",
+            content='{"problem":"need confirmation","required_capability":"user input","reason":"need user","expected_output":"decision","resolution_strategy":"user_confirmation"}',
+        ),
+    ]
+
+    outcome, used_fallback = normalize_agent_outcome(task=_task(), messages=messages, new_messages_start=0)
+
+    assert used_fallback is False
+    assert outcome["kind"] == "request_intervention"
+    assert outcome["selected_signal"] == "intervention_required"
+    assert "request_help_user" in outcome["suppressed_signals"]
+
+
+def test_normalize_agent_outcome_prioritizes_intervention_over_ask_clarification():
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "tc-1", "name": "meeting_createMeeting", "args": {"roomId": "A"}},
+            ],
+        ),
+        ToolMessage(
+            name="intervention_required",
+            tool_call_id="tc-1",
+            content='{"request_id":"req-1","fingerprint":"fp-1","intervention_type":"before_tool","title":"approve","reason":"r","source_agent":"meeting-agent","source_task_id":"task-1","action_schema":{"actions":[{"key":"approve","resolution_behavior":"resume_current_task"}]},"created_at":"2026-03-19T00:00:00+00:00"}',
+        ),
+        ToolMessage(
+            name="ask_clarification",
+            tool_call_id="clarify-1",
+            content="Which room should I use?",
+        ),
+    ]
+
+    outcome, used_fallback = normalize_agent_outcome(task=_task(), messages=messages, new_messages_start=0)
+
+    assert used_fallback is False
+    assert outcome["kind"] == "request_intervention"
+    assert outcome["selected_signal"] == "intervention_required"
+    assert "ask_clarification" in outcome["suppressed_signals"]
+
+
+def test_normalize_agent_outcome_selects_single_authoritative_intervention_from_duplicates():
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "tc-1", "name": "meeting_createMeeting", "args": {"roomId": "A"}},
+            ],
+        ),
+        ToolMessage(
+            name="intervention_required",
+            tool_call_id="tc-1",
+            content='{"request_id":"req-1","fingerprint":"fp-1","intervention_type":"before_tool","title":"approve","reason":"r","source_agent":"meeting-agent","source_task_id":"task-1","action_schema":{"actions":[{"key":"approve","resolution_behavior":"resume_current_task"}]},"created_at":"2026-03-19T00:00:00+00:00"}',
+        ),
+        ToolMessage(
+            name="intervention_required",
+            tool_call_id="tc-1",
+            content='{"request_id":"req-2","fingerprint":"fp-1","intervention_type":"before_tool","title":"approve-again","reason":"r","source_agent":"meeting-agent","source_task_id":"task-1","action_schema":{"actions":[{"key":"approve","resolution_behavior":"resume_current_task"}]},"created_at":"2026-03-19T00:00:01+00:00"}',
+        ),
+    ]
+
+    outcome, used_fallback = normalize_agent_outcome(task=_task(), messages=messages, new_messages_start=0)
+
+    assert used_fallback is False
+    assert outcome["kind"] == "request_intervention"
+    assert outcome["intervention_request"]["request_id"] == "req-1"
+    assert outcome["intervention_request"]["fingerprint"] == "fp-1"
+    assert outcome["suppressed_signals"].count("intervention_required") == 1

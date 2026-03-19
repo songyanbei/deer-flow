@@ -69,3 +69,9 @@ backend/.coverage
 !README.md
 !frontend/README.md
 !backend/README.md
+!skills/
+!skills/**
+!docker/offline/
+!docker/offline/**
+!docker/nginx/
+!docker/nginx/nginx.offline.conf

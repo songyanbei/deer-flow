@@ -69,6 +69,11 @@ type MultiAgentTaskEvent = Omit<BaseTaskEvent, "source"> & {
   status?: string;
   status_detail?: string;
   clarification_prompt?: string;
+  pending_interrupt?: AgentThreadState["task_pool"] extends Array<infer Task>
+    ? Task extends { pending_interrupt?: infer PendingInterrupt }
+      ? PendingInterrupt
+      : never
+    : never;
   intervention_request?: AgentThreadState["task_pool"] extends Array<infer Task>
     ? Task extends { intervention_request?: infer Request }
       ? Request
@@ -80,6 +85,13 @@ type MultiAgentTaskEvent = Omit<BaseTaskEvent, "source"> & {
       : never
     : never;
   intervention_fingerprint?: string;
+  intervention_resolution?: AgentThreadState["task_pool"] extends Array<
+    infer Task
+  >
+    ? Task extends { intervention_resolution?: infer Resolution }
+      ? Resolution
+      : never
+    : never;
   resolved_orchestration_mode?: AgentThreadState["resolved_orchestration_mode"];
   orchestration_reason?: AgentThreadState["orchestration_reason"];
   workflow_stage?: AgentThreadState["workflow_stage"];

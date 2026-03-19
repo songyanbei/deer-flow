@@ -14,6 +14,19 @@ function getBrowserOrigin(fallbackOrigin = DEFAULT_APP_ORIGIN) {
   return fallbackOrigin;
 }
 
+function getBrowserURLParts() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return {
+    protocol: window.location.protocol,
+    hostname: window.location.hostname,
+    port: window.location.port,
+    origin: window.location.origin,
+  };
+}
+
 function normalizeAbsoluteURL(value: string, fallbackURL: string) {
   const trimmedValue = value.trim();
   const fallback = trimTrailingSlash(fallbackURL);
@@ -44,15 +57,28 @@ function normalizeAbsoluteURL(value: string, fallbackURL: string) {
 export function getBackendBaseURL() {
   if (env.NEXT_PUBLIC_BACKEND_BASE_URL) {
     return env.NEXT_PUBLIC_BACKEND_BASE_URL;
-  } else {
+  }
+
+  const browser = getBrowserURLParts();
+  if (!browser) {
     return "";
   }
+
+  // Preserve nginx reverse-proxy behavior when the app is served from the unified entry port.
+  if (browser.port === "2026" || browser.port === "") {
+    return "";
+  }
+
+  return `${browser.protocol}//${browser.hostname}:8001`;
 }
 
 export function getLangGraphBaseURL(isMock?: boolean) {
+  const browser = getBrowserURLParts();
   const fallbackURL = isMock
     ? `${getBrowserOrigin(DEFAULT_MOCK_ORIGIN)}/mock/api`
-    : `${getBrowserOrigin(DEFAULT_APP_ORIGIN)}/api/langgraph`;
+    : browser && browser.port !== "2026" && browser.port !== ""
+      ? `${browser.protocol}//${browser.hostname}:2024`
+      : `${getBrowserOrigin(DEFAULT_APP_ORIGIN)}/api/langgraph`;
 
   if (env.NEXT_PUBLIC_LANGGRAPH_BASE_URL) {
     return normalizeAbsoluteURL(env.NEXT_PUBLIC_LANGGRAPH_BASE_URL, fallbackURL);

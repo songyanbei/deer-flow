@@ -7,6 +7,7 @@ import "./src/env.js";
 /** @type {import("next").NextConfig} */
 const config = {
   devIndicators: false,
+  output: process.env.NEXT_STANDALONE === "1" ? "standalone" : undefined,
 };
 
 export default config;

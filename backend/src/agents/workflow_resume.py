@@ -293,6 +293,104 @@ def get_pending_intervention_task(state: ThreadState) -> TaskStatus | None:
     return None
 
 
+def build_intervention_resolution_record(
+    *,
+    request_id: str,
+    fingerprint: str,
+    action_key: str,
+    payload: Mapping[str, Any] | None,
+    resolution_behavior: str,
+) -> InterventionResolution:
+    return {
+        "request_id": request_id,
+        "fingerprint": fingerprint,
+        "action_key": action_key,
+        "payload": dict(payload or {}),
+        "resolution_behavior": resolution_behavior,
+    }
+
+
+def build_intervention_resolved_inputs_entry(
+    resolution: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "request_id": str(resolution.get("request_id") or ""),
+        "fingerprint": str(resolution.get("fingerprint") or ""),
+        "action_key": str(resolution.get("action_key") or ""),
+        "payload": dict(resolution.get("payload") or {}),
+        "resolution_behavior": str(resolution.get("resolution_behavior") or "resume_current_task"),
+    }
+
+
+def resolve_intervention_behavior(
+    intervention_request: Mapping[str, Any] | None,
+    action_key: str,
+) -> str | None:
+    if not isinstance(intervention_request, Mapping):
+        return None
+    action_schema = intervention_request.get("action_schema", {})
+    actions = action_schema.get("actions", []) if isinstance(action_schema, Mapping) else []
+    for action in actions:
+        if isinstance(action, Mapping) and action.get("key") == action_key:
+            return str(action.get("resolution_behavior") or "resume_current_task")
+    return None
+
+
+def apply_intervention_resolution(
+    task: TaskStatus,
+    resolution: InterventionResolution,
+    *,
+    resolved_at: str | None = None,
+) -> tuple[TaskStatus | None, str | None]:
+    intervention_request = task.get("intervention_request")
+    if not isinstance(intervention_request, dict):
+        return None, "missing_intervention_request"
+
+    if resolution["fingerprint"] != intervention_request.get("fingerprint"):
+        return None, "fingerprint_mismatch"
+
+    if resolution["request_id"] != intervention_request.get("request_id"):
+        return None, "request_id_mismatch"
+
+    resolution_behavior = resolve_intervention_behavior(intervention_request, resolution["action_key"])
+    if resolution_behavior is None:
+        return None, "invalid_action_key"
+
+    normalized_resolution = build_intervention_resolution_record(
+        request_id=resolution["request_id"],
+        fingerprint=resolution["fingerprint"],
+        action_key=resolution["action_key"],
+        payload=resolution.get("payload", {}),
+        resolution_behavior=resolution_behavior,
+    )
+
+    if resolution_behavior == "resume_current_task":
+        new_status = "RUNNING"
+    elif resolution_behavior == "fail_current_task":
+        new_status = "FAILED"
+    elif resolution_behavior == "replan_from_resolution":
+        new_status = "RUNNING"
+    else:
+        return None, f"unknown_resolution_behavior:{resolution_behavior}"
+
+    existing_resolved = dict(task.get("resolved_inputs") or {})
+    existing_resolved["intervention_resolution"] = build_intervention_resolved_inputs_entry(normalized_resolution)
+
+    updated_task: TaskStatus = {
+        **task,
+        "status": new_status,
+        "intervention_status": "resolved",
+        "intervention_resolution": normalized_resolution,
+        "resolved_inputs": existing_resolved,
+        "status_detail": "@intervention_resolved" if new_status == "RUNNING" else "@failed",
+        "error": f"Intervention rejected by user: {resolution['action_key']}" if new_status == "FAILED" else None,
+    }
+    if resolved_at:
+        updated_task["updated_at"] = resolved_at
+
+    return updated_task, None
+
+
 def resolve_intervention(
     state: ThreadState,
     resolution: InterventionResolution,
@@ -306,61 +404,4 @@ def resolve_intervention(
     task = _latest_waiting_intervention_task(state)
     if task is None:
         return None, "no_pending_intervention"
-
-    intervention_request = task.get("intervention_request")
-    if not isinstance(intervention_request, dict):
-        return None, "missing_intervention_request"
-
-    # Fingerprint check
-    if resolution["fingerprint"] != intervention_request.get("fingerprint"):
-        return None, "fingerprint_mismatch"
-
-    # Request ID check
-    if resolution["request_id"] != intervention_request.get("request_id"):
-        return None, "request_id_mismatch"
-
-    # Find the matching action in the schema
-    action_schema = intervention_request.get("action_schema", {})
-    actions = action_schema.get("actions", [])
-    matched_action = None
-    for action in actions:
-        if action.get("key") == resolution["action_key"]:
-            matched_action = action
-            break
-
-    if matched_action is None:
-        return None, "invalid_action_key"
-
-    # Determine resolution behavior
-    resolution_behavior = matched_action.get("resolution_behavior", "resume_current_task")
-
-    if resolution_behavior == "resume_current_task":
-        new_status = "RUNNING"
-    elif resolution_behavior == "fail_current_task":
-        new_status = "FAILED"
-    elif resolution_behavior == "replan_from_resolution":
-        # Phase 1: protocol reserved, treat as resume for now
-        new_status = "RUNNING"
-    else:
-        return None, f"unknown_resolution_behavior:{resolution_behavior}"
-
-    # Build user payload as resolved_inputs so the resumed agent can access it
-    user_payload = resolution.get("payload", {})
-    existing_resolved = dict(task.get("resolved_inputs") or {})
-    existing_resolved["intervention_resolution"] = {
-        "action_key": resolution["action_key"],
-        "payload": user_payload,
-        "resolution_behavior": resolution_behavior,
-    }
-
-    updated_task: TaskStatus = {
-        **task,
-        "status": new_status,
-        "intervention_status": "resolved",
-        "intervention_resolution": resolution,
-        "resolved_inputs": existing_resolved,
-        "status_detail": "@intervention_resolved" if new_status == "RUNNING" else "@failed",
-        "error": f"Intervention rejected by user: {resolution['action_key']}" if new_status == "FAILED" else None,
-    }
-
-    return updated_task, None
+    return apply_intervention_resolution(task, resolution)

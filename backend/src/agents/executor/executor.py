@@ -16,18 +16,26 @@ from src.agents.intervention.decision_cache import (
     increment_cache_reuse_count,
     is_intervention_cache_valid,
 )
-from src.agents.intervention.fingerprint import generate_clarification_semantic_fingerprint
+from src.agents.intervention.fingerprint import (
+    generate_clarification_semantic_fingerprint,
+    generate_tool_snapshot_hash,
+)
 from src.agents.executor.outcome import normalize_agent_outcome
 from src.agents.thread_state import (
     HelpRequestPayload,
     InterventionRequest,
     InterventionResolution,
+    PendingToolCall,
     TaskStatus,
     ThreadState,
     VerifiedFact,
     WorkflowStage,
 )
-from src.agents.workflow_resume import extract_latest_clarification_answer
+from src.agents.workflow_resume import (
+    build_intervention_resolution_record,
+    build_intervention_resolved_inputs_entry,
+    extract_latest_clarification_answer,
+)
 from src.config.agents_config import load_agent_config
 
 logger = logging.getLogger(__name__)
@@ -456,6 +464,87 @@ def _collect_resolved_fingerprints(task_pool: list[TaskStatus]) -> set[str]:
     return fingerprints
 
 
+def _interrupt_kind_from_request(intervention_request: InterventionRequest) -> str:
+    explicit_kind = str(intervention_request.get("interrupt_kind") or "").strip()
+    if explicit_kind:
+        return explicit_kind
+
+    intervention_type = str(intervention_request.get("intervention_type") or "").strip()
+    if intervention_type == "before_tool":
+        return "before_tool"
+
+    actions = ((intervention_request.get("action_schema") or {}).get("actions") or [])
+    first_action = actions[0] if actions else {}
+    action_kind = str(first_action.get("kind") or "").strip()
+    if action_kind in {"single_select", "multi_select", "select"}:
+        return "selection"
+    if action_kind in {"confirm", "button"}:
+        return "confirmation"
+    return "clarification"
+
+
+def _build_pending_interrupt(
+    *,
+    interrupt_type: str,
+    request_id: str | None = None,
+    fingerprint: str | None = None,
+    interrupt_kind: str | None = None,
+    semantic_key: str | None = None,
+    source_signal: str | None = None,
+    source_agent: str | None = None,
+    prompt: str | None = None,
+    options: list[str] | None = None,
+) -> dict[str, Any]:
+    pending_interrupt: dict[str, Any] = {
+        "interrupt_type": interrupt_type,
+        "created_at": _utc_now_iso(),
+    }
+    if request_id:
+        pending_interrupt["request_id"] = request_id
+    if fingerprint:
+        pending_interrupt["fingerprint"] = fingerprint
+    if interrupt_kind:
+        pending_interrupt["interrupt_kind"] = interrupt_kind
+    if semantic_key:
+        pending_interrupt["semantic_key"] = semantic_key
+    if source_signal:
+        pending_interrupt["source_signal"] = source_signal
+    if source_agent:
+        pending_interrupt["source"] = source_agent
+        pending_interrupt["source_agent"] = source_agent
+    if prompt:
+        pending_interrupt["prompt"] = prompt
+    if options:
+        pending_interrupt["options"] = options
+    return pending_interrupt
+
+
+def _build_pending_tool_call(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    *,
+    tool_call_id: str | None,
+    idempotency_key: str | None,
+    source_agent: str,
+    source_task_id: str,
+    interrupt_fingerprint: str | None,
+) -> PendingToolCall:
+    return {
+        "tool_name": tool_name,
+        "tool_args": tool_args,
+        "tool_call_id": tool_call_id,
+        "idempotency_key": idempotency_key,
+        "source_agent": source_agent,
+        "source_task_id": source_task_id,
+        "snapshot_hash": generate_tool_snapshot_hash(tool_name, tool_args),
+        "interrupt_fingerprint": interrupt_fingerprint,
+    }
+
+
+def _log_interrupt_event(event: str, **payload: Any) -> None:
+    logger.info("[Executor] %s %s", event, json.dumps(payload, ensure_ascii=False, default=str)[:4000])
+
+
 def _serialize_agent_messages(messages: list[Any]) -> list[dict[str, Any]]:
     """Serialize LangChain messages to dicts for checkpoint persistence."""
     try:
@@ -593,12 +682,15 @@ def _auto_resume_from_clarification_cache(
     updated_entry = increment_cache_reuse_count(cached)
     updated_cache = {**intervention_cache, semantic_fp: updated_entry}
 
+    cached_resolution = build_intervention_resolution_record(
+        request_id=f"cache:{semantic_fp}",
+        fingerprint=semantic_fp,
+        action_key=updated_entry["action_key"],
+        payload=updated_entry.get("payload", {}),
+        resolution_behavior=updated_entry.get("resolution_behavior", "resume_current_task"),
+    )
     resolved_inputs = dict(task.get("resolved_inputs") or {})
-    resolved_inputs["intervention_resolution"] = {
-        "action_key": updated_entry["action_key"],
-        "payload": updated_entry.get("payload", {}),
-        "resolution_behavior": updated_entry.get("resolution_behavior", "resume_current_task"),
-    }
+    resolved_inputs["intervention_resolution"] = build_intervention_resolved_inputs_entry(cached_resolution)
 
     resumed_task: TaskStatus = {
         **task,
@@ -609,10 +701,11 @@ def _auto_resume_from_clarification_cache(
         "help_depth": next_help_depth,
         "clarification_prompt": None,
         "clarification_request": None,
+        "intervention_resolution": cached_resolution,
         "resolved_inputs": resolved_inputs,
         "status_detail": "@cache_auto_resolved",
         "agent_messages": serialized_messages,
-        "continuation_mode": "continue_after_clarification",
+        "continuation_mode": "continue_after_intervention",
         "pending_interrupt": None,
         "pending_tool_call": None,
         "resume_count": int(task.get("resume_count") or 0) + 1,
@@ -782,17 +875,53 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "execution_state": "EXECUTING_DONE",
                 })
 
+            if task.get("intervention_status") != "resolved":
+                raise RuntimeError(
+                    f"resume_tool_call requires resolved intervention, got status={task.get('intervention_status')!r}"
+                )
+
+            expected_snapshot = stored_tool_call.get("snapshot_hash")
+            actual_snapshot = generate_tool_snapshot_hash(
+                stored_tool_call["tool_name"],
+                stored_tool_call.get("tool_args", {}),
+            )
+            if expected_snapshot and expected_snapshot != actual_snapshot:
+                raise RuntimeError("pending_tool_call snapshot drift detected before resume_tool_call")
+
+            resolved_fingerprint = str((resolved_intervention or {}).get("fingerprint") or "")
+            pending_fingerprint = str(stored_tool_call.get("interrupt_fingerprint") or "")
+            if resolved_fingerprint and pending_fingerprint and resolved_fingerprint != pending_fingerprint:
+                raise RuntimeError("resolved intervention fingerprint does not match pending_tool_call binding")
+
             logger.info(
                 "[Executor] resume_tool_call: executing intercepted tool '%s' for task '%s' idempotency_key=%s.",
                 stored_tool_call["tool_name"],
                 task["task_id"],
                 stored_tool_call.get("idempotency_key"),
             )
+            _log_interrupt_event(
+                "interrupt_consuming",
+                run_id=task_run_id,
+                task_id=task["task_id"],
+                agent_name=agent_name,
+                request_id=(resolved_intervention or {}).get("request_id"),
+                fingerprint=resolved_fingerprint or pending_fingerprint,
+                tool_name=stored_tool_call["tool_name"],
+            )
             await _ensure_mcp_ready(agent_name)
             tool_result_message = await _execute_intercepted_tool_call(stored_tool_call, agent_config_override)
 
             # Mark intervention as consumed to prevent duplicate execution
             task = {**task, "intervention_status": "consumed"}
+            _log_interrupt_event(
+                "interrupt_consumed",
+                run_id=task_run_id,
+                task_id=task["task_id"],
+                agent_name=agent_name,
+                request_id=(resolved_intervention or {}).get("request_id"),
+                fingerprint=resolved_fingerprint or pending_fingerprint,
+                tool_name=stored_tool_call["tool_name"],
+            )
 
             # Restore previous agent messages, truncate from the intervention_required
             # ToolMessage onward, then append the real tool result.
@@ -816,7 +945,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             )
             messages = result.get("messages") or []
         else:
-            # --- Normal / continue_after_dependency / continue_after_clarification ---
+            # --- Normal / continue_after_dependency / continue_after_intervention / continue_after_clarification ---
             # All share the same invocation pattern: restore prior messages + new context.
             prior_messages = _deserialize_agent_messages(task.get("agent_messages"))
             if prior_messages:
@@ -910,26 +1039,56 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             # Extract idempotency_key from intervention_request.context (set by middleware)
             ir_context = intervention_request.get("context") or {}
             idempotency_key = ir_context.get("idempotency_key")
+            interrupt_fingerprint = intervention_request.get("fingerprint")
 
             # Build pending_tool_call from outcome or legacy extraction
             pending_tool = None
             if outcome.get("pending_tool_call"):
                 ptc = outcome["pending_tool_call"]
-                pending_tool = {
-                    "tool_name": ptc["tool_name"],
-                    "tool_args": ptc["tool_args"],
-                    "tool_call_id": ptc.get("tool_call_id"),
-                    "idempotency_key": idempotency_key or ptc.get("idempotency_key"),
-                    "source_agent": agent_name,
-                    "source_task_id": task["task_id"],
-                }
+                pending_tool = _build_pending_tool_call(
+                    ptc["tool_name"],
+                    ptc["tool_args"],
+                    tool_call_id=ptc.get("tool_call_id"),
+                    idempotency_key=idempotency_key or ptc.get("idempotency_key"),
+                    source_agent=agent_name,
+                    source_task_id=task["task_id"],
+                    interrupt_fingerprint=interrupt_fingerprint,
+                )
             elif intercepted_tool:
-                pending_tool = {
-                    **intercepted_tool,
-                    "idempotency_key": idempotency_key,
-                    "source_agent": agent_name,
-                    "source_task_id": task["task_id"],
-                }
+                pending_tool = _build_pending_tool_call(
+                    intercepted_tool["tool_name"],
+                    intercepted_tool["tool_args"],
+                    tool_call_id=intercepted_tool.get("tool_call_id"),
+                    idempotency_key=idempotency_key,
+                    source_agent=agent_name,
+                    source_task_id=task["task_id"],
+                    interrupt_fingerprint=interrupt_fingerprint,
+                )
+
+            suppressed_signals = outcome.get("suppressed_signals") or []
+            if any(signal.startswith("request_help") for signal in suppressed_signals):
+                _log_interrupt_event(
+                    "interrupt_followup_suppressed",
+                    run_id=task.get("run_id"),
+                    task_id=task["task_id"],
+                    agent_name=agent_name,
+                    source_signal=outcome.get("selected_signal"),
+                    suppressed_signals=suppressed_signals,
+                    intervention_request_id=intervention_request.get("request_id"),
+                    fingerprint=interrupt_fingerprint,
+                )
+
+            _log_interrupt_event(
+                "interrupt_selected_as_authoritative",
+                run_id=task.get("run_id"),
+                task_id=task["task_id"],
+                agent_name=agent_name,
+                source_signal=outcome.get("selected_signal") or intervention_request.get("source_signal") or "intervention_required",
+                intervention_request_id=intervention_request.get("request_id"),
+                fingerprint=interrupt_fingerprint,
+                semantic_key=intervention_request.get("semantic_key"),
+                suppressed_signals=suppressed_signals,
+            )
 
             intervention_task: TaskStatus = {
                 **task,
@@ -947,16 +1106,30 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "intercepted_tool_call": intercepted_tool,  # keep for compatibility
                 # Phase 2: structured continuation state
                 "continuation_mode": "resume_tool_call",
-                "pending_interrupt": {
-                    "interrupt_type": "intervention",
-                    "request_id": intervention_request.get("request_id"),
-                    "fingerprint": intervention_request.get("fingerprint"),
-                    "source": agent_name,
-                    "created_at": _utc_now_iso(),
-                },
+                "pending_interrupt": _build_pending_interrupt(
+                    interrupt_type="intervention",
+                    request_id=intervention_request.get("request_id"),
+                    fingerprint=interrupt_fingerprint,
+                    interrupt_kind=_interrupt_kind_from_request(intervention_request),
+                    semantic_key=intervention_request.get("semantic_key"),
+                    source_signal=intervention_request.get("source_signal") or "intervention_required",
+                    source_agent=agent_name,
+                ),
                 "pending_tool_call": pending_tool,
                 "updated_at": _utc_now_iso(),
             }
+            _log_interrupt_event(
+                "interrupt_created",
+                run_id=task.get("run_id"),
+                task_id=task["task_id"],
+                agent_name=agent_name,
+                source_signal=intervention_request.get("source_signal") or "intervention_required",
+                intervention_request_id=intervention_request.get("request_id"),
+                fingerprint=interrupt_fingerprint,
+                semantic_key=intervention_request.get("semantic_key"),
+                interrupt_kind=_interrupt_kind_from_request(intervention_request),
+                tool_name=(pending_tool or {}).get("tool_name"),
+            )
             _emit_task_event(
                 writer, "task_waiting_intervention", intervention_task, agent_name,
                 status_detail="@waiting_intervention",
@@ -1007,6 +1180,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             from src.agents.intervention.help_request_builder import (
                 build_help_request_intervention,
                 normalize_clarification_options,
+                resolve_user_interaction_kind,
                 should_interrupt_for_user_clarification,
             )
 
@@ -1048,7 +1222,13 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     intervention_request = build_help_request_intervention(
                         task, help_request, agent_name=agent_name,
                     )
-                    intervention_task: TaskStatus = {
+                    interaction_kind = resolve_user_interaction_kind(help_request, options)
+                    interrupt_kind = (
+                        "confirmation" if interaction_kind == "confirm"
+                        else "selection" if interaction_kind in {"single_select", "multi_select", "select"}
+                        else "clarification"
+                    )
+                    user_intervention_task: TaskStatus = {
                         **task,
                         "status": "WAITING_INTERVENTION",
                         "requested_by_agent": agent_name,
@@ -1063,32 +1243,58 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                         "intervention_resolution": None,
                         "status_detail": "@waiting_intervention",
                         "agent_messages": serialized_messages,
-                        "continuation_mode": "continue_after_dependency",
-                        "pending_interrupt": {
-                            "interrupt_type": "intervention",
-                            "request_id": intervention_request["request_id"],
-                            "fingerprint": intervention_request["fingerprint"],
-                            "source": agent_name,
-                            "created_at": _utc_now_iso(),
-                        },
+                        "continuation_mode": "continue_after_intervention",
+                        "pending_interrupt": _build_pending_interrupt(
+                            interrupt_type="intervention",
+                            request_id=intervention_request["request_id"],
+                            fingerprint=intervention_request["fingerprint"],
+                            interrupt_kind=interrupt_kind,
+                            semantic_key=intervention_request.get("semantic_key"),
+                            source_signal=intervention_request.get("source_signal") or "request_help",
+                            source_agent=agent_name,
+                            prompt=question or None,
+                            options=options or None,
+                        ),
                         "pending_tool_call": None,
                         "updated_at": _utc_now_iso(),
                     }
+                    _log_interrupt_event(
+                        "interrupt_selected_as_authoritative",
+                        run_id=task.get("run_id"),
+                        task_id=task["task_id"],
+                        agent_name=agent_name,
+                        source_signal=outcome.get("selected_signal") or "request_help_user",
+                        intervention_request_id=intervention_request["request_id"],
+                        fingerprint=intervention_request["fingerprint"],
+                        semantic_key=intervention_request.get("semantic_key"),
+                        suppressed_signals=outcome.get("suppressed_signals") or [],
+                    )
+                    _log_interrupt_event(
+                        "interrupt_created",
+                        run_id=task.get("run_id"),
+                        task_id=task["task_id"],
+                        agent_name=agent_name,
+                        source_signal=intervention_request.get("source_signal") or "request_help",
+                        intervention_request_id=intervention_request["request_id"],
+                        fingerprint=intervention_request["fingerprint"],
+                        semantic_key=intervention_request.get("semantic_key"),
+                        interrupt_kind=interrupt_kind,
+                    )
                     _emit_task_event(
-                        writer, "task_waiting_intervention", intervention_task, agent_name,
+                        writer, "task_waiting_intervention", user_intervention_task, agent_name,
                         status_detail="@waiting_intervention",
                         intervention_request=intervention_request,
                         intervention_status="pending",
                         intervention_fingerprint=intervention_request["fingerprint"],
                     )
                     _emit_task_event(
-                        writer, "task_help_requested", intervention_task, agent_name,
+                        writer, "task_help_requested", user_intervention_task, agent_name,
                         request_help=help_request,
                         requested_by_agent=agent_name,
                         status_detail="@waiting_intervention",
                     )
                     return _with_intervention_cache({
-                        "task_pool": [intervention_task],
+                        "task_pool": [user_intervention_task],
                         "execution_state": "INTERRUPTED",
                     })
 
@@ -1107,11 +1313,11 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "agent_messages": serialized_messages,
                 # Phase 2: structured continuation state
                 "continuation_mode": "continue_after_dependency",
-                "pending_interrupt": {
-                    "interrupt_type": "dependency",
-                    "source": agent_name,
-                    "created_at": _utc_now_iso(),
-                },
+                "pending_interrupt": _build_pending_interrupt(
+                    interrupt_type="dependency",
+                    source_signal=outcome.get("selected_signal") or "request_help_system",
+                    source_agent=agent_name,
+                ),
                 "pending_tool_call": None,
                 "updated_at": _utc_now_iso(),
             }
@@ -1155,12 +1361,13 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "agent_messages": serialized_messages,
                 # Phase 2: structured continuation state
                 "continuation_mode": "continue_after_clarification",
-                "pending_interrupt": {
-                    "interrupt_type": "clarification",
-                    "prompt": clarification_prompt,
-                    "source": agent_name,
-                    "created_at": _utc_now_iso(),
-                },
+                "pending_interrupt": _build_pending_interrupt(
+                    interrupt_type="clarification",
+                    interrupt_kind="clarification",
+                    source_signal="ask_clarification",
+                    source_agent=agent_name,
+                    prompt=clarification_prompt,
+                ),
                 "pending_tool_call": None,
                 "updated_at": _utc_now_iso(),
             }

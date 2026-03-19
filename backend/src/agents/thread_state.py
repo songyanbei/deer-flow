@@ -72,6 +72,8 @@ InterventionActionKind = Literal[
 InterventionResolutionBehavior = Literal["resume_current_task", "fail_current_task", "replan_from_resolution"]
 InterventionStatusValue = Literal["pending", "resolved", "consumed", "rejected"]
 InterventionRiskLevel = Literal["medium", "high", "critical"]
+InterventionKind = Literal["before_tool", "clarification", "selection", "confirmation"]
+InterventionSourceSignal = Literal["intervention_required", "request_help", "ask_clarification"]
 
 
 class InterventionOptionEntry(TypedDict):
@@ -163,6 +165,9 @@ class InterventionRequest(TypedDict):
 
     request_id: str
     fingerprint: str
+    interrupt_kind: NotRequired[InterventionKind | None]
+    semantic_key: NotRequired[str | None]
+    source_signal: NotRequired[InterventionSourceSignal | None]
     intervention_type: str
     title: str
     reason: str
@@ -187,6 +192,7 @@ class InterventionResolution(TypedDict):
     fingerprint: str
     action_key: str
     payload: dict[str, Any]
+    resolution_behavior: InterventionResolutionBehavior
 
 
 class CachedInterventionResolution(TypedDict):
@@ -198,6 +204,7 @@ class CachedInterventionResolution(TypedDict):
     resolved_at: str
     intervention_type: str
     source_agent: str
+    semantic_key: NotRequired[str | None]
     max_reuse: int
     reuse_count: int
 
@@ -209,20 +216,36 @@ class CachedInterventionResolution(TypedDict):
 ContinuationMode = Literal[
     "resume_tool_call",
     "continue_after_dependency",
+    "continue_after_intervention",
     "continue_after_clarification",
     "replan",
 ]
+
+
+class PendingToolCall(TypedDict):
+    tool_name: str
+    tool_args: dict[str, Any]
+    tool_call_id: NotRequired[str | None]
+    idempotency_key: NotRequired[str | None]
+    source_agent: NotRequired[str | None]
+    source_task_id: NotRequired[str | None]
+    snapshot_hash: NotRequired[str | None]
+    interrupt_fingerprint: NotRequired[str | None]
 
 
 class PendingInterrupt(TypedDict):
     """Describes the last unresolved blocking condition for a task."""
 
     interrupt_type: Literal["dependency", "clarification", "intervention"]
+    interrupt_kind: NotRequired[InterventionKind | None]
     request_id: NotRequired[str | None]
     fingerprint: NotRequired[str | None]
+    semantic_key: NotRequired[str | None]
+    source_signal: NotRequired[InterventionSourceSignal | None]
     prompt: NotRequired[str | None]
     options: NotRequired[list[str] | None]
     source: NotRequired[str | None]
+    source_agent: NotRequired[str | None]
     created_at: NotRequired[str | None]
 
 
@@ -262,7 +285,7 @@ class TaskStatus(TypedDict):
     # Continuation state (Phase 2) — explicit resume semantics
     continuation_mode: NotRequired[ContinuationMode | None]
     pending_interrupt: NotRequired[PendingInterrupt | None]
-    pending_tool_call: NotRequired[dict[str, Any] | None]
+    pending_tool_call: NotRequired[PendingToolCall | None]
     agent_history_cutoff: NotRequired[int | None]
 
 

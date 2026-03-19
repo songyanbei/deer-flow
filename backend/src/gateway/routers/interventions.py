@@ -174,17 +174,9 @@ async def resolve_intervention(
     This endpoint accepts a structured resolution for a pending intervention.
     The resolution is persisted and will be picked up when the workflow resumes.
     """
-    from src.agents.thread_state import InterventionResolution
-    from src.agents.workflow_resume import get_pending_intervention_task, resolve_intervention as _resolve
+    from src.agents.workflow_resume import apply_intervention_resolution, build_intervention_resolution_record
 
     # Build the resolution envelope
-    resolution: InterventionResolution = {
-        "request_id": request_id,
-        "fingerprint": body.fingerprint,
-        "action_key": body.action_key,
-        "payload": body.payload,
-    }
-
     # We need to read the current thread state from LangGraph checkpointer.
     # This requires access to the LangGraph client/store.
     try:
@@ -253,40 +245,23 @@ async def resolve_intervention(
     if payload_error is not None:
         raise HTTPException(status_code=422, detail=payload_error)
 
-    # Determine resolution behavior
-    resolution_behavior = matched_action.get("resolution_behavior", "resume_current_task")
-
-    # Build the updated task
     from datetime import UTC, datetime
     now_iso = datetime.now(UTC).isoformat()
-
-    # Build resolved inputs
-    existing_resolved = dict(pending_task.get("resolved_inputs") or {})
-    existing_resolved["intervention_resolution"] = {
-        "action_key": body.action_key,
-        "payload": body.payload,
-        "resolution_behavior": resolution_behavior,
-    }
-
-    if resolution_behavior == "fail_current_task":
-        new_status = "FAILED"
-        status_detail = "@failed"
-        error_msg = f"Intervention rejected by user: {body.action_key}"
-    else:
-        new_status = "RUNNING"
-        status_detail = "@intervention_resolved"
-        error_msg = None
-
-    updated_task = {
-        **pending_task,
-        "status": new_status,
-        "intervention_status": "resolved",
-        "intervention_resolution": resolution,
-        "resolved_inputs": existing_resolved,
-        "status_detail": status_detail,
-        "error": error_msg,
-        "updated_at": now_iso,
-    }
+    resolution_behavior = matched_action.get("resolution_behavior", "resume_current_task")
+    resolution = build_intervention_resolution_record(
+        request_id=request_id,
+        fingerprint=body.fingerprint,
+        action_key=body.action_key,
+        payload=body.payload,
+        resolution_behavior=resolution_behavior,
+    )
+    updated_task, resolution_error = apply_intervention_resolution(
+        pending_task,
+        resolution,
+        resolved_at=now_iso,
+    )
+    if resolution_error is not None or updated_task is None:
+        raise HTTPException(status_code=422, detail=f"Failed to apply intervention resolution: {resolution_error}")
     intervention_cache = dict(state_values.get("intervention_cache") or {})
     semantic_fp, cache_entry = build_cached_intervention_entry(
         intervention_request,
@@ -319,7 +294,7 @@ async def resolve_intervention(
         else:
             checkpoint_value = getattr(update_response, "checkpoint", None)
         logger.info(
-            "[Intervention] Resolution persisted for thread='%s' request_id='%s' action_key='%s' behavior='%s' checkpoint=%s",
+            "[Intervention] interrupt_resolution_persisted thread='%s' request_id='%s' action_key='%s' behavior='%s' checkpoint=%s",
             thread_id,
             request_id,
             body.action_key,
@@ -337,7 +312,7 @@ async def resolve_intervention(
     # client.runs.create() would be invisible to the frontend's SSE stream.
     resume_action_value: str | None = None
     resume_payload_value: dict[str, Any] | None = None
-    if new_status == "RUNNING":
+    if updated_task["status"] == "RUNNING":
         resume_message = f"[intervention_resolved] request_id={request_id} action_key={body.action_key}"
         resume_action_value = "submit_resume"
         resume_payload_value = {

@@ -17,6 +17,17 @@ export type InterventionResolutionBehavior =
   | "fail_current_task"
   | "replan_from_resolution";
 
+export type InterventionInterruptKind =
+  | "before_tool"
+  | "clarification"
+  | "selection"
+  | "confirmation";
+
+export type InterventionSourceSignal =
+  | "intervention_required"
+  | "request_help"
+  | "ask_clarification";
+
 export type InterventionActionKind =
   | "button"
   | "input"
@@ -86,10 +97,32 @@ export interface InterventionDisplay {
   };
 }
 
+export interface InterventionResolution {
+  request_id: string;
+  fingerprint: string;
+  action_key: string;
+  payload: Record<string, unknown>;
+  resolution_behavior: InterventionResolutionBehavior | string;
+}
+
+export interface PendingInterrupt {
+  interrupt_type: "dependency" | "clarification" | "intervention";
+  interrupt_kind?: InterventionInterruptKind;
+  request_id?: string;
+  fingerprint?: string;
+  semantic_key?: string;
+  source_signal?: InterventionSourceSignal;
+  source_agent?: string;
+  created_at?: string;
+}
+
 export interface InterventionRequest {
   request_id: string;
   fingerprint: string;
   intervention_type: string;
+  interrupt_kind?: InterventionInterruptKind;
+  semantic_key?: string;
+  source_signal?: InterventionSourceSignal;
   title: string;
   reason: string;
   description?: string;
@@ -151,9 +184,11 @@ export interface ThreadTaskState {
   status_detail?: string | null;
   clarification_prompt?: string | null;
   clarification_request?: ClarificationRequest | null;
+  pending_interrupt?: PendingInterrupt | null;
   intervention_request?: InterventionRequest | null;
   intervention_status?: "pending" | "resolved" | "consumed" | "rejected" | null;
   intervention_fingerprint?: string | null;
+  intervention_resolution?: InterventionResolution | null;
   updated_at?: string | null;
   result?: string | null;
   error?: string | null;

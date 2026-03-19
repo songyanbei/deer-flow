@@ -2,7 +2,7 @@ from typing import Any, Mapping
 
 from src.agents.intervention.fingerprint import generate_tool_semantic_fingerprint
 
-DEFAULT_TOOL_INTERVENTION_MAX_REUSE = 3
+DEFAULT_TOOL_INTERVENTION_MAX_REUSE = 1
 DEFAULT_CLARIFICATION_MAX_REUSE = -1
 
 
@@ -48,6 +48,9 @@ def derive_intervention_cache_key(intervention_request: Mapping[str, Any] | None
     """Derive the semantic cache key for an intervention request."""
     if not isinstance(intervention_request, Mapping):
         return None
+    semantic_key = str(intervention_request.get("semantic_key") or "").strip()
+    if semantic_key:
+        return semantic_key
     intervention_type = str(intervention_request.get("intervention_type") or "").strip()
     if intervention_type == "before_tool":
         context = intervention_request.get("context")
@@ -83,6 +86,7 @@ def build_cached_intervention_entry(
         "resolved_at": resolved_at,
         "intervention_type": intervention_type,
         "source_agent": str((intervention_request or {}).get("source_agent") or "").strip(),
+        "semantic_key": semantic_fp,
         "max_reuse": default_max_reuse_for_intervention_type(intervention_type),
         "reuse_count": 0,
     }

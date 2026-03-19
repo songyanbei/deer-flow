@@ -39,6 +39,9 @@ def test_intervention_middleware_prioritizes_explicit_policy_over_parser():
     assert payload["title"] == "需要审批"
     assert payload["reason"] == "该操作会修改工单"
     assert payload["tool_name"] == "update_ticket"
+    assert payload["interrupt_kind"] == "before_tool"
+    assert payload["source_signal"] == "intervention_required"
+    assert payload["semantic_key"]
 
 
 def test_intervention_middleware_uses_parser_when_no_policy_match():
@@ -142,7 +145,7 @@ def test_intervention_middleware_skips_tool_intervention_on_cache_hit():
             "resolved_at": "2026-03-19T00:00:00+00:00",
             "intervention_type": "before_tool",
             "source_agent": "ops-agent",
-            "max_reuse": 3,
+            "max_reuse": 1,
             "reuse_count": 0,
         }
     }
@@ -206,7 +209,7 @@ def test_intervention_middleware_does_not_skip_reject_cache():
                 "resolved_at": "2026-03-19T00:00:00+00:00",
                 "intervention_type": "before_tool",
                 "source_agent": "ops-agent",
-                "max_reuse": 3,
+                "max_reuse": 1,
                 "reuse_count": 0,
             }
         },

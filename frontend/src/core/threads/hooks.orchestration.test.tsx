@@ -357,10 +357,23 @@ describe("useThreadStream orchestration hydration", () => {
         status: "waiting_intervention",
         intervention_fingerprint: "fp-1",
         intervention_status: "pending",
+        pending_interrupt: {
+          interrupt_type: "intervention",
+          interrupt_kind: "before_tool",
+          request_id: "req-1",
+          fingerprint: "fp-1",
+          semantic_key: "meeting_createMeeting:confirm",
+          source_signal: "intervention_required",
+          source_agent: "meeting-agent",
+          created_at: "2026-03-17T10:00:00.000Z",
+        },
         intervention_request: {
           request_id: "req-1",
           fingerprint: "fp-1",
           intervention_type: "before_tool",
+          interrupt_kind: "before_tool",
+          semantic_key: "meeting_createMeeting:confirm",
+          source_signal: "intervention_required",
           title: "Need approval",
           reason: "This action will create a meeting",
           source_agent: "meeting-agent",
@@ -386,6 +399,13 @@ describe("useThreadStream orchestration hydration", () => {
         source: "multi_agent",
         threadId: "thread-1",
         status: "waiting_intervention",
+        pendingInterrupt: expect.objectContaining({
+          interrupt_kind: "before_tool",
+          semantic_key: "meeting_createMeeting:confirm",
+        }),
+        interventionRequest: expect.objectContaining({
+          source_signal: "intervention_required",
+        }),
       }),
     );
 

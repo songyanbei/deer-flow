@@ -25,7 +25,10 @@ from src.agents.intervention.decision_cache import (
     is_intervention_cache_valid,
 )
 from src.agents.intervention.display_projection import build_display_projection
-from src.agents.intervention.fingerprint import generate_tool_semantic_fingerprint
+from src.agents.intervention.fingerprint import (
+    generate_tool_interrupt_fingerprint,
+    generate_tool_semantic_fingerprint,
+)
 from src.agents.thread_state import InterventionActionSchema, InterventionRequest
 
 logger = logging.getLogger(__name__)
@@ -60,10 +63,7 @@ def _generate_fingerprint(
     tool_args: dict[str, Any],
 ) -> str:
     """Deterministic fingerprint to prevent duplicate interventions in the same run."""
-    # Normalize tool args by sorting keys
-    normalized_args = json.dumps(tool_args, sort_keys=True, ensure_ascii=False, default=str)
-    raw = f"{run_id}:{task_id}:{agent_name}:{tool_name}:{normalized_args}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+    return generate_tool_interrupt_fingerprint(run_id, task_id, agent_name, tool_name, tool_args)
 
 
 def _tool_matches_keywords(tool_name: str, keywords: list[str]) -> bool:
@@ -117,12 +117,13 @@ def _generate_idempotency_key(
     tool_name: str,
     tool_call_id: str,
 ) -> str:
-    """Generate a unique idempotency key for a pending tool call.
+    """Generate a deterministic idempotency key for a pending tool call.
 
-    The key is deterministic for the same tool call in the same run context,
-    enabling dedup of duplicate resume submissions.
+    The key is fully deterministic for the same tool call in the same run
+    context, enabling dedup of duplicate resume submissions and stable
+    cross-run idempotency when the same run/task/tool tuple recurs.
     """
-    raw = f"idem:{run_id}:{task_id}:{tool_name}:{tool_call_id}:{uuid.uuid4().hex[:8]}"
+    raw = f"idem:{run_id}:{task_id}:{tool_name}:{tool_call_id}"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
@@ -139,6 +140,7 @@ def _build_intervention_request(
     """Build a structured InterventionRequest for a tool call."""
     request_id = f"intv_{uuid.uuid4().hex[:16]}"
     fingerprint = _generate_fingerprint(run_id, task_id, agent_name, tool_name, tool_args)
+    semantic_key = generate_tool_semantic_fingerprint(agent_name, tool_name, tool_args)
     idempotency_key = _generate_idempotency_key(run_id, task_id, tool_name, tool_call_id)
 
     # Use policy overrides if available, otherwise defaults
@@ -169,6 +171,9 @@ def _build_intervention_request(
     request: InterventionRequest = {
         "request_id": request_id,
         "fingerprint": fingerprint,
+        "interrupt_kind": "before_tool",
+        "semantic_key": semantic_key,
+        "source_signal": "intervention_required",
         "intervention_type": "before_tool",
         "title": title,
         "reason": reason,
@@ -269,20 +274,28 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         if not is_intervention_cache_valid(cached, require_resume_behavior=True):
             max_reuse = cached.get("max_reuse", -1)
             reuse_count = cached.get("reuse_count", 0)
+            resolution_behavior = cached.get("resolution_behavior", "")
             if max_reuse != -1 and reuse_count >= max_reuse:
                 logger.info(
-                    "[InterventionMiddleware] [Cache EXPIRED] tool='%s' semantic_fp=%s reuse_count=%s reached max_reuse=%s",
+                    "[InterventionMiddleware] cache_expired tool='%s' semantic_fp=%s reuse_count=%s reached max_reuse=%s",
                     tool_name,
                     semantic_fp,
                     reuse_count,
                     max_reuse,
+                )
+            elif resolution_behavior != "resume_current_task":
+                logger.debug(
+                    "[InterventionMiddleware] cache_skip_non_resume tool='%s' semantic_fp=%s resolution_behavior=%s",
+                    tool_name,
+                    semantic_fp,
+                    resolution_behavior,
                 )
             return False
 
         updated_entry = increment_cache_reuse_count(cached)
         self._intervention_cache[semantic_fp] = updated_entry
         logger.info(
-            "[InterventionMiddleware] [Cache HIT] tool='%s' semantic_fp=%s reuse_count=%s/%s",
+            "[InterventionMiddleware] cache_hit tool='%s' semantic_fp=%s reuse_count=%s/%s",
             tool_name,
             semantic_fp,
             updated_entry.get("reuse_count", 0),
@@ -304,11 +317,12 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         )
 
         logger.info(
-            "[InterventionMiddleware] Intervention triggered for tool '%s' by agent '%s'. request_id=%s fingerprint=%s",
+            "[InterventionMiddleware] interrupt_created tool='%s' agent='%s' request_id=%s fingerprint=%s semantic_key=%s",
             tool_name,
             self._agent_name,
             intervention_request["request_id"],
             intervention_request["fingerprint"],
+            intervention_request.get("semantic_key"),
         )
 
         tool_call_id = request.tool_call.get("id", "")

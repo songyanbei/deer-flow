@@ -24,6 +24,14 @@ from langchain_core.messages import ToolMessage
 
 logger = logging.getLogger(__name__)
 
+_RISKY_TOOL_KEYWORDS = {
+    "write", "create", "update", "delete", "send", "cancel",
+    "insert", "modify", "book", "reserve", "schedule", "submit",
+    "approve", "reject", "confirm", "execute", "run", "deploy",
+    "publish", "release", "remove", "drop", "transfer", "pay",
+}
+_READ_ONLY_PREFIXES = ("get_", "list_", "read_", "search_", "query_", "fetch_", "view_", "check_")
+
 
 class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
     """Inserts placeholder ToolMessages for dangling tool calls before model invocation.
@@ -33,7 +41,23 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
     offending AIMessage so the LLM receives a well-formed conversation.
     """
 
-    def _build_patched_messages(self, messages: list) -> list | None:
+    def _tool_is_risky(self, tool_name: str) -> bool:
+        lowered = tool_name.lower()
+        if any(lowered.startswith(prefix) for prefix in _READ_ONLY_PREFIXES):
+            return False
+        return any(keyword in lowered for keyword in _RISKY_TOOL_KEYWORDS)
+
+    def _has_active_pending_intervention(self, state: AgentState | None) -> bool:
+        if not isinstance(state, dict):
+            return False
+        for task in reversed(state.get("task_pool") or []):
+            if not isinstance(task, dict):
+                continue
+            if task.get("status") == "WAITING_INTERVENTION" and task.get("intervention_status") == "pending":
+                return True
+        return False
+
+    def _build_patched_messages(self, messages: list, state: AgentState | None = None) -> list | None:
         """Return a new message list with patches inserted at the correct positions.
 
         For each AIMessage with dangling tool_calls (no corresponding ToolMessage),
@@ -66,6 +90,7 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         patched: list = []
         patched_ids: set[str] = set()
         patch_count = 0
+        active_pending_intervention = self._has_active_pending_intervention(state)
         for msg in messages:
             patched.append(msg)
             if getattr(msg, "type", None) != "ai":
@@ -73,11 +98,20 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
             for tc in getattr(msg, "tool_calls", None) or []:
                 tc_id = tc.get("id")
                 if tc_id and tc_id not in existing_tool_msg_ids and tc_id not in patched_ids:
+                    tool_name = tc.get("name", "unknown")
+                    if active_pending_intervention and self._tool_is_risky(tool_name):
+                        content = "[Tool call blocked by active pending intervention. Wait for that intervention to resolve instead of retrying this tool call.]"
+                        logger.warning(
+                            "Injecting intervention-aware placeholder for dangling risky tool call '%s' while a pending intervention is active",
+                            tool_name,
+                        )
+                    else:
+                        content = "[Tool call was interrupted and did not return a result.]"
                     patched.append(
                         ToolMessage(
-                            content="[Tool call was interrupted and did not return a result.]",
+                            content=content,
                             tool_call_id=tc_id,
-                            name=tc.get("name", "unknown"),
+                            name=tool_name,
                             status="error",
                         )
                     )
@@ -93,7 +127,7 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelCallResult:
-        patched = self._build_patched_messages(request.messages)
+        patched = self._build_patched_messages(request.messages, request.state)
         if patched is not None:
             request = request.override(messages=patched)
         return handler(request)
@@ -104,7 +138,7 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelCallResult:
-        patched = self._build_patched_messages(request.messages)
+        patched = self._build_patched_messages(request.messages, request.state)
         if patched is not None:
             request = request.override(messages=patched)
         return await handler(request)

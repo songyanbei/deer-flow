@@ -11,13 +11,16 @@ dotenv.config({ path: rootEnvPath });
 
 const [command = "dev", ...restArgs] = process.argv.slice(2);
 const nextArgs = [command, ...restArgs];
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const isWindows = process.platform === "win32";
+const childCommand = isWindows ? "cmd.exe" : "pnpm";
+const childArgs = isWindows
+  ? ["/c", "pnpm", "exec", "next", ...nextArgs]
+  : ["exec", "next", ...nextArgs];
 
-const child = spawn(pnpmCommand, ["exec", "next", ...nextArgs], {
+const child = spawn(childCommand, childArgs, {
   stdio: "inherit",
   env: process.env,
   cwd: resolve(__dirname, ".."),
-  shell: process.platform === "win32",
 });
 
 child.on("exit", (code, signal) => {

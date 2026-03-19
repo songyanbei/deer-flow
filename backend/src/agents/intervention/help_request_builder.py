@@ -293,6 +293,9 @@ def build_help_request_intervention(
     return {
         "request_id": request_id,
         "fingerprint": fingerprint,
+        "interrupt_kind": "clarification" if interaction_kind == "input" else ("confirmation" if interaction_kind == "confirm" else "selection"),
+        "semantic_key": fingerprint,
+        "source_signal": "request_help",
         "intervention_type": "clarification",
         "title": title,
         "reason": reason,

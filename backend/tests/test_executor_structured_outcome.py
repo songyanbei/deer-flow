@@ -112,7 +112,27 @@ def test_executor_branches_to_waiting_intervention_from_structured_outcome(monke
                     ToolMessage(
                         name="intervention_required",
                         tool_call_id="create-1",
-                        content=json.dumps({"request_id": "req-1", "fingerprint": "fp-1", "context": {"idempotency_key": "idem-1"}}),
+                        content=json.dumps(
+                            {
+                                "request_id": "req-1",
+                                "fingerprint": "fp-1",
+                                "semantic_key": "sem-1",
+                                "interrupt_kind": "before_tool",
+                                "source_signal": "intervention_required",
+                                "intervention_type": "before_tool",
+                                "title": "Confirm meeting creation",
+                                "reason": "This tool has side effects",
+                                "source_agent": "meeting-agent",
+                                "source_task_id": "task-1",
+                                "action_schema": {
+                                    "actions": [
+                                        {"key": "approve", "resolution_behavior": "resume_current_task"}
+                                    ]
+                                },
+                                "created_at": "2026-03-19T00:00:00+00:00",
+                                "context": {"idempotency_key": "idem-1"},
+                            }
+                        ),
                     ),
                 ]
             }
@@ -124,7 +144,11 @@ def test_executor_branches_to_waiting_intervention_from_structured_outcome(monke
     assert task["status"] == "WAITING_INTERVENTION"
     assert task["continuation_mode"] == "resume_tool_call"
     assert task["pending_interrupt"]["interrupt_type"] == "intervention"
+    assert task["pending_interrupt"]["interrupt_kind"] == "before_tool"
+    assert task["pending_interrupt"]["semantic_key"] == "sem-1"
     assert task["pending_tool_call"]["tool_name"] == "meeting_createMeeting"
+    assert task["pending_tool_call"]["snapshot_hash"]
+    assert task["pending_tool_call"]["interrupt_fingerprint"] == "fp-1"
 
 
 def test_executor_marks_done_and_clears_continuation_fields_on_task_complete(monkeypatch):
@@ -218,6 +242,8 @@ def test_executor_legacy_intervention_resume_without_continuation_mode_uses_fall
                 continuation_mode=None,
                 resolved_inputs={
                     "intervention_resolution": {
+                        "request_id": "req-1",
+                        "fingerprint": "fp-1",
                         "action_key": "approve",
                         "payload": {},
                         "resolution_behavior": "resume_current_task",
@@ -277,3 +303,118 @@ def test_executor_legacy_intervention_resume_without_continuation_mode_uses_fall
     task = result["task_pool"][0]
     assert task["status"] == "DONE"
     assert task["continuation_mode"] is None
+
+
+def test_executor_does_not_reexecute_consumed_intervention(monkeypatch):
+    class FollowupAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            raise AssertionError("agent should not run after an intervention is already consumed")
+
+    execute_tool = AsyncMock(side_effect=AssertionError("tool should not be executed twice"))
+
+    state = {
+        "task_pool": [
+            _base_task(
+                status_detail="@intervention_resolved",
+                intervention_status="consumed",
+                continuation_mode="resume_tool_call",
+                resolved_inputs={
+                    "intervention_resolution": {
+                        "request_id": "req-1",
+                        "fingerprint": "fp-1",
+                        "action_key": "approve",
+                        "payload": {},
+                        "resolution_behavior": "resume_current_task",
+                    }
+                },
+                pending_tool_call={
+                    "tool_name": "meeting_createMeeting",
+                    "tool_args": {"roomId": "room-a"},
+                    "tool_call_id": "create-1",
+                    "snapshot_hash": "dont-care",
+                    "interrupt_fingerprint": "fp-1",
+                },
+            )
+        ],
+        "verified_facts": {},
+        "messages": [HumanMessage(content="[intervention_resolved] request_id=req-1 action_key=approve")],
+    }
+
+    def _make_lead_agent(_config):
+        return FollowupAgent()
+
+    monkeypatch.setattr(
+        "src.agents.executor.executor.load_agent_config",
+        lambda _name: SimpleNamespace(mcp_servers=[], intervention_policies={}, hitl_keywords=[]),
+    )
+
+    async def _run():
+        with patch("src.agents.executor.executor._ensure_mcp_ready", AsyncMock(return_value=None)):
+            with patch("src.agents.executor.executor._execute_intercepted_tool_call", new=execute_tool):
+                with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+                    with patch("src.agents.lead_agent.agent.make_lead_agent", new=_make_lead_agent):
+                        return await executor_node(state, {"configurable": {"thread_id": "thread-1"}})
+
+    result = asyncio.run(_run())
+
+    assert result["execution_state"] == "EXECUTING_DONE"
+    assert result["task_pool"][0]["intervention_status"] == "consumed"
+    execute_tool.assert_not_awaited()
+
+
+def test_executor_rejects_resume_when_pending_tool_snapshot_drifts(monkeypatch):
+    class FollowupAgent:
+        async def ainvoke(self, *_args, **_kwargs):
+            raise AssertionError("agent should not run when snapshot drift is detected")
+
+    execute_tool = AsyncMock(side_effect=AssertionError("tool should not execute when snapshot drift is detected"))
+
+    state = {
+        "task_pool": [
+            _base_task(
+                status_detail="@intervention_resolved",
+                intervention_status="resolved",
+                continuation_mode="resume_tool_call",
+                resolved_inputs={
+                    "intervention_resolution": {
+                        "request_id": "req-1",
+                        "fingerprint": "fp-1",
+                        "action_key": "approve",
+                        "payload": {},
+                        "resolution_behavior": "resume_current_task",
+                    }
+                },
+                pending_tool_call={
+                    "tool_name": "meeting_createMeeting",
+                    "tool_args": {"roomId": "room-a"},
+                    "tool_call_id": "create-1",
+                    "snapshot_hash": "stale-snapshot",
+                    "interrupt_fingerprint": "fp-1",
+                },
+            )
+        ],
+        "verified_facts": {},
+        "messages": [HumanMessage(content="[intervention_resolved] request_id=req-1 action_key=approve")],
+    }
+
+    def _make_lead_agent(_config):
+        return FollowupAgent()
+
+    monkeypatch.setattr(
+        "src.agents.executor.executor.load_agent_config",
+        lambda _name: SimpleNamespace(mcp_servers=[], intervention_policies={}, hitl_keywords=[]),
+    )
+
+    async def _run():
+        with patch("src.agents.executor.executor._ensure_mcp_ready", AsyncMock(return_value=None)):
+            with patch("src.agents.executor.executor._execute_intercepted_tool_call", new=execute_tool):
+                with patch("src.agents.executor.executor.make_lead_agent", create=True, new=_make_lead_agent):
+                    with patch("src.agents.lead_agent.agent.make_lead_agent", new=_make_lead_agent):
+                        return await executor_node(state, {"configurable": {"thread_id": "thread-1"}})
+
+    result = asyncio.run(_run())
+
+    task = result["task_pool"][0]
+    assert task["status"] == "FAILED"
+    assert "snapshot drift" in task["error"]
+    execute_tool.assert_not_awaited()

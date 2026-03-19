@@ -59,7 +59,7 @@ def test_build_cached_intervention_entry_for_tool():
     )
 
     assert semantic_fp == generate_tool_semantic_fingerprint("meeting-agent", "book_room", {"room": "A301"})
-    assert entry["max_reuse"] == 3
+    assert entry["max_reuse"] == 1
     assert entry["reuse_count"] == 0
 
 
@@ -171,7 +171,9 @@ def test_executor_auto_resumes_user_clarification_from_cache():
         assert result["execution_state"] == "ROUTING_DONE"
         assert task["status"] == "RUNNING"
         assert task["status_detail"] == "@cache_auto_resolved"
-        assert task["continuation_mode"] == "continue_after_clarification"
+        assert task["continuation_mode"] == "continue_after_intervention"
+        assert task["resolved_inputs"]["intervention_resolution"]["request_id"] == f"cache:{semantic_fp}"
+        assert task["resolved_inputs"]["intervention_resolution"]["fingerprint"] == semantic_fp
         assert task["resolved_inputs"]["intervention_resolution"]["payload"] == {"selected": "Room A"}
         assert result["intervention_cache"][semantic_fp]["reuse_count"] == 1
 
@@ -228,7 +230,9 @@ def test_router_compatibility_path_auto_resolves_from_cache():
         assert result["execution_state"] == "ROUTING_DONE"
         assert task["status"] == "RUNNING"
         assert task["status_detail"] == "@cache_auto_resolved"
-        assert task["continuation_mode"] == "continue_after_clarification"
+        assert task["continuation_mode"] == "continue_after_intervention"
+        assert task["resolved_inputs"]["intervention_resolution"]["request_id"] == f"cache:{semantic_fp}"
+        assert task["resolved_inputs"]["intervention_resolution"]["fingerprint"] == semantic_fp
         assert task["resolved_inputs"]["intervention_resolution"]["payload"] == {"selected": "Room A"}
         assert result["intervention_cache"][semantic_fp]["reuse_count"] == 1
 
@@ -301,7 +305,9 @@ def test_executor_auto_resumes_input_clarification_from_cache():
         assert result["execution_state"] == "ROUTING_DONE"
         assert task["status"] == "RUNNING"
         assert task["status_detail"] == "@cache_auto_resolved"
-        assert task["continuation_mode"] == "continue_after_clarification"
+        assert task["continuation_mode"] == "continue_after_intervention"
+        assert task["resolved_inputs"]["intervention_resolution"]["request_id"] == f"cache:{semantic_fp}"
+        assert task["resolved_inputs"]["intervention_resolution"]["fingerprint"] == semantic_fp
         assert task["resolved_inputs"]["intervention_resolution"]["payload"] == {"text": "Quarterly planning"}
         assert result["intervention_cache"][semantic_fp]["reuse_count"] == 1
 
@@ -357,7 +363,9 @@ def test_router_compatibility_path_auto_resolves_input_clarification_from_cache(
         assert result["execution_state"] == "ROUTING_DONE"
         assert task["status"] == "RUNNING"
         assert task["status_detail"] == "@cache_auto_resolved"
-        assert task["continuation_mode"] == "continue_after_clarification"
+        assert task["continuation_mode"] == "continue_after_intervention"
+        assert task["resolved_inputs"]["intervention_resolution"]["request_id"] == f"cache:{semantic_fp}"
+        assert task["resolved_inputs"]["intervention_resolution"]["fingerprint"] == semantic_fp
         assert task["resolved_inputs"]["intervention_resolution"]["payload"] == {"text": "Quarterly planning"}
         assert result["intervention_cache"][semantic_fp]["reuse_count"] == 1
 
@@ -410,6 +418,11 @@ def test_router_writes_cache_on_intervention_resolution():
         assert semantic_fp in result["intervention_cache"]
         assert result["intervention_cache"][semantic_fp]["intervention_type"] == "clarification"
         assert result["intervention_cache"][semantic_fp]["max_reuse"] == -1
+        task = result["task_pool"][0]
+        assert task["intervention_resolution"]["request_id"] == "intv-1"
+        assert task["intervention_resolution"]["fingerprint"] == semantic_fp
+        assert task["intervention_resolution"]["resolution_behavior"] == "resume_current_task"
+        assert task["resolved_inputs"]["intervention_resolution"]["request_id"] == "intv-1"
 
     asyncio.run(_run())
 

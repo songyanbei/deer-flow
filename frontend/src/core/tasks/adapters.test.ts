@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   fromLegacyTaskEvent,
   fromMultiAgentTaskEvent,
+  fromMultiAgentTaskState,
   type MultiAgentTaskEvent,
 } from "./adapters";
 
@@ -135,10 +136,30 @@ describe("task adapters", () => {
       status: "waiting_intervention",
       intervention_fingerprint: "fp-1",
       intervention_status: "pending",
+      pending_interrupt: {
+        interrupt_type: "intervention",
+        interrupt_kind: "before_tool",
+        request_id: "req-1",
+        fingerprint: "fp-1",
+        semantic_key: "meeting_createMeeting:confirm",
+        source_signal: "intervention_required",
+        source_agent: "ops-agent",
+        created_at: "2026-03-17T10:00:00.000Z",
+      },
+      intervention_resolution: {
+        request_id: "req-1",
+        fingerprint: "fp-1",
+        action_key: "approve",
+        payload: {},
+        resolution_behavior: "resume_current_task",
+      },
       intervention_request: {
         request_id: "req-1",
         fingerprint: "fp-1",
         intervention_type: "approval",
+        interrupt_kind: "before_tool",
+        semantic_key: "meeting_createMeeting:confirm",
+        source_signal: "intervention_required",
         title: "Need approval",
         reason: "This action sends an external email.",
         source_agent: "ops-agent",
@@ -162,6 +183,75 @@ describe("task adapters", () => {
     expect(task.interventionFingerprint).toBe("fp-1");
     expect(task.interventionStatus).toBe("pending");
     expect(task.interventionRequest?.title).toBe("Need approval");
+    expect(task.interventionRequest?.interrupt_kind).toBe("before_tool");
+    expect(task.interventionRequest?.semantic_key).toBe(
+      "meeting_createMeeting:confirm",
+    );
+    expect(task.pendingInterrupt?.source_signal).toBe("intervention_required");
+    expect(task.interventionResolution?.action_key).toBe("approve");
+  });
+
+  it("preserves steady-state intervention metadata from hydrated task state", () => {
+    const task = fromMultiAgentTaskState({
+      task_id: "task-int-1",
+      description: "Approve sending the email",
+      run_id: "run-1",
+      status: "WAITING_INTERVENTION",
+      pending_interrupt: {
+        interrupt_type: "intervention",
+        interrupt_kind: "before_tool",
+        request_id: "req-1",
+        fingerprint: "fp-1",
+        semantic_key: "meeting_createMeeting:confirm",
+        source_signal: "intervention_required",
+        source_agent: "ops-agent",
+        created_at: "2026-03-17T10:00:00.000Z",
+      },
+      intervention_request: {
+        request_id: "req-1",
+        fingerprint: "fp-1",
+        intervention_type: "approval",
+        interrupt_kind: "before_tool",
+        semantic_key: "meeting_createMeeting:confirm",
+        source_signal: "intervention_required",
+        title: "Need approval",
+        reason: "This action sends an external email.",
+        source_agent: "ops-agent",
+        source_task_id: "task-int-1",
+        action_schema: {
+          actions: [
+            {
+              key: "approve",
+              label: "Approve",
+              kind: "button",
+              resolution_behavior: "resume_current_task",
+            },
+          ],
+        },
+        created_at: "2026-03-17T10:00:00.000Z",
+      },
+      intervention_status: "resolved",
+      intervention_fingerprint: "fp-1",
+      intervention_resolution: {
+        request_id: "req-1",
+        fingerprint: "fp-1",
+        action_key: "approve",
+        payload: {},
+        resolution_behavior: "resume_current_task",
+      },
+      updated_at: "2026-03-17T10:01:00.000Z",
+    }, "thread-1");
+
+    expect(task.status).toBe("waiting_intervention");
+    expect(task.pendingInterrupt?.semantic_key).toBe(
+      "meeting_createMeeting:confirm",
+    );
+    expect(task.interventionRequest?.source_signal).toBe(
+      "intervention_required",
+    );
+    expect(task.interventionResolution?.resolution_behavior).toBe(
+      "resume_current_task",
+    );
   });
 
   it("maps task_timed_out to a failed legacy task", () => {

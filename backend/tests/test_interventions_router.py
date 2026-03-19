@@ -48,6 +48,9 @@ def _pending_task(
         "intervention_request": {
             "request_id": request_id,
             "fingerprint": fingerprint,
+            "semantic_key": fingerprint,
+            "interrupt_kind": "before_tool" if intervention_type == "before_tool" else "selection",
+            "source_signal": "intervention_required" if intervention_type == "before_tool" else "request_help",
             "intervention_type": intervention_type,
             "source_agent": "meeting-agent",
             "source_task_id": "task-1",
@@ -100,7 +103,11 @@ def test_resolve_intervention_accepts_valid_resume_request():
     updated_task = client_mock.threads.update_state.await_args.kwargs["values"]["task_pool"][0]
     assert updated_task["status"] == "RUNNING"
     assert updated_task["intervention_status"] == "resolved"
+    assert updated_task["intervention_resolution"]["request_id"] == "intv-1"
+    assert updated_task["intervention_resolution"]["fingerprint"] == "fp-1"
+    assert updated_task["intervention_resolution"]["resolution_behavior"] == "resume_current_task"
     assert updated_task["resolved_inputs"]["intervention_resolution"]["payload"] == {"comment": "go ahead"}
+    assert updated_task["resolved_inputs"]["intervention_resolution"]["request_id"] == "intv-1"
     assert updated_values["intervention_cache"]
 
 
@@ -125,6 +132,7 @@ def test_resolve_intervention_marks_task_failed_for_reject_action():
     assert updated_task["status"] == "FAILED"
     assert updated_task["status_detail"] == "@failed"
     assert "Intervention rejected by user" in updated_task["error"]
+    assert updated_task["intervention_resolution"]["resolution_behavior"] == "fail_current_task"
     assert client_mock.threads.update_state.await_args.kwargs["values"]["intervention_cache"]
     client_mock.runs.create.assert_not_awaited()
 

@@ -289,3 +289,29 @@ clarification on how a payload will be displayed.
   detail.
 - Notes:
   this affects how verbose backend message text should be.
+
+## [open] Runtime steady-state additive intervention fields
+- Date: 2026-03-19
+- Related feature: `features/workflow-intervention-runtime-steady-state.md`
+- Blocking area: optional intervention UI dedup / diagnostics enhancement
+- Backend update:
+  intervention payloads and task state now include additive optional fields for
+  steady-state runtime identity:
+  - `intervention_request.interrupt_kind`
+  - `intervention_request.semantic_key`
+  - `intervention_request.source_signal`
+  - `task.pending_interrupt.interrupt_kind`
+  - `task.pending_interrupt.semantic_key`
+  - `task.pending_interrupt.source_signal`
+  - `task.pending_interrupt.source_agent`
+- Frontend impact:
+  no blocking contract change. Existing rendering may continue to rely on
+  current `fingerprint`, `intervention_request`, and `intervention_status`
+  fields only.
+- Suggested UI behavior:
+  optionally prefer these fields for authoritative-card dedup, debugging, and
+  stale-state diagnostics, but do not make business decisions that diverge from
+  backend authoritative state.
+- Notes:
+  `fingerprint` remains the public compatibility field; the new fields are
+  additive only.

@@ -18,6 +18,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AIMessage, ToolMessage
 
+from src.agents.intervention.help_request_builder import should_interrupt_for_user_clarification
 from src.agents.thread_state import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,8 @@ class _OutcomeBase(TypedDict):
     kind: str
     messages: list[Any]
     new_messages_start: int
+    selected_signal: NotRequired[str]
+    suppressed_signals: NotRequired[list[str]]
 
 
 class CompleteOutcome(_OutcomeBase):
@@ -168,13 +171,36 @@ def _extract_intercepted_tool_call_from_messages(messages: list[Any], interventi
     return None
 
 
-def _find_last_terminal_in_range(messages: list[Any], start: int) -> tuple[int, ToolMessage] | None:
-    """Scan messages[start:] backwards for the last terminal tool signal."""
-    for idx in range(len(messages) - 1, start - 1, -1):
-        msg = messages[idx]
-        if isinstance(msg, ToolMessage) and getattr(msg, "name", None) in _TERMINAL_TOOL_NAMES:
-            return idx, msg
+def _classify_request_help_signal(raw_content: str) -> str:
+    payload = _parse_json_object(raw_content) or {}
+    if should_interrupt_for_user_clarification(payload):
+        return "request_help_user"
+    return "request_help_system"
+
+
+def _classify_terminal_signal(msg: ToolMessage) -> str | None:
+    tool_name = getattr(msg, "name", None)
+    if tool_name == "intervention_required":
+        return "intervention_required"
+    if tool_name == "request_help":
+        return _classify_request_help_signal(_content_to_text(msg.content))
+    if tool_name == "ask_clarification":
+        return "ask_clarification"
+    if tool_name == "task_complete":
+        return "task_complete"
+    if tool_name == "task_fail":
+        return "task_fail"
     return None
+
+
+_SIGNAL_PRIORITY = {
+    "intervention_required": 0,
+    "request_help_user": 1,
+    "ask_clarification": 2,
+    "request_help_system": 3,
+    "task_complete": 4,
+    "task_fail": 4,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -202,12 +228,23 @@ def normalize_agent_outcome(
     current_round = messages[new_messages_start:]
 
     # --- Priority 1: find explicit terminal tool in current round ---
-    terminal = _find_last_terminal_in_range(messages, new_messages_start)
+    terminals: list[tuple[int, ToolMessage, str]] = []
+    for idx in range(new_messages_start, len(messages)):
+        msg = messages[idx]
+        if not isinstance(msg, ToolMessage):
+            continue
+        signal = _classify_terminal_signal(msg)
+        if signal is not None:
+            terminals.append((idx, msg, signal))
 
-    if terminal is not None:
-        terminal_idx, terminal_msg = terminal
+    if terminals:
+        terminal_idx, terminal_msg, selected_signal = min(
+            terminals,
+            key=lambda item: (_SIGNAL_PRIORITY[item[2]], item[0]),
+        )
         tool_name = getattr(terminal_msg, "name", None)
         raw_content = _content_to_text(terminal_msg.content)
+        suppressed_signals = [signal for idx, _msg, signal in terminals if idx != terminal_idx]
 
         # Priority 0: detect tool invocation errors (validation failures, etc.)
         # before classifying by tool name.  A failed tool call should never be
@@ -223,6 +260,8 @@ def normalize_agent_outcome(
                 kind="fail",
                 messages=messages,
                 new_messages_start=new_messages_start,
+                selected_signal=selected_signal,
+                suppressed_signals=suppressed_signals,
                 error_message=raw_content,
                 retryable=True,
             ), False
@@ -238,6 +277,8 @@ def normalize_agent_outcome(
                 kind="request_intervention",
                 messages=messages,
                 new_messages_start=new_messages_start,
+                selected_signal=selected_signal,
+                suppressed_signals=suppressed_signals,
                 intervention_request=payload or {},
                 pending_tool_call=pending_tool,
             ), False
@@ -249,6 +290,8 @@ def normalize_agent_outcome(
                 kind="request_dependency",
                 messages=messages,
                 new_messages_start=new_messages_start,
+                selected_signal=selected_signal,
+                suppressed_signals=suppressed_signals,
                 help_request=payload or {},
             ), False
 
@@ -258,6 +301,8 @@ def normalize_agent_outcome(
                 kind="request_clarification",
                 messages=messages,
                 new_messages_start=new_messages_start,
+                selected_signal=selected_signal,
+                suppressed_signals=suppressed_signals,
                 prompt=raw_content,
             ), False
 
@@ -276,6 +321,8 @@ def normalize_agent_outcome(
                 kind="complete",
                 messages=messages,
                 new_messages_start=new_messages_start,
+                selected_signal=selected_signal,
+                suppressed_signals=suppressed_signals,
                 result_text=result_text,
                 fact_payload=fact_payload,
             ), False
@@ -287,6 +334,8 @@ def normalize_agent_outcome(
                 kind="fail",
                 messages=messages,
                 new_messages_start=new_messages_start,
+                selected_signal=selected_signal,
+                suppressed_signals=suppressed_signals,
                 error_message=payload.get("error_message", raw_content),
                 retryable=bool(payload.get("retryable", False)),
             ), False

@@ -32,7 +32,12 @@ from src.agents.thread_state import (
     ThreadState,
     WorkflowStage,
 )
-from src.agents.workflow_resume import is_intervention_resolution_message
+from src.agents.workflow_resume import (
+    apply_intervention_resolution,
+    build_intervention_resolution_record,
+    build_intervention_resolved_inputs_entry,
+    is_intervention_resolution_message,
+)
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 
@@ -670,6 +675,19 @@ def _interrupt_for_intervention(
         "intervention_fingerprint": intervention_request["fingerprint"],
         "intervention_resolution": None,
         "status_detail": "@waiting_intervention",
+        "continuation_mode": "continue_after_intervention",
+        "pending_interrupt": {
+            "interrupt_type": "intervention",
+            "interrupt_kind": intervention_request.get("interrupt_kind"),
+            "request_id": intervention_request.get("request_id"),
+            "fingerprint": intervention_request.get("fingerprint"),
+            "semantic_key": intervention_request.get("semantic_key"),
+            "source_signal": intervention_request.get("source_signal") or "request_help",
+            "source": agent_name,
+            "source_agent": agent_name,
+            "created_at": _utc_now_iso(),
+        },
+        "pending_tool_call": None,
         "updated_at": _utc_now_iso(),
     }
     _emit_task_event(
@@ -703,12 +721,15 @@ def _auto_resolve_intervention_from_cache(
     updated_entry = increment_cache_reuse_count(cached)
     updated_cache = {**intervention_cache, semantic_fp: updated_entry}
 
+    cached_resolution = build_intervention_resolution_record(
+        request_id=f"cache:{semantic_fp}",
+        fingerprint=semantic_fp,
+        action_key=updated_entry["action_key"],
+        payload=updated_entry.get("payload", {}),
+        resolution_behavior=updated_entry.get("resolution_behavior", "resume_current_task"),
+    )
     resolved_inputs = dict(parent_task.get("resolved_inputs") or {})
-    resolved_inputs["intervention_resolution"] = {
-        "action_key": updated_entry["action_key"],
-        "payload": updated_entry.get("payload", {}),
-        "resolution_behavior": updated_entry.get("resolution_behavior", "resume_current_task"),
-    }
+    resolved_inputs["intervention_resolution"] = build_intervention_resolved_inputs_entry(cached_resolution)
 
     resumed_task: TaskStatus = {
         **parent_task,
@@ -718,10 +739,13 @@ def _auto_resolve_intervention_from_cache(
         "blocked_reason": None,
         "clarification_prompt": None,
         "clarification_request": None,
+        "intervention_resolution": cached_resolution,
         "resolved_inputs": resolved_inputs,
         "status_detail": "@cache_auto_resolved",
-        "continuation_mode": "continue_after_clarification",
+        "continuation_mode": "continue_after_intervention",
         "resume_count": int(parent_task.get("resume_count") or 0) + 1,
+        "pending_interrupt": None,
+        "pending_tool_call": None,
         "updated_at": _utc_now_iso(),
     }
     _emit_task_event(
@@ -1033,48 +1057,32 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                 action_key_match = _re.search(r"action_key=(\S+)", msg_text)
                 request_id = req_id_match.group(1) if req_id_match else intervention_request.get("request_id", "")
                 action_key = action_key_match.group(1) if action_key_match else "approve"
+                intervention_resolution = build_intervention_resolution_record(
+                    request_id=request_id,
+                    fingerprint=intervention_request.get("fingerprint", ""),
+                    action_key=action_key,
+                    payload={},
+                    resolution_behavior="resume_current_task",
+                )
 
-                intervention_resolution: InterventionResolution = {
-                    "request_id": request_id,
-                    "fingerprint": intervention_request.get("fingerprint", ""),
-                    "action_key": action_key,
-                    "payload": {},
-                }
-
-            # Determine resolution behavior from action_schema
             action_key = intervention_resolution.get("action_key", "approve")
-            action_schema = intervention_request.get("action_schema", {})
-            actions = action_schema.get("actions", [])
-            resolution_behavior = "resume_current_task"
-            for action in actions:
-                if action.get("key") == action_key:
-                    resolution_behavior = action.get("resolution_behavior", "resume_current_task")
-                    break
-
-            if resolution_behavior == "fail_current_task":
-                new_status = "FAILED"
-                status_detail = "@failed"
-            else:
-                new_status = "RUNNING"
-                status_detail = "@intervention_resolved"
-
-            # Build resolved_inputs with intervention_resolution info
-            existing_resolved = dict(task.get("resolved_inputs") or {})
-            existing_resolved["intervention_resolution"] = {
-                "action_key": action_key,
-                "payload": intervention_resolution.get("payload", {}),
-                "resolution_behavior": resolution_behavior,
-            }
-
-            updated_task: TaskStatus = {
-                **task,
-                "status": new_status,
-                "intervention_status": "resolved",
-                "intervention_resolution": intervention_resolution,
-                "resolved_inputs": existing_resolved,
-                "status_detail": status_detail,
-                "updated_at": _utc_now_iso(),
-            }
+            updated_task, resolution_error = apply_intervention_resolution(
+                task,
+                intervention_resolution,
+                resolved_at=_utc_now_iso(),
+            )
+            if resolution_error is not None or updated_task is None:
+                logger.warning(
+                    "[Router] Failed to apply in-graph intervention resolution task_id=%s request_id=%s error=%s",
+                    task["task_id"],
+                    intervention_resolution.get("request_id"),
+                    resolution_error,
+                )
+                return {
+                    "execution_state": "INTERRUPTED",
+                    "route_count": route_count,
+                }
+            resolution_behavior = updated_task.get("intervention_resolution", {}).get("resolution_behavior", "resume_current_task")
             semantic_fp, cache_entry = build_cached_intervention_entry(
                 intervention_request,
                 action_key=action_key,
@@ -1099,11 +1107,11 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                 intervention_resolution.get("request_id"),
                 action_key,
                 resolution_behavior,
-                new_status,
+                updated_task["status"],
             )
-            _emit_task_event(writer, "task_resumed", updated_task, task.get("assigned_agent", ""), status_detail=status_detail)
+            _emit_task_event(writer, "task_resumed", updated_task, task.get("assigned_agent", ""), status_detail=updated_task.get("status_detail"))
 
-            if new_status == "RUNNING":
+            if updated_task["status"] == "RUNNING":
                 detail = _build_executing_detail(updated_task)
                 _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
                 return {
