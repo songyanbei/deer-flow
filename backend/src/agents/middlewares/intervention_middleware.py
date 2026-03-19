@@ -20,7 +20,12 @@ from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from src.agents.intervention.decision_cache import (
+    increment_cache_reuse_count,
+    is_intervention_cache_valid,
+)
 from src.agents.intervention.display_projection import build_display_projection
+from src.agents.intervention.fingerprint import generate_tool_semantic_fingerprint
 from src.agents.thread_state import InterventionActionSchema, InterventionRequest
 
 logger = logging.getLogger(__name__)
@@ -209,6 +214,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         task_id: str = "",
         agent_name: str = "",
         resolved_fingerprints: set[str] | None = None,
+        intervention_cache: dict[str, dict[str, Any]] | None = None,
     ):
         self._intervention_policies = intervention_policies or {}
         self._hitl_keywords = hitl_keywords or []
@@ -216,6 +222,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         self._task_id = task_id
         self._agent_name = agent_name
         self._resolved_fingerprints = resolved_fingerprints or set()
+        self._intervention_cache = intervention_cache if intervention_cache is not None else {}
 
     def _should_intervene(self, tool_name: str, tool_args: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         """Determine whether a tool call should trigger intervention.
@@ -253,6 +260,35 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
             self._run_id, self._task_id, self._agent_name, tool_name, tool_args
         )
         return fingerprint in self._resolved_fingerprints
+
+    def _check_cached_resolution(self, tool_name: str, tool_args: dict[str, Any]) -> bool:
+        semantic_fp = generate_tool_semantic_fingerprint(self._agent_name, tool_name, tool_args)
+        cached = self._intervention_cache.get(semantic_fp)
+        if not cached:
+            return False
+        if not is_intervention_cache_valid(cached, require_resume_behavior=True):
+            max_reuse = cached.get("max_reuse", -1)
+            reuse_count = cached.get("reuse_count", 0)
+            if max_reuse != -1 and reuse_count >= max_reuse:
+                logger.info(
+                    "[InterventionMiddleware] [Cache EXPIRED] tool='%s' semantic_fp=%s reuse_count=%s reached max_reuse=%s",
+                    tool_name,
+                    semantic_fp,
+                    reuse_count,
+                    max_reuse,
+                )
+            return False
+
+        updated_entry = increment_cache_reuse_count(cached)
+        self._intervention_cache[semantic_fp] = updated_entry
+        logger.info(
+            "[InterventionMiddleware] [Cache HIT] tool='%s' semantic_fp=%s reuse_count=%s/%s",
+            tool_name,
+            semantic_fp,
+            updated_entry.get("reuse_count", 0),
+            updated_entry.get("max_reuse", -1),
+        )
+        return True
 
     def _handle_intervention(self, request: ToolCallRequest, tool_name: str, tool_args: dict[str, Any], policy: dict[str, Any] | None) -> Command:
         """Build intervention request and return Command to halt execution."""
@@ -302,6 +338,9 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
                 self._run_id,
             )
             return None  # signal to call handler
+
+        if self._check_cached_resolution(tool_name, tool_args):
+            return None
 
         return self._handle_intervention(request, tool_name, tool_args, policy)
 

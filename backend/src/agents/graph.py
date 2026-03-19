@@ -63,8 +63,8 @@ def route_after_workflow_executor(state: ThreadState) -> str:
         logger.debug("[Graph] executor -> END (INTERRUPTED)")
         return END
     task_pool = state.get("task_pool") or []
-    if any(task.get("status") in ("WAITING_DEPENDENCY", "WAITING_INTERVENTION") for task in task_pool):
-        logger.debug("[Graph] executor -> router (WAITING_DEPENDENCY or WAITING_INTERVENTION)")
+    if any(task.get("status") in ("RUNNING", "WAITING_DEPENDENCY", "WAITING_INTERVENTION") for task in task_pool):
+        logger.debug("[Graph] executor -> router (RUNNING, WAITING_DEPENDENCY, or WAITING_INTERVENTION)")
         return "router"
     logger.debug("[Graph] executor -> planner")
     return "planner"

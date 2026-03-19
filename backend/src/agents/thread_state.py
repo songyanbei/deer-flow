@@ -189,6 +189,19 @@ class InterventionResolution(TypedDict):
     payload: dict[str, Any]
 
 
+class CachedInterventionResolution(TypedDict):
+    """Reusable intervention decision cached at the thread level."""
+
+    action_key: str
+    payload: dict[str, Any]
+    resolution_behavior: str
+    resolved_at: str
+    intervention_type: str
+    source_agent: str
+    max_reuse: int
+    reuse_count: int
+
+
 # ---------------------------------------------------------------------------
 # Continuation State Types (Phase 2)
 # ---------------------------------------------------------------------------
@@ -266,6 +279,7 @@ WorkflowStage = Literal[
 
 
 VerifiedFact = dict[str, VerifiedFactEntry]
+InterventionCache = dict[str, CachedInterventionResolution]
 
 
 def _is_valid_status_transition(old_status: str, new_status: str) -> bool:
@@ -339,6 +353,18 @@ def merge_viewed_images(existing: dict[str, ViewedImageData] | None, new: dict[s
     return {**existing, **new}
 
 
+def merge_intervention_cache(
+    existing: InterventionCache | None,
+    new: InterventionCache | None,
+) -> InterventionCache:
+    """Reducer for intervention cache keyed by semantic fingerprint."""
+    if existing is None:
+        return new or {}
+    if new is None:
+        return existing
+    return {**existing, **new}
+
+
 class ThreadState(AgentState):
     sandbox: NotRequired[SandboxState | None]
     thread_data: NotRequired[ThreadDataState | None]
@@ -359,6 +385,7 @@ class ThreadState(AgentState):
     planner_goal: NotRequired[str | None]
     task_pool: Annotated[list[TaskStatus], merge_task_pool]
     verified_facts: Annotated[VerifiedFact, merge_verified_facts]
+    intervention_cache: Annotated[InterventionCache, merge_intervention_cache]
     route_count: NotRequired[int]
     validate_retries: NotRequired[int]
     execution_state: NotRequired[str | None]

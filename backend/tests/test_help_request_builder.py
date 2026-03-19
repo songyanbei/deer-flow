@@ -6,6 +6,7 @@ from src.agents.intervention.help_request_builder import (
     resolve_user_interaction_kind,
     should_interrupt_for_user_clarification,
 )
+from src.agents.intervention.fingerprint import generate_clarification_semantic_fingerprint
 
 
 def _make_task(task_id: str = "task-1", status: str = "RUNNING") -> dict:
@@ -110,7 +111,7 @@ def test_build_intervention_single_select():
     assert result["source_agent"] == "meeting-agent"
     assert result["category"] == "user_clarification"
     assert result["request_id"].startswith("intv_")
-    assert result["fingerprint"].startswith("fp_")
+    assert len(result["fingerprint"]) == 24
     assert result["title"] == "Which meeting room?"
 
     actions = result["action_schema"]["actions"]
@@ -167,3 +168,52 @@ def test_build_intervention_input_fallback():
     actions = result["action_schema"]["actions"]
     assert actions[0]["kind"] == "input"
     assert actions[0]["placeholder"] == "Enter meeting topic"
+
+
+def test_clarification_semantic_fingerprint_deterministic():
+    fp1 = generate_clarification_semantic_fingerprint(
+        "meeting-agent",
+        "Which meeting room?",
+        ["Room A", "Room B"],
+    )
+    fp2 = generate_clarification_semantic_fingerprint(
+        "meeting-agent",
+        "Which meeting room?",
+        ["Room B", "Room A"],
+    )
+    assert fp1 == fp2
+
+
+def test_clarification_semantic_fingerprint_deterministic_without_options():
+    fp1 = generate_clarification_semantic_fingerprint(
+        "meeting-agent",
+        "What topic should I use?",
+        [],
+    )
+    fp2 = generate_clarification_semantic_fingerprint(
+        "meeting-agent",
+        "  What topic should I use?  ",
+        [],
+    )
+    assert fp1 == fp2
+
+
+def test_build_intervention_uses_deterministic_fingerprint():
+    task = _make_task()
+    help_request = {
+        "problem": "Need room selection",
+        "reason": "Multiple rooms available",
+        "clarification_question": "Which meeting room?",
+        "clarification_options": ["Room A", "Room B"],
+        "resolution_strategy": "user_clarification",
+    }
+
+    first = build_help_request_intervention(task, help_request, agent_name="meeting-agent")
+    second = build_help_request_intervention(task, help_request, agent_name="meeting-agent")
+
+    assert first["fingerprint"] == second["fingerprint"]
+    assert first["fingerprint"] == generate_clarification_semantic_fingerprint(
+        "meeting-agent",
+        "Which meeting room?",
+        ["Room A", "Room B"],
+    )

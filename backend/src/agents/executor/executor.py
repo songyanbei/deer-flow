@@ -11,6 +11,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, messag
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
+from src.agents.intervention.decision_cache import (
+    DEFAULT_CLARIFICATION_MAX_REUSE,
+    increment_cache_reuse_count,
+    is_intervention_cache_valid,
+)
+from src.agents.intervention.fingerprint import generate_clarification_semantic_fingerprint
 from src.agents.executor.outcome import normalize_agent_outcome
 from src.agents.thread_state import (
     HelpRequestPayload,
@@ -573,6 +579,62 @@ def _clear_continuation_fields() -> dict[str, Any]:
     }
 
 
+def _auto_resume_from_clarification_cache(
+    task: TaskStatus,
+    *,
+    cached: dict[str, Any],
+    semantic_fp: str,
+    intervention_cache: dict[str, dict[str, Any]],
+    serialized_messages: list[dict[str, Any]],
+    next_help_depth: int,
+    agent_name: str,
+    writer: Callable[[dict[str, Any]], None],
+) -> dict[str, Any]:
+    updated_entry = increment_cache_reuse_count(cached)
+    updated_cache = {**intervention_cache, semantic_fp: updated_entry}
+
+    resolved_inputs = dict(task.get("resolved_inputs") or {})
+    resolved_inputs["intervention_resolution"] = {
+        "action_key": updated_entry["action_key"],
+        "payload": updated_entry.get("payload", {}),
+        "resolution_behavior": updated_entry.get("resolution_behavior", "resume_current_task"),
+    }
+
+    resumed_task: TaskStatus = {
+        **task,
+        "status": "RUNNING",
+        "requested_by_agent": agent_name,
+        "request_help": None,
+        "blocked_reason": None,
+        "help_depth": next_help_depth,
+        "clarification_prompt": None,
+        "clarification_request": None,
+        "resolved_inputs": resolved_inputs,
+        "status_detail": "@cache_auto_resolved",
+        "agent_messages": serialized_messages,
+        "continuation_mode": "continue_after_clarification",
+        "pending_interrupt": None,
+        "pending_tool_call": None,
+        "resume_count": int(task.get("resume_count") or 0) + 1,
+        "updated_at": _utc_now_iso(),
+    }
+    _emit_task_event(
+        writer,
+        "task_resumed",
+        resumed_task,
+        agent_name,
+        status_detail="@cache_auto_resolved",
+        resolved_inputs=resumed_task.get("resolved_inputs"),
+        resume_count=resumed_task.get("resume_count"),
+    )
+    return {
+        "task_pool": [resumed_task],
+        "execution_state": "ROUTING_DONE",
+        "run_id": resumed_task.get("run_id"),
+        "intervention_cache": updated_cache,
+    }
+
+
 async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     running = [t for t in task_pool if t["status"] == "RUNNING"]
@@ -601,6 +663,14 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         return _handle_system_special(agent_name, task, state, writer)
 
     try:
+        intervention_cache = state.get("intervention_cache") or {}
+
+        def _with_intervention_cache(payload: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **payload,
+                "intervention_cache": intervention_cache,
+            }
+
         await _ensure_mcp_ready(agent_name)
 
         # Collect resolved fingerprints for dedup in InterventionMiddleware
@@ -628,6 +698,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "intervention_policies": intervention_policies,
                 "hitl_keywords": hitl_keywords,
                 "resolved_fingerprints": resolved_fingerprints,
+                "intervention_cache": intervention_cache,
             }
         )
 
@@ -706,10 +777,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "[Executor] Duplicate resume rejected for task '%s' — intervention already consumed (idempotency_key=%s).",
                     task["task_id"], idem_key,
                 )
-                return {
+                return _with_intervention_cache({
                     "task_pool": [task],
                     "execution_state": "EXECUTING_DONE",
-                }
+                })
 
             logger.info(
                 "[Executor] resume_tool_call: executing intercepted tool '%s' for task '%s' idempotency_key=%s.",
@@ -891,10 +962,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 status_detail="@waiting_intervention",
                 intervention_request=intervention_request,
             )
-            return {
+            return _with_intervention_cache({
                 "task_pool": [intervention_task],
                 "execution_state": "INTERRUPTED",
-            }
+            })
 
         # --- request_dependency ---
         if outcome_kind == "request_dependency":
@@ -942,7 +1013,38 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             if should_interrupt_for_user_clarification(help_request):
                 options = normalize_clarification_options(help_request.get("clarification_options"))
                 strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
-                if options or strategy in {"user_confirmation", "user_multi_select"}:
+                question = str(help_request.get("clarification_question") or "").strip()
+                if question or options or strategy in {"user_confirmation", "user_multi_select"}:
+                    semantic_fp = generate_clarification_semantic_fingerprint(agent_name, question, options)
+                    cached = intervention_cache.get(semantic_fp)
+                    if cached:
+                        if is_intervention_cache_valid(cached, require_resume_behavior=False):
+                            logger.info(
+                                "[Executor] [Cache HIT] clarification semantic_fp=%s reuse_count=%s/%s",
+                                semantic_fp,
+                                cached.get("reuse_count", 0),
+                                cached.get("max_reuse", DEFAULT_CLARIFICATION_MAX_REUSE),
+                            )
+                            return _auto_resume_from_clarification_cache(
+                                task,
+                                cached=cached,
+                                semantic_fp=semantic_fp,
+                                intervention_cache=intervention_cache,
+                                serialized_messages=serialized_messages,
+                                next_help_depth=next_help_depth,
+                                agent_name=agent_name,
+                                writer=writer,
+                            )
+                        max_reuse = cached.get("max_reuse", DEFAULT_CLARIFICATION_MAX_REUSE)
+                        reuse_count = cached.get("reuse_count", 0)
+                        if max_reuse != -1 and reuse_count >= max_reuse:
+                            logger.info(
+                                "[Executor] [Cache EXPIRED] clarification semantic_fp=%s reuse_count=%s reached max_reuse=%s",
+                                semantic_fp,
+                                reuse_count,
+                                max_reuse,
+                            )
+
                     intervention_request = build_help_request_intervention(
                         task, help_request, agent_name=agent_name,
                     )
@@ -985,10 +1087,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                         requested_by_agent=agent_name,
                         status_detail="@waiting_intervention",
                     )
-                    return {
+                    return _with_intervention_cache({
                         "task_pool": [intervention_task],
                         "execution_state": "INTERRUPTED",
-                    }
+                    })
 
             # ── True system dependency ──
             # Only system-owned blocking reaches WAITING_DEPENDENCY.
@@ -1026,10 +1128,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 requested_by_agent=agent_name,
                 status_detail="@waiting_dependency",
             )
-            return {
+            return _with_intervention_cache({
                 "task_pool": [waiting_task],
                 "execution_state": "EXECUTING_DONE",
-            }
+            })
 
         # --- request_clarification ---
         if outcome_kind == "request_clarification":
@@ -1070,11 +1172,11 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 status="waiting_clarification",
                 status_detail="@waiting_clarification",
             )
-            return {
+            return _with_intervention_cache({
                 "task_pool": [interrupted_task],
                 "execution_state": "INTERRUPTED",
                 "messages": [AIMessage(content=clarification_prompt, name="ask_clarification")],
-            }
+            })
 
         # --- fail ---
         if outcome_kind == "fail":
@@ -1098,10 +1200,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "updated_at": _utc_now_iso(),
             }
             _emit_task_event(writer, "task_failed", task, agent_name, error=error_message, status_detail="@failed")
-            return {
+            return _with_intervention_cache({
                 "task_pool": [failed_task],
                 "execution_state": "EXECUTING_DONE",
-            }
+            })
 
         # --- complete (default) ---
         agent_output = outcome.get("result_text", "")
@@ -1131,7 +1233,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "updated_at": _utc_now_iso(),
         }
         _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="@completed")
-        return {
+        return _with_intervention_cache({
             "task_pool": [done_task],
             "verified_facts": {
                 task["task_id"]: {
@@ -1145,7 +1247,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 }
             },
             "execution_state": "EXECUTING_DONE",
-        }
+        })
     except Exception as e:
         logger.error("[Executor] Task '%s' FAILED: %s", task["task_id"], e, exc_info=True)
         failed_task: TaskStatus = {
@@ -1161,7 +1263,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "updated_at": _utc_now_iso(),
         }
         _emit_task_event(writer, "task_failed", task, agent_name, error=str(e), status_detail="@failed")
-        return {
+        return _with_intervention_cache({
             "task_pool": [failed_task],
             "execution_state": "EXECUTING_DONE",
-        }
+        })

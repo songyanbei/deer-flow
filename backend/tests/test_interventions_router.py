@@ -24,6 +24,7 @@ def _pending_task(
     required: bool | None = None,
     min_select: int | None = None,
     max_select: int | None = None,
+    intervention_type: str = "before_tool",
 ):
     action = {
         "key": action_key,
@@ -47,6 +48,11 @@ def _pending_task(
         "intervention_request": {
             "request_id": request_id,
             "fingerprint": fingerprint,
+            "intervention_type": intervention_type,
+            "source_agent": "meeting-agent",
+            "source_task_id": "task-1",
+            "tool_name": "book_room",
+            "context": {"tool_args": {"room": "Room A"}},
             "action_schema": {
                 "actions": [action]
             },
@@ -90,10 +96,12 @@ def test_resolve_intervention_accepts_valid_resume_request():
     assert data["resume_action"] == "submit_resume"
     assert data["resume_payload"]["message"].startswith("[intervention_resolved]")
     client_mock.threads.update_state.assert_awaited_once()
+    updated_values = client_mock.threads.update_state.await_args.kwargs["values"]
     updated_task = client_mock.threads.update_state.await_args.kwargs["values"]["task_pool"][0]
     assert updated_task["status"] == "RUNNING"
     assert updated_task["intervention_status"] == "resolved"
     assert updated_task["resolved_inputs"]["intervention_resolution"]["payload"] == {"comment": "go ahead"}
+    assert updated_values["intervention_cache"]
 
 
 def test_resolve_intervention_marks_task_failed_for_reject_action():
@@ -117,6 +125,7 @@ def test_resolve_intervention_marks_task_failed_for_reject_action():
     assert updated_task["status"] == "FAILED"
     assert updated_task["status_detail"] == "@failed"
     assert "Intervention rejected by user" in updated_task["error"]
+    assert client_mock.threads.update_state.await_args.kwargs["values"]["intervention_cache"]
     client_mock.runs.create.assert_not_awaited()
 
 
@@ -292,6 +301,35 @@ def test_resolve_intervention_accepts_input_payload():
             )
 
     assert response.status_code == 200
+
+
+def test_resolve_intervention_writes_cache_for_input_clarification():
+    task = _pending_task(
+        request_id="intv-clar-1",
+        fingerprint="clar-fp-1",
+        action_key="submit_response",
+        action_kind="input",
+        intervention_type="clarification",
+    )
+    client_mock = _mock_langgraph_client(state_values={"task_pool": [task]})
+    fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+        with TestClient(_make_app()) as client:
+            response = client.post(
+                "/api/threads/thread-1/interventions/intv-clar-1:resolve",
+                json={
+                    "fingerprint": "clar-fp-1",
+                    "action_key": "submit_response",
+                    "payload": {"text": "Project kickoff"},
+                },
+            )
+
+    assert response.status_code == 200
+    cache = client_mock.threads.update_state.await_args.kwargs["values"]["intervention_cache"]
+    assert cache["clar-fp-1"]["intervention_type"] == "clarification"
+    assert cache["clar-fp-1"]["max_reuse"] == -1
+    assert cache["clar-fp-1"]["payload"] == {"text": "Project kickoff"}
 
 
 def test_resolve_intervention_rejects_duplicate_submit_when_task_already_resolved():

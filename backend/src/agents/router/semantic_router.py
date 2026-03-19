@@ -11,6 +11,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
+from src.agents.intervention.decision_cache import (
+    build_cached_intervention_entry,
+    increment_cache_reuse_count,
+    is_intervention_cache_valid,
+)
+from src.agents.intervention.fingerprint import generate_clarification_semantic_fingerprint
 from src.agents.intervention.help_request_builder import (
     build_help_request_intervention,
     normalize_clarification_options,
@@ -684,6 +690,57 @@ def _interrupt_for_intervention(
     }
 
 
+def _auto_resolve_intervention_from_cache(
+    parent_task: TaskStatus,
+    *,
+    cached: dict[str, Any],
+    semantic_fp: str,
+    intervention_cache: dict[str, dict[str, Any]],
+    route_count: int,
+    writer,
+    agent_name: str,
+) -> dict:
+    updated_entry = increment_cache_reuse_count(cached)
+    updated_cache = {**intervention_cache, semantic_fp: updated_entry}
+
+    resolved_inputs = dict(parent_task.get("resolved_inputs") or {})
+    resolved_inputs["intervention_resolution"] = {
+        "action_key": updated_entry["action_key"],
+        "payload": updated_entry.get("payload", {}),
+        "resolution_behavior": updated_entry.get("resolution_behavior", "resume_current_task"),
+    }
+
+    resumed_task: TaskStatus = {
+        **parent_task,
+        "status": "RUNNING",
+        "request_help": None,
+        "depends_on_task_ids": [],
+        "blocked_reason": None,
+        "clarification_prompt": None,
+        "clarification_request": None,
+        "resolved_inputs": resolved_inputs,
+        "status_detail": "@cache_auto_resolved",
+        "continuation_mode": "continue_after_clarification",
+        "resume_count": int(parent_task.get("resume_count") or 0) + 1,
+        "updated_at": _utc_now_iso(),
+    }
+    _emit_task_event(
+        writer,
+        "task_resumed",
+        resumed_task,
+        agent_name,
+        status_detail="@cache_auto_resolved",
+        resolved_inputs=resumed_task.get("resolved_inputs"),
+        resume_count=resumed_task.get("resume_count"),
+    )
+    return {
+        "task_pool": [resumed_task],
+        "execution_state": "ROUTING_DONE",
+        "route_count": route_count,
+        "intervention_cache": updated_cache,
+    }
+
+
 def _resume_parent_from_helper(
     parent: TaskStatus,
     dependency_ids: list[str],
@@ -750,6 +807,8 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
     if _should_interrupt_for_user_clarification(help_request):
         agent_name = parent_task.get("assigned_agent") or "workflow-router"
         options = _normalize_clarification_options(help_request.get("clarification_options"))
+        question = str(help_request.get("clarification_question") or "").strip()
+        intervention_cache = state.get("intervention_cache") or {}
         logger.info(
             "[Router] Compatibility path: user clarification for WAITING_DEPENDENCY parent_task=%s "
             "run_id=%s resolution_strategy=%s options=%s",
@@ -758,7 +817,37 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             help_request.get("resolution_strategy"),
             help_request.get("clarification_options"),
         )
-        if options or str(help_request.get("resolution_strategy") or "").strip().lower() in {"user_confirmation", "user_multi_select"}:
+        strategy = str(help_request.get("resolution_strategy") or "").strip().lower()
+        if question or options or strategy in {"user_confirmation", "user_multi_select"}:
+            semantic_fp = generate_clarification_semantic_fingerprint(agent_name, question, options)
+            cached = intervention_cache.get(semantic_fp)
+            if cached:
+                if is_intervention_cache_valid(cached, require_resume_behavior=False):
+                    logger.info(
+                        "[Router] [Cache HIT] clarification semantic_fp=%s reuse_count=%s/%s",
+                        semantic_fp,
+                        cached.get("reuse_count", 0),
+                        cached.get("max_reuse", -1),
+                    )
+                    return _auto_resolve_intervention_from_cache(
+                        parent_task,
+                        cached=cached,
+                        semantic_fp=semantic_fp,
+                        intervention_cache=intervention_cache,
+                        route_count=route_count,
+                        writer=writer,
+                        agent_name=agent_name,
+                    )
+                max_reuse = cached.get("max_reuse", -1)
+                reuse_count = cached.get("reuse_count", 0)
+                if max_reuse != -1 and reuse_count >= max_reuse:
+                    logger.info(
+                        "[Router] [Cache EXPIRED] clarification semantic_fp=%s reuse_count=%s reached max_reuse=%s",
+                        semantic_fp,
+                        reuse_count,
+                        max_reuse,
+                    )
+
             intervention_request = _build_help_request_intervention(
                 parent_task,
                 help_request,
@@ -932,6 +1021,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             task = waiting_intervention[0]
             intervention_request = task.get("intervention_request") or {}
             intervention_resolution = task.get("intervention_resolution")
+            intervention_cache = state.get("intervention_cache") or {}
 
             # If the Gateway's update_state was visible, intervention_resolution would
             # already be set.  If not, reconstruct the resolution from the message.
@@ -985,6 +1075,22 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "status_detail": status_detail,
                 "updated_at": _utc_now_iso(),
             }
+            semantic_fp, cache_entry = build_cached_intervention_entry(
+                intervention_request,
+                action_key=action_key,
+                payload=intervention_resolution.get("payload", {}),
+                resolution_behavior=resolution_behavior,
+                resolved_at=updated_task["updated_at"],
+            )
+            updated_cache = intervention_cache
+            if semantic_fp and cache_entry:
+                updated_cache = {**intervention_cache, semantic_fp: cache_entry}
+                logger.info(
+                    "[Router] [Cache WRITE] semantic_fp=%s type=%s max_reuse=%s",
+                    semantic_fp,
+                    cache_entry.get("intervention_type"),
+                    cache_entry.get("max_reuse"),
+                )
 
             run_id = _resolve_run_id(state, task)
             logger.info(
@@ -1005,6 +1111,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "execution_state": "ROUTING_DONE",
                     "route_count": route_count,
                     "run_id": run_id,
+                    "intervention_cache": updated_cache,
                     **_build_workflow_stage_update("executing", detail),
                 }
             else:
@@ -1012,6 +1119,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "task_pool": [updated_task],
                     "execution_state": "EXECUTING_DONE",
                     "route_count": route_count,
+                    "intervention_cache": updated_cache,
                 }
 
         logger.info("[Router] Found %d WAITING_INTERVENTION task(s), waiting for user resolution.", len(waiting_intervention))

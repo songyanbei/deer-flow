@@ -11,6 +11,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from src.agents.intervention.fingerprint import generate_clarification_semantic_fingerprint
 from src.agents.thread_state import (
     HelpRequestPayload,
     InterventionRequest,
@@ -259,7 +260,7 @@ def build_help_request_intervention(
     interaction_kind = resolve_user_interaction_kind(help_request, options)
     questions = _build_intervention_questions(question, options)
     request_id = f"intv_{uuid.uuid4().hex[:12]}"
-    fingerprint = f"fp_{uuid.uuid4().hex[:12]}"
+    fingerprint = generate_clarification_semantic_fingerprint(agent_name, question, options)
     title = question or "需要您的确认"
     reason = context or help_request.get("reason", "").strip() or title
 

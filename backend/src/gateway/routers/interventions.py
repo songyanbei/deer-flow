@@ -22,6 +22,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from src.agents.intervention.decision_cache import build_cached_intervention_entry
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -285,13 +287,32 @@ async def resolve_intervention(
         "error": error_msg,
         "updated_at": now_iso,
     }
+    intervention_cache = dict(state_values.get("intervention_cache") or {})
+    semantic_fp, cache_entry = build_cached_intervention_entry(
+        intervention_request,
+        action_key=body.action_key,
+        payload=body.payload,
+        resolution_behavior=resolution_behavior,
+        resolved_at=now_iso,
+    )
+    if semantic_fp and cache_entry:
+        intervention_cache[semantic_fp] = cache_entry
+        logger.info(
+            "[Intervention] [Cache WRITE] semantic_fp=%s type=%s max_reuse=%s",
+            semantic_fp,
+            cache_entry.get("intervention_type"),
+            cache_entry.get("max_reuse"),
+        )
 
     # Persist the resolution by updating thread state
     checkpoint_value: dict[str, Any] | None = None
     try:
         update_response = await client.threads.update_state(
             thread_id,
-            values={"task_pool": [updated_task]},
+            values={
+                "task_pool": [updated_task],
+                "intervention_cache": intervention_cache,
+            },
         )
         if isinstance(update_response, dict):
             checkpoint_value = update_response.get("checkpoint")
