@@ -28,9 +28,10 @@ export function WorkspaceSidebar({
           <WorkspaceNavChatList />
           {isSidebarOpen && <RecentChatList />}
         </SidebarContent>
-        <SidebarFooter>
+        {/* 首页底部设置隐藏 */}
+        {/* <SidebarFooter>
           <WorkspaceNavMenu />
-        </SidebarFooter>
+        </SidebarFooter> */}
         <SidebarRail />
       </Sidebar>
     </>
