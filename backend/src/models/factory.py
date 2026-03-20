@@ -48,6 +48,8 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
         kwargs.update({"reasoning_effort": None})
     model_instance = model_class(**kwargs, **model_settings_from_config)
 
+    existing_callbacks = list(model_instance.callbacks or [])
+
     if is_tracing_enabled():
         try:
             from langchain_core.tracers.langchain import LangChainTracer
@@ -56,9 +58,17 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             tracer = LangChainTracer(
                 project_name=tracing_config.project,
             )
-            existing_callbacks = model_instance.callbacks or []
-            model_instance.callbacks = [*existing_callbacks, tracer]
+            existing_callbacks.append(tracer)
             logger.debug(f"LangSmith tracing attached to model '{name}' (project='{tracing_config.project}')")
         except Exception as e:
             logger.warning(f"Failed to attach LangSmith tracing to model '{name}': {e}")
+
+    try:
+        from src.observability.llm_callback import ObservabilityCallbackHandler
+        existing_callbacks.append(ObservabilityCallbackHandler(node_hint="default"))
+    except Exception as e:
+        logger.warning(f"Failed to attach ObservabilityCallbackHandler to model '{name}': {e}")
+
+    if existing_callbacks:
+        model_instance.callbacks = existing_callbacks
     return model_instance

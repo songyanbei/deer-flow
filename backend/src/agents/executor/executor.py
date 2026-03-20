@@ -37,6 +37,7 @@ from src.agents.workflow_resume import (
     extract_latest_clarification_answer,
 )
 from src.config.agents_config import load_agent_config
+from src.observability import record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -1010,6 +1011,18 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             outcome["kind"],
             used_fallback,
         )
+        record_decision(
+            "outcome_classification",
+            run_id=task_run_id,
+            task_id=task["task_id"],
+            agent_name=agent_name,
+            inputs={
+                "message_count": len(messages),
+                "last_message_type": messages[-1].__class__.__name__ if messages else None,
+                "last_message_name": getattr(messages[-1], "name", None) if messages else None,
+            },
+            output={"outcome_kind": outcome["kind"], "used_fallback": used_fallback},
+        )
 
         # ---------------------------------------------------------------
         # Branch on outcome.kind
@@ -1033,6 +1046,14 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 used_fallback=used_fallback,
                 intervention_request_id=intervention_request.get("request_id"),
                 intervention_fingerprint=intervention_request.get("fingerprint"),
+            )
+            record_decision(
+                "intervention_trigger",
+                run_id=task_run_id,
+                task_id=task["task_id"],
+                agent_name=agent_name,
+                inputs={"tool_name": intervention_request.get("tool_name", ""), "tool_args_keys": list((intervention_request.get("context") or {}).keys())},
+                output={"request_id": intervention_request.get("request_id"), "risk_level": intervention_request.get("risk_level", "")},
             )
             serialized_messages = _serialize_agent_messages(messages)
             intercepted_tool = _extract_intercepted_tool_call(messages)

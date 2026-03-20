@@ -34,5 +34,12 @@ dependencies = [
     "langchain-google-genai>=4.2.1",
 ]
 
+[project.optional-dependencies]
+observability = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+]
+
 [dependency-groups]
 dev = ["pytest>=8.0.0", "ruff>=0.14.11"]

@@ -40,6 +40,7 @@ from src.agents.workflow_resume import (
 )
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
+from src.observability import record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,14 @@ def _route_to_helper(
         assigned,
         parent_task["task_id"],
         updated_parent.get("helper_retry_count"),
+    )
+    record_decision(
+        "helper_dispatch",
+        run_id=run_id,
+        task_id=parent_task["task_id"],
+        agent_name=assigned,
+        inputs={"parent_task_id": parent_task["task_id"], "help_request": (parent_task.get("request_help") or {}).get("problem", "")[:300], "requester": parent_task.get("requested_by_agent")},
+        output={"helper_task_id": helper_task_id, "assigned_agent": assigned},
     )
     return {
         "task_pool": [updated_parent, helper_task],
@@ -923,6 +932,15 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
                 next_retry_count,
                 MAX_HELPER_RETRY_COUNT,
             )
+            record_decision(
+                "helper_retry",
+                run_id=parent_task.get("run_id"),
+                task_id=parent_task["task_id"],
+                agent_name=direct_candidate,
+                inputs={"parent_task_id": parent_task["task_id"], "failed_helper_task_id": ""},
+                output={"new_helper_task_id": "", "retry_count": next_retry_count},
+                reason=budget_reason,
+            )
             return _route_to_helper(
                 parent_task,
                 state,
@@ -932,6 +950,13 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
                 helper_retry_count=next_retry_count,
             )
         logger.info("[Router] %s for parent_task=%s", budget_reason, parent_task["task_id"])
+        record_decision(
+            "budget_escalation",
+            run_id=parent_task.get("run_id"),
+            task_id=parent_task["task_id"],
+            inputs={"route_count": route_count, "help_depth": help_depth, "resume_count": resume_count},
+            reason=budget_reason,
+        )
         prompt = _build_clarification_prompt(parent_task, help_request)
         return _interrupt_for_clarification(
             parent_task,
@@ -1101,6 +1126,13 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                 )
 
             run_id = _resolve_run_id(state, task)
+            record_decision(
+                "intervention_resolution",
+                run_id=run_id,
+                task_id=task["task_id"],
+                inputs={"task_id": task["task_id"], "request_id": intervention_resolution.get("request_id"), "action_key": action_key},
+                output={"behavior": resolution_behavior, "new_status": updated_task["status"]},
+            )
             logger.info(
                 "[Router] Resolved intervention in-graph: task_id=%s request_id=%s action_key=%s behavior=%s new_status=%s",
                 task["task_id"],
@@ -1186,6 +1218,13 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             resumed_task = _resume_parent_from_helper(waiting_task, dependency_ids, task_pool, verified_facts)
             if resumed_task is not None:
                 dependency_sources = _collect_dependency_result_sources(dependency_ids, task_pool, verified_facts)
+                record_decision(
+                    "dependency_resolution",
+                    run_id=resumed_task.get("run_id"),
+                    task_id=waiting_task["task_id"],
+                    inputs={"parent_task_id": waiting_task["task_id"], "resolved_input_keys": list((resumed_task.get("resolved_inputs") or {}).keys())},
+                    output={"resume_status": "RUNNING", "assigned_agent": resumed_task.get("assigned_agent")},
+                )
                 logger.info(
                     "[Router] Resuming parent task '%s' run_id=%s depends_on=%s sources=%s resolved_input_keys=%s resume_count=%s",
                     waiting_task["task_id"],
@@ -1241,10 +1280,29 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
     if task.get("assigned_agent") and task["assigned_agent"] in valid_names:
         assigned = task["assigned_agent"]
         logger.info("[Router] Fast path: task '%s' -> %s", task["task_id"], assigned)
+        record_decision(
+            "agent_route",
+            run_id=run_id,
+            task_id=task["task_id"],
+            agent_name=assigned,
+            inputs={"task_id": task["task_id"], "task_description": task["description"][:300]},
+            output={"selected_agent": assigned},
+            reason="fast_path_pre_assigned",
+        )
     else:
         agent_profiles = _build_agent_profiles(domain_agents)
         assigned = await _llm_route(task["description"], agent_profiles, valid_names, config)
         logger.info("[Router] LLM route: task '%s' -> %s", task["task_id"], assigned)
+        record_decision(
+            "agent_route" if assigned != "SYSTEM_FALLBACK" else "agent_route_fallback",
+            run_id=run_id,
+            task_id=task["task_id"],
+            agent_name=assigned,
+            inputs={"task_id": task["task_id"], "task_description": task["description"][:300], "candidates": valid_names},
+            output={"selected_agent": assigned},
+            reason="llm_route" if assigned != "SYSTEM_FALLBACK" else "no_suitable_agent",
+            alternatives=[n for n in valid_names if n != assigned],
+        )
 
     updated_task: TaskStatus = {
         **task,

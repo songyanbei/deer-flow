@@ -11,6 +11,7 @@ from src.agents.planner import planner_node
 from src.agents.router import router_node
 from src.agents.thread_state import ThreadState
 from src.config.agents_config import list_domain_agents
+from src.observability.node_wrapper import traced_node
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +74,9 @@ def route_after_workflow_executor(state: ThreadState) -> str:
 def _compile_multi_agent_graph(checkpointer=None):
     graph = StateGraph(ThreadState)
 
-    graph.add_node("planner", planner_node)
-    graph.add_node("router", router_node)
-    graph.add_node("executor", executor_node)
+    graph.add_node("planner", traced_node("planner")(planner_node))
+    graph.add_node("router", traced_node("router")(router_node))
+    graph.add_node("executor", traced_node("executor")(executor_node))
 
     graph.add_edge(START, "planner")
     graph.add_conditional_edges("planner", route_after_workflow_planner, {END: END, "planner": "planner", "router": "router"})

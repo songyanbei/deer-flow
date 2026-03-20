@@ -20,6 +20,7 @@ from src.agents.workflow_resume import (
     latest_user_message_is_clarification_answer,
 )
 from src.config.agents_config import load_agent_config
+from src.observability import record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +330,18 @@ def orchestration_selector_node(state: ThreadState, config: RunnableConfig) -> d
         latest_user_message_is_clarification_answer(state),
         state.get("execution_state"),
         [task.get("status") for task in (state.get("task_pool") or []) if isinstance(task, dict)],
+    )
+    record_decision(
+        "orchestration_mode",
+        run_id=workflow_run_id,
+        inputs={
+            "requested_mode": decision["requested_mode"],
+            "workflow_score": decision["workflow_score"],
+            "leader_score": decision["leader_score"],
+        },
+        output={"resolved_mode": decision["resolved_mode"]},
+        reason=decision["reason"],
+        alternatives=[("workflow" if decision["resolved_mode"] == "leader" else "leader")],
     )
     try:
         writer = get_stream_writer()

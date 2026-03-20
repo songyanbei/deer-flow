@@ -20,6 +20,7 @@ from src.agents.workflow_resume import (
 )
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
+from src.observability import record_decision
 
 logger = logging.getLogger(__name__)
 _NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
@@ -562,6 +563,13 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "任务已完成。",
         )
         logger.info("[Planner] Goal achieved. Summary length=%d", len(summary))
+        record_decision(
+            "workflow_completion",
+            run_id=run_id,
+            inputs={"task_summary": _build_tasks_summary(task_pool)[:500], "facts_summary": _build_facts_summary(state.get("verified_facts") or {})[:500]},
+            output={"done": True, "summary_length": len(summary)},
+            reason="planner_validate_done",
+        )
         _emit_workflow_stage(writer, "summarizing", terminal_detail, run_id=run_id)
         return {
             "execution_state": "DONE",
@@ -637,6 +645,21 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             }
 
     logger.info("[Planner] Generated %d task(s): %s", len(new_tasks), _summarize_tasks_for_log(new_tasks))
+    _reason = "validate_follow_up" if completed_tasks else "decompose"
+    record_decision(
+        "task_decomposition",
+        run_id=run_id,
+        inputs={
+            "goal": planner_goal[:300],
+            "available_agents": [a.name for a in domain_agents],
+            "mode": _reason,
+        },
+        output={
+            "task_count": len(new_tasks),
+            "tasks": [{"task_id": t["task_id"], "assigned_agent": t.get("assigned_agent"), "description": t["description"][:200]} for t in new_tasks],
+        },
+        reason=_reason,
+    )
     _emit_workflow_stage(
         writer,
         "routing",

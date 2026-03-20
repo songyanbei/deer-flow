@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config.app_config import get_app_config
 from src.gateway.config import get_gateway_config
 from src.gateway.routers import agents, artifacts, interventions, mcp, memory, models, skills, uploads
+from src.observability import WorkflowMetrics, init_observability
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +32,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         sys.exit(1)
+    # Initialize observability (decision logger + optional OTel)
+    init_observability()
+
     config = get_gateway_config()
     logger.info(f"Starting API Gateway on {config.host}:{config.port}")
 
@@ -154,6 +158,11 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
             Service health status information.
         """
         return {"status": "healthy", "service": "deer-flow-gateway"}
+
+    @app.get("/debug/metrics", tags=["health"])
+    async def debug_metrics() -> dict:
+        """Debug metrics endpoint — returns in-memory metrics snapshot."""
+        return WorkflowMetrics.get().snapshot()
 
     return app
 
