@@ -1934,25 +1934,41 @@ def test_meeting_agent_prompt_requires_request_help_for_user_choice():
 
 
 def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
-    class DummyServer:
-        def model_dump(self):
-            return {"name": "dummy", "command": "node"}
+    from src.config.agents_config import McpBindingConfig
 
-    class DummyPool:
-        def __init__(self):
-            self.calls = 0
+    call_count = 0
 
-        async def init_agent_connections(self, _agent_name, _servers):
-            self.calls += 1
-            return self.calls > 1
+    class DummyRuntime:
+        def scope_key_for_agent(self, name):
+            return f"domain:{name}"
 
-        def get_agent_error(self, _agent_name):
+        async def load_scope(self, scope_key, servers):
+            nonlocal call_count
+            call_count += 1
+            return call_count > 1
+
+        def get_scope_error(self, scope_key):
             return "initial connect failed"
 
-    dummy_pool = DummyPool()
+    dummy_runtime = DummyRuntime()
+    dummy_binding = McpBindingConfig(domain=["contacts"])
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[DummyServer()]))
-    monkeypatch.setattr("src.execution.mcp_pool.mcp_pool", dummy_pool)
+    monkeypatch.setattr(
+        "src.agents.executor.executor.load_agent_config",
+        lambda _name: SimpleNamespace(
+            mcp_binding=dummy_binding,
+            get_effective_mcp_binding=lambda: dummy_binding,
+        ),
+    )
+    monkeypatch.setattr("src.mcp.runtime_manager.mcp_runtime", dummy_runtime)
+    monkeypatch.setattr(
+        "src.mcp.binding_resolver.resolve_binding",
+        lambda binding, ext_config: {"contacts": SimpleNamespace(enabled=True)},
+    )
+    monkeypatch.setattr(
+        "src.config.extensions_config.ExtensionsConfig.from_file",
+        classmethod(lambda cls: SimpleNamespace(mcp_servers={})),
+    )
     _mcp_initialized.clear()
 
     async def _run():
@@ -1967,7 +1983,7 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
 
         await _ensure_mcp_ready("contacts-agent")
         assert "contacts-agent" in _mcp_initialized
-        assert dummy_pool.calls == 2
+        assert call_count == 2
 
     asyncio.run(_run())
 

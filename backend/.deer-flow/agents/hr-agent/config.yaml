@@ -11,16 +11,7 @@ description: |
 tool_groups: []  # only MCP tools; no web/bash
 available_skills:
   - hcm
-# Declarative MCP binding (preferred)
 mcp_binding:
   use_global: false
   domain:
     - hcm
-# Legacy fallback (kept for backward compatibility)
-mcp_servers:
-  - name: hr-attendance
-    command: uv
-    args:
-      - run
-      - python
-      - .deer-flow/agents/hr-agent/hr_mcp_server.py

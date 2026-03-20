@@ -112,37 +112,23 @@ async def _ensure_mcp_ready(agent_name: str) -> None:
     if agent_name in _mcp_initialized:
         return
     agent_cfg = load_agent_config(agent_name)
-    if agent_cfg and (getattr(agent_cfg, "mcp_binding", None) or getattr(agent_cfg, "mcp_servers", None)):
+    if agent_cfg and getattr(agent_cfg, "mcp_binding", None):
         try:
             from src.config.extensions_config import ExtensionsConfig
             from src.mcp.binding_resolver import resolve_binding
             from src.mcp.runtime_manager import mcp_runtime
 
-            # Use binding resolver if agent has get_effective_mcp_binding (AgentConfig)
-            if hasattr(agent_cfg, "get_effective_mcp_binding"):
-                binding = agent_cfg.get_effective_mcp_binding()
-                extensions_config = ExtensionsConfig.from_file()
-                resolved_servers = resolve_binding(binding, extensions_config, agent_cfg)
+            binding = agent_cfg.get_effective_mcp_binding()
+            extensions_config = ExtensionsConfig.from_file()
+            resolved_servers = resolve_binding(binding, extensions_config)
 
-                if resolved_servers:
-                    scope_key = mcp_runtime.scope_key_for_agent(agent_name)
-                    success = await mcp_runtime.load_scope(scope_key, resolved_servers)
-                    if not success:
-                        error = mcp_runtime.get_scope_error(scope_key) or "unknown MCP connection error"
-                        raise RuntimeError(error)
-                    logger.info("[Executor] MCP ready for agent '%s' (%d server(s)).", agent_name, len(resolved_servers))
-
-            # Also init legacy mcp_pool for backward compatibility
-            mcp_servers = getattr(agent_cfg, "mcp_servers", None)
-            if mcp_servers:
-                from src.execution.mcp_pool import mcp_pool
-
-                servers = [s.model_dump() if hasattr(s, "model_dump") else dict(s.__dict__) for s in mcp_servers]
-                success = await mcp_pool.init_agent_connections(agent_name, servers)
-                # If runtime manager was NOT used (no binding resolver), check legacy pool result
-                if not hasattr(agent_cfg, "get_effective_mcp_binding") and not success:
-                    error = mcp_pool.get_agent_error(agent_name) or "unknown MCP connection error"
+            if resolved_servers:
+                scope_key = mcp_runtime.scope_key_for_agent(agent_name)
+                success = await mcp_runtime.load_scope(scope_key, resolved_servers)
+                if not success:
+                    error = mcp_runtime.get_scope_error(scope_key) or "unknown MCP connection error"
                     raise RuntimeError(error)
+                logger.info("[Executor] MCP ready for agent '%s' (%d server(s)).", agent_name, len(resolved_servers))
         except Exception as e:
             logger.error("[Executor] MCP init failed for agent '%s': %s", agent_name, e)
             raise
@@ -619,7 +605,7 @@ async def _execute_intercepted_tool_call(
             tool_name, idempotency_key, tool_call_id,
         )
 
-    # Get MCP tools from runtime manager (preferred) or legacy pool (fallback)
+    # Get MCP tools from runtime manager
     tools = []
     if agent_name:
         try:
@@ -629,13 +615,6 @@ async def _execute_intercepted_tool_call(
             tools = await mcp_runtime.get_tools(scope_key)
         except Exception:
             pass
-
-        if not tools:
-            try:
-                from src.execution.mcp_pool import mcp_pool
-                tools = await mcp_pool.get_agent_tools(agent_name) or []
-            except Exception:
-                pass
 
     # Find the matching tool
     target_tool = None

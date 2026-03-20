@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.config.agents_config import AgentConfig, McpBindingConfig, McpServerEntry
+from src.config.agents_config import AgentConfig, McpBindingConfig
 from src.config.extensions_config import ExtensionsConfig, McpServerConfig, SkillStateConfig
 from src.mcp.binding_resolver import resolve_binding, resolve_for_main_agent
 from src.mcp.runtime_manager import McpRuntimeManager
@@ -40,21 +40,20 @@ def _extensions() -> ExtensionsConfig:
     )
 
 
-def test_agent_config_migrates_legacy_mcp_servers_into_domain_binding():
-    cfg = AgentConfig(
+def test_agent_config_returns_mcp_binding_or_empty_default():
+    cfg_with_binding = AgentConfig(
         name="meeting-agent",
-        mcp_servers=[
-            McpServerEntry(name="meeting-domain", command="node", args=["meeting.js"]),
-            McpServerEntry(name="shared-time", command="node", args=["time.js"]),
-        ],
+        mcp_binding=McpBindingConfig(domain=["meeting-domain"], shared=["shared-time"]),
     )
+    cfg_without_binding = AgentConfig(name="plain-agent")
 
-    binding = cfg.get_effective_mcp_binding()
+    binding = cfg_with_binding.get_effective_mcp_binding()
+    assert binding.domain == ["meeting-domain"]
+    assert binding.shared == ["shared-time"]
 
-    assert binding.use_global is False
-    assert binding.domain == ["meeting-domain", "shared-time"]
-    assert binding.shared == []
-    assert binding.ephemeral == []
+    empty_binding = cfg_without_binding.get_effective_mcp_binding()
+    assert empty_binding.domain == []
+    assert empty_binding.shared == []
 
 
 def test_binding_resolver_includes_only_requested_servers_and_keeps_agent_isolation():
@@ -83,32 +82,15 @@ def test_binding_resolver_supports_global_servers_for_agents_that_opt_in():
     assert set(resolved) == {"global-search", "meeting-domain"}
 
 
-def test_binding_resolver_falls_back_to_legacy_server_entry_when_platform_registry_missing():
+def test_binding_resolver_warns_when_domain_server_missing_from_platform_config():
     extensions = ExtensionsConfig(mcp_servers={}, skills={})
-    agent = AgentConfig(
-        name="contacts-agent",
-        mcp_servers=[
-            McpServerEntry(
-                name="legacy-contacts",
-                command="python",
-                args=["contacts.py"],
-                env={"TOKEN": "secret"},
-            )
-        ],
-    )
 
     resolved = resolve_binding(
-        McpBindingConfig(domain=["legacy-contacts"]),
+        McpBindingConfig(domain=["nonexistent-server"]),
         extensions,
-        agent_config=agent,
     )
 
-    assert set(resolved) == {"legacy-contacts"}
-    assert resolved["legacy-contacts"].type == "stdio"
-    assert resolved["legacy-contacts"].command == "python"
-    assert resolved["legacy-contacts"].args == ["contacts.py"]
-    assert resolved["legacy-contacts"].env == {"TOKEN": "secret"}
-    assert resolved["legacy-contacts"].category == "domain"
+    assert resolved == {}
 
 
 def test_binding_resolver_ignores_disabled_shared_server_and_ephemeral_does_not_crash():

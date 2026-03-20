@@ -11,7 +11,7 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from src.config.agents_config import AgentConfig, McpServerEntry, list_custom_agents, load_agent_config, load_agent_soul
+from src.config.agents_config import AgentConfig, McpBindingConfig, list_custom_agents, load_agent_config, load_agent_soul
 from src.config.paths import get_paths
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class AgentResponse(BaseModel):
     system_prompt_file: str | None = Field(default=None, description="Prompt file used for the agent system prompt")
     hitl_keywords: list[str] | None = Field(default=None, description="Human-in-the-loop escalation keywords")
     max_tool_calls: int | None = Field(default=None, description="Maximum tool calls allowed for the agent")
-    mcp_servers: list[McpServerEntry] | None = Field(default=None, description="Optional per-agent MCP server definitions")
+    mcp_binding: McpBindingConfig | None = Field(default=None, description="Declarative MCP binding (references servers in extensions_config.json)")
     available_skills: list[str] | None = Field(default=None, description="Optional skill allowlist for this agent")
     requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Default orchestration mode for the agent")
     soul: str | None = Field(default=None, description="System prompt content (included on GET /{name})")
@@ -56,7 +56,7 @@ class AgentCreateRequest(BaseModel):
     system_prompt_file: str | None = Field(default=None, description="Prompt file used for the agent system prompt")
     hitl_keywords: list[str] | None = Field(default=None, description="Human-in-the-loop escalation keywords")
     max_tool_calls: int | None = Field(default=None, description="Maximum tool calls allowed for the agent")
-    mcp_servers: list[McpServerEntry] | None = Field(default=None, description="Optional per-agent MCP server definitions")
+    mcp_binding: McpBindingConfig | None = Field(default=None, description="Declarative MCP binding (references servers in extensions_config.json)")
     available_skills: list[str] | None = Field(default=None, description="Optional skill allowlist for this agent")
     requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Default orchestration mode for the agent")
     soul: str = Field(default="", description="System prompt content for the agent")
@@ -72,7 +72,7 @@ class AgentUpdateRequest(BaseModel):
     system_prompt_file: str | None = Field(default=None, description="Updated prompt file name")
     hitl_keywords: list[str] | None = Field(default=None, description="Updated HITL keywords")
     max_tool_calls: int | None = Field(default=None, description="Updated maximum tool calls")
-    mcp_servers: list[McpServerEntry] | None = Field(default=None, description="Updated MCP server definitions")
+    mcp_binding: McpBindingConfig | None = Field(default=None, description="Updated MCP binding")
     available_skills: list[str] | None = Field(default=None, description="Updated skill allowlist")
     requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Updated default orchestration mode")
     soul: str | None = Field(default=None, description="Updated system prompt content")
@@ -121,7 +121,7 @@ def _build_config_data(
     system_prompt_file: str | None,
     hitl_keywords: list[str] | None,
     max_tool_calls: int | None,
-    mcp_servers: list[McpServerEntry] | None,
+    mcp_binding: McpBindingConfig | None,
     available_skills: list[str] | None,
     requested_orchestration_mode: RequestedOrchestrationMode | None,
 ) -> dict[str, Any]:
@@ -138,8 +138,8 @@ def _build_config_data(
         config_data["hitl_keywords"] = hitl_keywords
     if max_tool_calls is not None:
         config_data["max_tool_calls"] = max_tool_calls
-    if mcp_servers is not None:
-        config_data["mcp_servers"] = [server.model_dump() for server in mcp_servers]
+    if mcp_binding is not None:
+        config_data["mcp_binding"] = mcp_binding.model_dump()
     if available_skills is not None:
         config_data["available_skills"] = available_skills
     if requested_orchestration_mode is not None:
@@ -184,7 +184,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         system_prompt_file=agent_cfg.system_prompt_file,
         hitl_keywords=agent_cfg.hitl_keywords,
         max_tool_calls=agent_cfg.max_tool_calls,
-        mcp_servers=agent_cfg.mcp_servers,
+        mcp_binding=agent_cfg.mcp_binding,
         available_skills=agent_cfg.available_skills,
         requested_orchestration_mode=agent_cfg.requested_orchestration_mode,
         soul=soul,
@@ -264,7 +264,7 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
             system_prompt_file=request.system_prompt_file,
             hitl_keywords=request.hitl_keywords,
             max_tool_calls=request.max_tool_calls,
-            mcp_servers=request.mcp_servers,
+            mcp_binding=request.mcp_binding,
             available_skills=request.available_skills,
             requested_orchestration_mode=request.requested_orchestration_mode,
         )
@@ -313,7 +313,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 request.system_prompt_file,
                 request.hitl_keywords,
                 request.max_tool_calls,
-                request.mcp_servers,
+                request.mcp_binding,
                 request.available_skills,
             ]
         ) or requested_mode_provided
@@ -328,7 +328,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 system_prompt_file=next_prompt_file,
                 hitl_keywords=request.hitl_keywords if request.hitl_keywords is not None else agent_cfg.hitl_keywords,
                 max_tool_calls=request.max_tool_calls if request.max_tool_calls is not None else agent_cfg.max_tool_calls,
-                mcp_servers=request.mcp_servers if request.mcp_servers is not None else agent_cfg.mcp_servers,
+                mcp_binding=request.mcp_binding if request.mcp_binding is not None else agent_cfg.mcp_binding,
                 available_skills=request.available_skills if request.available_skills is not None else agent_cfg.available_skills,
                 requested_orchestration_mode=request.requested_orchestration_mode if requested_mode_provided else agent_cfg.requested_orchestration_mode,
             )

@@ -37,19 +37,6 @@ def _resolve_env_variables(value: Any) -> Any:
     return value
 
 
-class McpServerEntry(BaseModel):
-    """Single MCP server config for a domain agent (stdio transport).
-
-    Kept for backward compatibility. New configs should use ``mcp_binding`` instead.
-    """
-
-    name: str
-    command: str
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
-    cwd: str | None = None
-
-
 class McpBindingConfig(BaseModel):
     """Declarative MCP binding for a domain agent.
 
@@ -84,34 +71,13 @@ class AgentConfig(BaseModel):
     hitl_keywords: list[str] = Field(default_factory=list)  # Keywords triggering Human-in-the-Loop approval (backward-compatible fallback)
     intervention_policies: dict[str, Any] = Field(default_factory=dict)  # Per-tool intervention policies (Phase 1)
     max_tool_calls: int = 20                       # Per-agent safety limit for tool usage inside one task execution.
-    mcp_servers: list[McpServerEntry] = Field(default_factory=list)  # Legacy: domain-specific MCP servers (stdio)
-    mcp_binding: McpBindingConfig | None = None    # Declarative MCP binding (preferred over mcp_servers)
+    mcp_binding: McpBindingConfig | None = None    # Declarative MCP binding (references servers in extensions_config.json)
     available_skills: list[str] | None = None      # Skill names to expose; None = all enabled skills
     requested_orchestration_mode: Literal["auto", "leader", "workflow"] | None = None
 
     def get_effective_mcp_binding(self) -> McpBindingConfig:
-        """Return the effective MCP binding, migrating legacy ``mcp_servers`` if needed.
-
-        If ``mcp_binding`` is explicitly set, it is returned as-is.
-        Otherwise, the legacy ``mcp_servers[].name`` list is converted to
-        ``McpBindingConfig(domain=[...])`` so that downstream code only
-        deals with a single model.
-        """
-        if self.mcp_binding is not None:
-            return self.mcp_binding
-
-        if self.mcp_servers:
-            migrated_domain = [s.name for s in self.mcp_servers]
-            if migrated_domain:
-                logger.info(
-                    "Agent '%s': migrating legacy mcp_servers %s → mcp_binding.domain",
-                    self.name,
-                    migrated_domain,
-                )
-            return McpBindingConfig(domain=migrated_domain)
-
-        # No MCP at all
-        return McpBindingConfig()
+        """Return the effective MCP binding, or an empty binding if not set."""
+        return self.mcp_binding or McpBindingConfig()
 
 
 def load_agent_config(name: str | None) -> AgentConfig | None:

@@ -211,13 +211,14 @@ def test_make_lead_agent_filters_write_like_tools_for_read_only_explorer(monkeyp
         ),
     )
     monkeypatch.setattr(
-        "src.execution.mcp_pool.mcp_pool",
+        "src.mcp.runtime_manager.mcp_runtime",
         SimpleNamespace(
-            get_agent_tools_sync=lambda _name: [
+            scope_key_for_agent=lambda name: f"domain:{name}",
+            get_tools_sync=lambda _scope: [
                 DummyTool("lookup_employee"),
                 DummyTool("create_contact"),
                 DummyTool("update_employee_record"),
-            ]
+            ],
         ),
     )
     monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)

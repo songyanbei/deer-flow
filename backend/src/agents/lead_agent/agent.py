@@ -379,11 +379,6 @@ def make_lead_agent(config: RunnableConfig):
             scope_key = mcp_runtime.scope_key_for_agent(agent_name)
             extra_tools = mcp_runtime.get_tools_sync(scope_key)
 
-            # Fallback to legacy mcp_pool if runtime manager has no tools
-            if not extra_tools:
-                from src.execution.mcp_pool import mcp_pool
-                extra_tools = mcp_pool.get_agent_tools_sync(agent_name)
-
             if engine_behavior.filter_read_only_tools:
                 extra_tools = filter_read_only_tools(extra_tools)
             if extra_tools:

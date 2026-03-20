@@ -98,7 +98,7 @@ class TestAgentConfig:
         assert cfg.tool_groups is None
 
     def test_full_config(self):
-        from src.config.agents_config import AgentConfig
+        from src.config.agents_config import AgentConfig, McpBindingConfig
 
         cfg = AgentConfig(
             name="code-reviewer",
@@ -109,7 +109,7 @@ class TestAgentConfig:
             system_prompt_file="reviewer.md",
             hitl_keywords=["confirm", "approve"],
             max_tool_calls=12,
-            mcp_servers=[{"name": "code-mcp", "command": "python"}],
+            mcp_binding=McpBindingConfig(domain=["code-mcp"]),
             available_skills=["code-review"],
             requested_orchestration_mode="workflow",
         )
@@ -120,7 +120,7 @@ class TestAgentConfig:
         assert cfg.system_prompt_file == "reviewer.md"
         assert cfg.hitl_keywords == ["confirm", "approve"]
         assert cfg.max_tool_calls == 12
-        assert cfg.mcp_servers[0].name == "code-mcp"
+        assert cfg.mcp_binding.domain == ["code-mcp"]
         assert cfg.available_skills == ["code-review"]
         assert cfg.requested_orchestration_mode == "workflow"
 
@@ -135,7 +135,7 @@ class TestAgentConfig:
             "system_prompt_file": "system.md",
             "hitl_keywords": ["escalate"],
             "max_tool_calls": 9,
-            "mcp_servers": [{"name": "directory", "command": "node"}],
+            "mcp_binding": {"domain": ["directory"]},
             "available_skills": ["search"],
             "requested_orchestration_mode": "leader",
         }
@@ -143,7 +143,7 @@ class TestAgentConfig:
         assert cfg.name == "test-agent"
         assert cfg.model == "gpt-4"
         assert cfg.tool_groups is None
-        assert cfg.mcp_servers[0].name == "directory"
+        assert cfg.mcp_binding.domain == ["directory"]
         assert cfg.available_skills == ["search"]
         assert cfg.requested_orchestration_mode == "leader"
 
@@ -223,19 +223,11 @@ class TestLoadAgentConfig:
 
         assert cfg.name == "legacy-agent"
 
-    def test_load_config_resolves_env_vars_in_mcp_server(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TEST_MCP_ENTRY", "./mcp/server.js")
-        monkeypatch.setenv("TEST_MCP_TOKEN", "secret-token")
+    def test_load_config_resolves_env_vars(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_DOMAIN_VAR", "my-domain")
         config_dict = {
             "name": "env-agent",
-            "mcp_servers": [
-                {
-                    "name": "env-mcp",
-                    "command": "node",
-                    "args": ["$TEST_MCP_ENTRY"],
-                    "env": {"API_TOKEN": "$TEST_MCP_TOKEN"},
-                }
-            ],
+            "domain": "$TEST_DOMAIN_VAR",
         }
         _write_agent(tmp_path, "env-agent", config_dict)
 
@@ -244,20 +236,19 @@ class TestLoadAgentConfig:
 
             cfg = load_agent_config("env-agent")
 
-        assert cfg.mcp_servers[0].args == ["./mcp/server.js"]
-        assert cfg.mcp_servers[0].env == {"API_TOKEN": "secret-token"}
+        assert cfg.domain == "my-domain"
 
     def test_load_config_missing_env_var_raises(self, tmp_path):
         config_dict = {
             "name": "missing-env-agent",
-            "mcp_servers": [{"name": "env-mcp", "command": "node", "args": ["$MISSING_MCP_ENTRY"]}],
+            "domain": "$MISSING_ENV_VAR",
         }
         _write_agent(tmp_path, "missing-env-agent", config_dict)
 
         with patch("src.config.agents_config.get_paths", return_value=_make_paths(tmp_path)):
             from src.config.agents_config import load_agent_config
 
-            with pytest.raises(ValueError, match="Environment variable MISSING_MCP_ENTRY not found"):
+            with pytest.raises(ValueError, match="Environment variable MISSING_ENV_VAR not found"):
                 load_agent_config("missing-env-agent")
 
 
@@ -634,7 +625,7 @@ class TestPhaseOneAgentConfig:
             "system_prompt_file": "DOMAIN.md",
             "hitl_keywords": ["confirm", "approval"],
             "max_tool_calls": 7,
-            "mcp_servers": [{"name": "hr-mcp", "command": "node", "args": ["server.js"]}],
+            "mcp_binding": {"domain": ["hr-mcp"]},
             "available_skills": ["hr"],
             "requested_orchestration_mode": "workflow",
         }
@@ -652,7 +643,7 @@ class TestPhaseOneAgentConfig:
         assert cfg.system_prompt_file == "DOMAIN.md"
         assert cfg.hitl_keywords == ["confirm", "approval"]
         assert cfg.max_tool_calls == 7
-        assert cfg.mcp_servers[0].name == "hr-mcp"
+        assert cfg.mcp_binding.domain == ["hr-mcp"]
         assert cfg.available_skills == ["hr"]
         assert cfg.requested_orchestration_mode == "workflow"
 
@@ -688,7 +679,7 @@ class TestPhaseOneAgentsAPI:
             "hitl_keywords": ["confirm", "manager approval"],
             "max_tool_calls": 5,
             "tool_groups": ["search"],
-            "mcp_servers": [{"name": "employee-directory", "command": "node", "args": ["dir.js"]}],
+            "mcp_binding": {"domain": ["employee-directory"]},
             "available_skills": ["directory", "people"],
             "requested_orchestration_mode": "workflow",
             "soul": "You are the employee directory specialist.",
@@ -701,7 +692,7 @@ class TestPhaseOneAgentsAPI:
         assert data["system_prompt_file"] == "DOMAIN.md"
         assert data["hitl_keywords"] == ["confirm", "manager approval"]
         assert data["max_tool_calls"] == 5
-        assert data["mcp_servers"][0]["name"] == "employee-directory"
+        assert data["mcp_binding"]["domain"] == ["employee-directory"]
         assert data["available_skills"] == ["directory", "people"]
         assert data["requested_orchestration_mode"] == "workflow"
 
@@ -710,7 +701,7 @@ class TestPhaseOneAgentsAPI:
         assert config_data["system_prompt_file"] == "DOMAIN.md"
         assert config_data["hitl_keywords"] == ["confirm", "manager approval"]
         assert config_data["max_tool_calls"] == 5
-        assert config_data["mcp_servers"][0]["name"] == "employee-directory"
+        assert config_data["mcp_binding"]["domain"] == ["employee-directory"]
         assert config_data["available_skills"] == ["directory", "people"]
         assert config_data["requested_orchestration_mode"] == "workflow"
         assert (tmp_path / "agents" / "employee-agent" / "DOMAIN.md").read_text(encoding="utf-8") == payload["soul"]
@@ -762,7 +753,7 @@ class TestPhaseOneAgentsAPI:
                 "domain": "migrated_domain",
                 "hitl_keywords": ["approve"],
                 "max_tool_calls": 11,
-                "mcp_servers": [{"name": "migrated-mcp", "command": "node", "args": ["new.js"]}],
+                "mcp_binding": {"domain": ["migrated-mcp"]},
                 "available_skills": ["migrated-skill"],
                 "requested_orchestration_mode": "workflow",
             },
@@ -773,7 +764,7 @@ class TestPhaseOneAgentsAPI:
         assert data["domain"] == "migrated_domain"
         assert data["hitl_keywords"] == ["approve"]
         assert data["max_tool_calls"] == 11
-        assert data["mcp_servers"][0]["name"] == "migrated-mcp"
+        assert data["mcp_binding"]["domain"] == ["migrated-mcp"]
         assert data["available_skills"] == ["migrated-skill"]
         assert data["requested_orchestration_mode"] == "workflow"
         assert data["soul"] == "Original prompt"

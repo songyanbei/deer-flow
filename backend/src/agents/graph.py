@@ -87,12 +87,11 @@ def _compile_multi_agent_graph(checkpointer=None):
 
 
 async def _warmup_domain_agent_mcp() -> None:
-    agents = [agent for agent in list_domain_agents() if agent.mcp_servers or agent.mcp_binding]
+    agents = [agent for agent in list_domain_agents() if agent.mcp_binding]
     if not agents:
         return
 
     from src.config.extensions_config import ExtensionsConfig
-    from src.execution.mcp_pool import mcp_pool
     from src.mcp.binding_resolver import resolve_binding
     from src.mcp.runtime_manager import mcp_runtime
 
@@ -100,14 +99,11 @@ async def _warmup_domain_agent_mcp() -> None:
 
     async def _warmup_single(agent):
         binding = agent.get_effective_mcp_binding()
-        resolved = resolve_binding(binding, extensions_config, agent)
+        resolved = resolve_binding(binding, extensions_config)
         if not resolved:
             return True
         scope_key = mcp_runtime.scope_key_for_agent(agent.name)
         success = await mcp_runtime.load_scope(scope_key, resolved)
-        # Also warm up legacy pool for backward compatibility
-        if agent.mcp_servers:
-            await mcp_pool.init_agent_connections(agent.name, [s.model_dump() for s in agent.mcp_servers])
         return success
 
     results = await asyncio.gather(
