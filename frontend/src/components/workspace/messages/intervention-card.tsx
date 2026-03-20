@@ -327,7 +327,13 @@ export function InterventionCard({
   >({});
   const request = task.interventionRequest;
   const contextEntries = useMemo(
-    () => Object.entries(request?.context ?? {}),
+    () =>
+      Object.entries(request?.context ?? {}).filter(
+        ([key]) =>
+          key !== "tool_args" &&
+          key !== "idempotency_key" &&
+          key !== "tool_call_id",
+      ),
     [request?.context],
   );
 
@@ -940,11 +946,11 @@ export function InterventionCard({
 
   return (
     <div className="overflow-hidden rounded-xl border border-border/70 bg-background shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
-      <div className="flex items-center gap-2.5 border-b border-border/60 bg-muted/25 px-3 py-2.5">
-        <div className="relative flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background shadow-sm">
-          <BotIcon className="size-3.5 text-foreground/75" />
+      <div className="flex items-center gap-2 border-b border-border/60 bg-muted/25 px-2.5 py-2">
+        <div className="relative flex size-7 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-background shadow-sm">
+          <BotIcon className="size-3 text-foreground/75" />
           <span
-            className={`absolute -right-0.5 -top-0.5 size-2 rounded-full ${riskTone.accent}`}
+            className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ${riskTone.accent}`}
           />
         </div>
         <div className="min-w-0 flex-1">
@@ -964,10 +970,10 @@ export function InterventionCard({
         ) : null}
       </div>
 
-      <div className="space-y-3 p-3">
+      <div className="space-y-2 p-2.5">
         {!isClarificationIntervention ? (
           <>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               {showProtocolMeta ? (
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
                   <AlertTriangleIcon className={`size-3 ${riskTone.icon}`} />
@@ -990,26 +996,27 @@ export function InterventionCard({
             </div>
 
             {displaySections.length > 0 ? (
-              <div className="grid gap-2 md:grid-cols-2">
+              <div className="space-y-1.5">
                 {displaySections.map((section, index) => (
                   <div
                     key={`${safeDisplayText(section.title, "section")}-${index}`}
-                    className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2"
+                    className="rounded-lg border border-border/60 bg-muted/18 px-2.5 py-2"
                   >
                     {safeDisplayText(section.title) ? (
-                      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                      <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
                         {safeDisplayText(section.title)}
                       </div>
                     ) : null}
-                    <div className="space-y-2">
+                    <div className="grid gap-1.5 sm:grid-cols-2">
                       {section.items.map((item) => (
                         <div
                           key={`${safeDisplayText(item.label, "item")}-${safeDisplayText(item.value, "value")}`}
+                          className="rounded-md border border-border/50 bg-background/70 px-2 py-1.5"
                         >
-                          <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
+                          <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
                             {safeDisplayText(item.label, "Item")}
                           </div>
-                          <div className="mt-1 text-[12px] leading-5 text-foreground/88">
+                          <div className="mt-0.5 min-w-0 whitespace-pre-wrap break-words text-[12px] leading-5 text-foreground">
                             {safeDisplayText(item.value)}
                           </div>
                         </div>
@@ -1022,19 +1029,19 @@ export function InterventionCard({
 
             {(safeDisplayText(request.description) ||
               safeDisplayText(request.action_summary)) && (
-              <div className="grid gap-2 md:grid-cols-2">
+              <div className="grid gap-1.5 md:grid-cols-2">
                 {safeDisplayText(request.description) ? (
-                  <div className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
+                  <div className="rounded-lg border border-border/60 bg-muted/18 px-2.5 py-1.5 text-[12px] leading-5 text-muted-foreground">
                     {safeDisplayText(request.description)}
                   </div>
                 ) : null}
                 {safeDisplayText(request.action_summary) ? (
-                  <div className="rounded-lg border border-border/60 bg-muted/12 px-3 py-2">
+                  <div className="rounded-lg border border-border/60 bg-muted/12 px-2.5 py-1.5">
                     <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
                       <ArrowRightIcon className="size-3" />
                       {t.subtasks.interventionNextActionLabel}
                     </div>
-                    <div className="mt-1 text-[12px] leading-5 text-foreground/88">
+                    <div className="mt-0.5 text-[12px] leading-5 text-foreground/88">
                       {safeDisplayText(request.action_summary)}
                     </div>
                   </div>
@@ -1043,21 +1050,21 @@ export function InterventionCard({
             )}
 
             {contextEntries.length > 0 ? (
-              <div className="grid gap-2 md:grid-cols-2">
+              <div className="grid gap-1.5 md:grid-cols-2">
                 {contextEntries.map(([key, value]) => (
                   <div
                     key={key}
-                    className="rounded-lg border border-border/60 bg-muted/8 px-2.5 py-2"
+                    className="rounded-lg border border-border/60 bg-muted/8 px-2 py-1.5"
                   >
                     <div className="text-[10px] font-medium uppercase tracking-[0.1em] text-muted-foreground">
                       {formatContextLabel(key)}
                     </div>
                     {typeof value === "object" && value !== null ? (
-                      <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-4.5 text-foreground/80">
+                      <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-4.5 text-foreground/80">
                         {formatContextValue(value)}
                       </pre>
                     ) : (
-                      <div className="mt-1 whitespace-pre-wrap break-all text-[12px] leading-5 text-foreground/85">
+                      <div className="mt-0.5 whitespace-pre-wrap break-all text-[12px] leading-5 text-foreground/85">
                         {formatContextValue(value)}
                       </div>
                     )}
@@ -1066,28 +1073,23 @@ export function InterventionCard({
               </div>
             ) : null}
 
-            {safeDisplayText(display?.risk_tip) ? (
-              <div className="rounded-lg border border-border/60 bg-muted/18 px-3 py-2 text-[12px] leading-5 text-muted-foreground">
-                {safeDisplayText(display?.risk_tip)}
-              </div>
-            ) : null}
           </>
         ) : null}
 
-        <div className="space-y-2 rounded-lg border border-border/60 bg-muted/6 p-2.5">
+        <div className="space-y-1.5 rounded-lg border border-border/60 bg-muted/6 p-2">
           <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
             <AlertTriangleIcon className={`size-3 ${riskTone.icon}`} />
             {t.subtasks.interventionDecisionLabel}
           </div>
 
           {confirmActions.length > 0 ? (
-            <div className="space-y-3 border-t border-border/60 pt-3">
+            <div className="space-y-2 border-t border-border/60 pt-2">
               {confirmActions.map((action) => (
                 <div
                   key={action.key}
-                  className="space-y-3 rounded-xl border border-border/70 bg-background/80 p-3"
+                  className="space-y-2 rounded-xl border border-border/70 bg-background/80 p-2.5"
                 >
-                  <div className="space-y-1">
+                  <div className="space-y-0.5">
                     <div className="text-sm font-medium text-foreground">
                       {safeDisplayText(action.label, confirmTitleText)}
                     </div>
@@ -1126,75 +1128,15 @@ export function InterventionCard({
             </div>
           ) : null}
 
-          {plainButtonActions.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {plainButtonActions.map((action, index) => {
-                const isDestructive =
-                  action.resolution_behavior === "fail_current_task";
-                const isPrimary = !isDestructive && index === 0;
-
-                return (
-                  <Button
-                    key={action.key}
-                    type="button"
-                    variant={isPrimary ? "default" : "outline"}
-                    className={
-                      isPrimary
-                        ? "h-8 rounded-lg bg-foreground px-3 text-[12px] text-background shadow-sm hover:bg-foreground/90"
-                        : "h-8 rounded-lg border-border bg-background px-3 text-[12px] text-foreground hover:bg-muted"
-                    }
-                    disabled={resolveMutation.isPending}
-                    onClick={() =>
-                      submitInterventionAction({
-                        actionKey: action.key,
-                        fingerprint: request.fingerprint,
-                        payload: {},
-                        requestId: request.request_id,
-                        resolveMutation,
-                        threadId,
-                        t,
-                        onResumeSubmit: handleResumeSubmit,
-                      })
-                    }
-                  >
-                    {resolveMutation.isPending ? (
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                    ) : null}
-                    {getDisplayActionLabel(
-                      display,
-                      action,
-                      t.subtasks.interventionActionFallback,
-                    )}
-                  </Button>
-                );
-              })}
-            </div>
-          ) : null}
-
-          {inputActions.length > 0 ? (
-            <div className="space-y-2 border-t border-border/60 pt-2">
-              {inputActions.map((action) => {
-                const draft = drafts[action.key] ?? "";
-                const disabled = resolveMutation.isPending || !draft.trim();
-
-                return (
-                  <div
-                    key={action.key}
-                    className="space-y-3 rounded-xl border border-border/70 bg-background/80 p-3"
-                  >
-                    <div className="space-y-1">
-                      <div className="text-sm font-medium text-foreground">
-                        {safeDisplayText(action.label, interactionCopy.inputTitle)}
-                      </div>
-                      <div className="text-xs leading-5 text-muted-foreground">
-                        {getActionHint(
-                          action,
-                          t.subtasks.interventionPlaceholder,
-                        )}
-                      </div>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+          {plainButtonActions.length > 0 || inputActions.length > 0 ? (
+            <div className="space-y-2">
+              {inputActions.length > 0 ? (
+                <div className="space-y-2">
+                  {inputActions.map((action) => {
+                    const draft = drafts[action.key] ?? "";
+                    return (
                       <Textarea
+                        key={action.key}
                         value={draft}
                         placeholder={
                           safeDisplayText(
@@ -1205,7 +1147,7 @@ export function InterventionCard({
                             ),
                           )
                         }
-                        rows={3}
+                        rows={1}
                         className="min-h-0 rounded-lg border-border/70 bg-background px-3 py-2 text-[12px] leading-5 shadow-none focus-visible:ring-1 focus-visible:ring-foreground/15"
                         onChange={(event) =>
                           setDrafts((current) => ({
@@ -1214,39 +1156,91 @@ export function InterventionCard({
                           }))
                         }
                       />
-                      <Button
-                        type="button"
-                        className="h-8 rounded-lg bg-foreground px-3 text-[12px] text-background shadow-sm hover:bg-foreground/90"
-                        disabled={disabled}
-                        onClick={() =>
-                          submitInterventionAction({
-                            actionKey: action.key,
-                            fingerprint: request.fingerprint,
-                            payload: {
-                              text: draft.trim(),
-                              comment: draft.trim(),
-                            },
-                            requestId: request.request_id,
-                            resolveMutation,
-                            threadId,
-                            t,
-                            onResumeSubmit: handleResumeSubmit,
-                          })
-                        }
-                      >
-                        {resolveMutation.isPending ? (
-                          <Loader2Icon className="size-3.5 animate-spin" />
-                        ) : null}
-                        {getDisplayActionLabel(
-                          display,
-                          action,
-                          t.subtasks.interventionActionFallback,
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap gap-1.5">
+                {plainButtonActions.map((action, index) => {
+                  const isDestructive =
+                    action.resolution_behavior === "fail_current_task";
+                  const isPrimary = !isDestructive && index === 0;
+
+                  return (
+                    <Button
+                      key={action.key}
+                      type="button"
+                      variant={isPrimary ? "default" : "outline"}
+                      className={
+                        isPrimary
+                          ? "h-8 rounded-lg bg-foreground px-3 text-[12px] font-medium text-background shadow-sm hover:bg-foreground/90"
+                          : "h-8 rounded-lg border-border bg-background px-3 text-[12px] font-medium text-foreground hover:bg-muted"
+                      }
+                      disabled={resolveMutation.isPending}
+                      onClick={() =>
+                        submitInterventionAction({
+                          actionKey: action.key,
+                          fingerprint: request.fingerprint,
+                          payload: {},
+                          requestId: request.request_id,
+                          resolveMutation,
+                          threadId,
+                          t,
+                          onResumeSubmit: handleResumeSubmit,
+                        })
+                      }
+                    >
+                      {resolveMutation.isPending ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : null}
+                      {getDisplayActionLabel(
+                        display,
+                        action,
+                        t.subtasks.interventionActionFallback,
+                      )}
+                    </Button>
+                  );
+                })}
+
+                {inputActions.map((action) => {
+                  const draft = drafts[action.key] ?? "";
+                  const disabled = resolveMutation.isPending || !draft.trim();
+
+                  return (
+                    <Button
+                      key={action.key}
+                      type="button"
+                      className="h-8 rounded-lg bg-foreground px-3 text-[12px] font-medium text-background shadow-sm hover:bg-foreground/90"
+                      disabled={disabled}
+                      onClick={() =>
+                        submitInterventionAction({
+                          actionKey: action.key,
+                          fingerprint: request.fingerprint,
+                          payload: {
+                            text: draft.trim(),
+                            comment: draft.trim(),
+                          },
+                          requestId: request.request_id,
+                          resolveMutation,
+                          threadId,
+                          t,
+                          onResumeSubmit: handleResumeSubmit,
+                        })
+                      }
+                    >
+                      {resolveMutation.isPending ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : null}
+                      {getDisplayActionLabel(
+                        display,
+                        action,
+                        t.subtasks.interventionActionFallback,
+                      )}
+                    </Button>
+                  );
+                })}
+              </div>
             </div>
           ) : null}
 
