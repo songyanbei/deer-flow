@@ -1,0 +1,33 @@
+id: workflow.contacts.to.hr.basic
+title: 先查员工信息再查考勤
+suite: phase0-core
+domain: workflows
+category: cross_domain
+type: workflow
+
+input:
+  message: 帮我查一下李四的信息，再看看他这个月的考勤
+
+fixtures:
+  profile: contacts_to_hr_basic
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agents:
+    - contacts-agent
+    - hr-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 2
+  final_result_contains:
+    - 李四
+    - 考勤
+
+limits:
+  max_route_count: 4
+  max_task_count: 2
+  max_duration_ms: 15000
+
+tags:
+  - workflow
+  - cross_domain

@@ -1,0 +1,33 @@
+id: workflow.contacts.to.meeting.basic
+title: 先查联系人再预定会议室
+suite: phase0-core
+domain: workflows
+category: cross_domain
+type: workflow
+
+input:
+  message: 帮我先查王明的员工编号，再帮他预定明天下午三点的会议室
+
+fixtures:
+  profile: contacts_to_meeting_basic
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agents:
+    - contacts-agent
+    - meeting-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 2
+  final_result_contains:
+    - 员工编号
+    - 会议室
+
+limits:
+  max_route_count: 4
+  max_task_count: 2
+  max_duration_ms: 15000
+
+tags:
+  - workflow
+  - cross_domain

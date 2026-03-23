@@ -1,0 +1,34 @@
+id: meeting.governance.cancel_rejected
+title: 取消会议被拒绝后任务失败
+suite: phase0-core
+domain: meeting
+category: governance
+type: single
+
+input:
+  message: 帮我取消明天下午的会议
+  intervention_resolutions:
+    - action: reject
+      reason: 用户拒绝取消操作
+
+fixtures:
+  profile: meeting_governance_cancel_rejected
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: meeting-agent
+  clarification_expected: false
+  intervention_expected: true
+  final_result_not_contains:
+    - 成功取消
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - meeting
+  - governance
+  - intervention
+  - reject

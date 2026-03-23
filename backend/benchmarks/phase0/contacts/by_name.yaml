@@ -1,0 +1,31 @@
+id: contacts.happy_path.by_name
+title: 按姓名查询员工信息
+suite: phase0-core
+domain: contacts
+category: happy_path
+type: single
+
+input:
+  message: 帮我查一下王明的员工信息
+
+fixtures:
+  profile: contacts_by_name
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: contacts-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 1
+  final_result_contains:
+    - 王明
+    - EMP002
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - contacts
+  - happy_path

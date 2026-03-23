@@ -1,0 +1,28 @@
+id: meeting.governance.cancel
+title: 取消会议触发治理路径
+suite: phase0-core
+domain: meeting
+category: governance
+type: single
+
+input:
+  message: 帮我取消明天下午的会议
+
+fixtures:
+  profile: meeting_governance_cancel
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: meeting-agent
+  clarification_expected: false
+  intervention_expected: true
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - meeting
+  - governance
+  - intervention

@@ -1,0 +1,33 @@
+id: meeting.dependency.contacts
+title: 依赖联系人信息后继续预定
+suite: phase0-core
+domain: meeting
+category: dependency
+type: workflow
+
+input:
+  message: 帮我查一下张三的信息，然后帮他预定会议室
+
+fixtures:
+  profile: meeting_dependency_contacts
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agents:
+    - contacts-agent
+    - meeting-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 2
+  final_result_contains:
+    - 会议室
+
+limits:
+  max_route_count: 4
+  max_task_count: 2
+  max_duration_ms: 15000
+
+tags:
+  - meeting
+  - dependency
+  - cross_domain

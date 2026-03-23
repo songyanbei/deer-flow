@@ -1,0 +1,424 @@
+{
+  "suite": "phase0-core",
+  "started_at": "2026-03-23T02:50:48.554158+00:00",
+  "finished_at": "2026-03-23T02:50:57.112372+00:00",
+  "total": 19,
+  "passed": 19,
+  "failed": 0,
+  "errored": 0,
+  "skipped": 0,
+  "case_results": [
+    {
+      "case_id": "contacts.ambiguity.same_name",
+      "status": "passed",
+      "duration_ms": 3609.000000025844,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 1,
+      "intervention_count": 0,
+      "verified_fact_count": 0,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "contacts.happy_path.by_name",
+      "status": "passed",
+      "duration_ms": 171.99999999138527,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "contacts.not_found.unknown_person",
+      "status": "passed",
+      "duration_ms": 155.99999998812564,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "contacts.happy_path.query_openid",
+      "status": "passed",
+      "duration_ms": 141.00000000325963,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "contacts.read_only.no_intervention",
+      "status": "passed",
+      "duration_ms": 141.00000000325963,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "hr.happy_path.attendance",
+      "status": "passed",
+      "duration_ms": 140.00000001396984,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "hr-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "hr.clarification.identity",
+      "status": "passed",
+      "duration_ms": 171.99999999138527,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "hr-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 1,
+      "intervention_count": 0,
+      "verified_fact_count": 0,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "hr.happy_path.leave_balance",
+      "status": "passed",
+      "duration_ms": 155.99999998812564,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "hr-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "hr.unsupported.permission_denied",
+      "status": "passed",
+      "duration_ms": 187.9999999946449,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "hr-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "meeting.clarification.missing_time",
+      "status": "passed",
+      "duration_ms": 328.00000000861473,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "meeting-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 1,
+      "intervention_count": 0,
+      "verified_fact_count": 0,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "meeting.conflict.room",
+      "status": "passed",
+      "duration_ms": 437.0000000053551,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "meeting-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "meeting.dependency.contacts",
+      "status": "passed",
+      "duration_ms": 234.99999998603016,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent",
+        "meeting-agent"
+      ],
+      "task_count": 2,
+      "route_count": 2,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 2,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "meeting.governance.cancel",
+      "status": "passed",
+      "duration_ms": 281.00000001722947,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "meeting-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 1,
+      "verified_fact_count": 0,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "meeting.governance.cancel_rejected",
+      "status": "passed",
+      "duration_ms": 312.9999999946449,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "meeting-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 1,
+      "verified_fact_count": 0,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "meeting.happy_path.basic",
+      "status": "passed",
+      "duration_ms": 375.0,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "meeting-agent"
+      ],
+      "task_count": 1,
+      "route_count": 1,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 1,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "workflow.clarification.resume",
+      "status": "passed",
+      "duration_ms": 312.0000000053551,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent"
+      ],
+      "task_count": 2,
+      "route_count": 1,
+      "clarification_count": 1,
+      "intervention_count": 0,
+      "verified_fact_count": 0,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "workflow.contacts.to.hr.basic",
+      "status": "passed",
+      "duration_ms": 405.99999998812564,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent",
+        "hr-agent"
+      ],
+      "task_count": 2,
+      "route_count": 2,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 2,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "workflow.contacts.to.meeting.basic",
+      "status": "passed",
+      "duration_ms": 516.0000000032596,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent",
+        "meeting-agent"
+      ],
+      "task_count": 2,
+      "route_count": 2,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 2,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    },
+    {
+      "case_id": "workflow.dependency.helper_resume",
+      "status": "passed",
+      "duration_ms": 406.00000001722947,
+      "resolved_orchestration_mode": "workflow",
+      "assigned_agents": [
+        "contacts-agent",
+        "hr-agent"
+      ],
+      "task_count": 2,
+      "route_count": 2,
+      "clarification_count": 0,
+      "intervention_count": 0,
+      "verified_fact_count": 2,
+      "llm_metrics": {
+        "total_calls": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0
+      },
+      "failed_assertions": [],
+      "error": null
+    }
+  ],
+  "aggregate_metrics": {
+    "total_duration_ms": 8484.000000025844,
+    "avg_duration_ms": 446.5263157908339,
+    "total_tasks": 24,
+    "total_routes": 23,
+    "total_clarifications": 4,
+    "total_interventions": 2,
+    "pass_rate": 1.0
+  }
+}

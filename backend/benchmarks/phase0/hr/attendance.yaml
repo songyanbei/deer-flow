@@ -1,0 +1,31 @@
+id: hr.happy_path.attendance
+title: 查询考勤记录
+suite: phase0-core
+domain: hr
+category: happy_path
+type: single
+
+input:
+  message: 帮我查一下王明本月的考勤情况
+
+fixtures:
+  profile: hr_attendance
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: hr-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 1
+  final_result_contains:
+    - 考勤
+    - 出勤
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - hr
+  - happy_path

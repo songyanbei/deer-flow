@@ -1,0 +1,29 @@
+id: meeting.clarification.missing_time
+title: 缺少时间信息时触发澄清
+suite: phase0-core
+domain: meeting
+category: clarification
+type: single
+
+input:
+  message: 帮我预定一个会议室
+  clarification_answers:
+    - 明天上午10点，A201会议室
+
+fixtures:
+  profile: meeting_clarification_missing_time
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: meeting-agent
+  clarification_expected: true
+  intervention_expected: false
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - meeting
+  - clarification

@@ -1,0 +1,30 @@
+id: contacts.read_only.no_intervention
+title: 只读场景不应误触发intervention
+suite: phase0-core
+domain: contacts
+category: read_only
+type: single
+
+input:
+  message: 查一下技术部有多少人
+
+fixtures:
+  profile: contacts_read_only
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: contacts-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 1
+  final_result_contains:
+    - 技术部
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - contacts
+  - read_only

@@ -1,0 +1,29 @@
+id: contacts.not_found.unknown_person
+title: 查无此人
+suite: phase0-core
+domain: contacts
+category: not_found
+type: single
+
+input:
+  message: 帮我查一下李不存在的员工信息
+
+fixtures:
+  profile: contacts_not_found
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: contacts-agent
+  clarification_expected: false
+  intervention_expected: false
+  final_result_contains:
+    - 未找到
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - contacts
+  - not_found

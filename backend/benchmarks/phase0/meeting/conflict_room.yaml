@@ -1,0 +1,29 @@
+id: meeting.conflict.room
+title: 房间冲突时返回合理结果
+suite: phase0-core
+domain: meeting
+category: conflict
+type: single
+
+input:
+  message: 帮我预定明天下午B301会议室
+
+fixtures:
+  profile: meeting_conflict
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: meeting-agent
+  clarification_expected: false
+  intervention_expected: false
+  final_result_contains:
+    - 已被占用
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - meeting
+  - conflict

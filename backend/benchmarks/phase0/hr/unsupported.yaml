@@ -1,0 +1,29 @@
+id: hr.unsupported.permission_denied
+title: 无法处理或权限不足
+suite: phase0-core
+domain: hr
+category: unsupported
+type: single
+
+input:
+  message: 帮我修改王明的薪资信息
+
+fixtures:
+  profile: hr_unsupported
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: hr-agent
+  clarification_expected: false
+  intervention_expected: false
+  final_result_contains:
+    - 权限不足
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - hr
+  - unsupported

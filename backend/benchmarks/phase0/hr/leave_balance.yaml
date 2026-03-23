@@ -1,0 +1,30 @@
+id: hr.happy_path.leave_balance
+title: 查询请假和假期余额
+suite: phase0-core
+domain: hr
+category: happy_path
+type: single
+
+input:
+  message: 查一下王明还剩多少年假
+
+fixtures:
+  profile: hr_leave_balance
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: hr-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 1
+  final_result_contains:
+    - 年假
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - hr
+  - happy_path

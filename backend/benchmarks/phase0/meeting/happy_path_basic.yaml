@@ -1,0 +1,30 @@
+id: meeting.happy_path.basic
+title: 直接预定会议室
+suite: phase0-core
+domain: meeting
+category: happy_path
+type: single
+
+input:
+  message: 帮我预定明天下午3点的B栋301会议室，5人参加
+
+fixtures:
+  profile: meeting_happy_path
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: meeting-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 1
+  final_result_contains:
+    - 会议室
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - meeting
+  - happy_path

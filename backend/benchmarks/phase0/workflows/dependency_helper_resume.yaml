@@ -1,0 +1,35 @@
+id: workflow.dependency.helper_resume
+title: 依赖helper完成后parent task resume
+suite: phase0-core
+domain: workflows
+category: dependency
+type: workflow
+
+input:
+  message: 帮我查一下赵六的信息，然后看看他还剩多少假期
+
+fixtures:
+  profile: workflow_dependency_helper_resume
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agents:
+    - contacts-agent
+    - hr-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 2
+  final_result_contains:
+    - 赵六
+    - 假
+
+limits:
+  max_route_count: 4
+  max_task_count: 2
+  max_duration_ms: 15000
+
+tags:
+  - workflow
+  - cross_domain
+  - dependency
+  - resume

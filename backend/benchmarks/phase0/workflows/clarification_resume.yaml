@@ -1,0 +1,31 @@
+id: workflow.clarification.resume
+title: 澄清后在同一链路继续执行
+suite: phase0-core
+domain: workflows
+category: resume
+type: workflow
+
+input:
+  message: 帮我查一下那个人的信息，然后预定会议室
+  clarification_answers:
+    - 王五
+
+fixtures:
+  profile: workflow_clarification_resume
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: contacts-agent
+  clarification_expected: true
+  intervention_expected: false
+
+limits:
+  max_route_count: 4
+  max_task_count: 2
+  max_duration_ms: 15000
+
+tags:
+  - workflow
+  - cross_domain
+  - clarification
+  - resume

@@ -1,0 +1,30 @@
+id: contacts.ambiguity.same_name
+title: 同名人员触发澄清
+suite: phase0-core
+domain: contacts
+category: ambiguity
+type: single
+
+input:
+  message: 查一下张伟的信息
+  clarification_answers:
+    - 技术部的张伟
+
+fixtures:
+  profile: contacts_ambiguity
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: contacts-agent
+  clarification_expected: true
+  intervention_expected: false
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - contacts
+  - clarification
+  - ambiguity

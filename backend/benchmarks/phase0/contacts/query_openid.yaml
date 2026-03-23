@@ -1,0 +1,30 @@
+id: contacts.happy_path.query_openid
+title: 查询员工openId
+suite: phase0-core
+domain: contacts
+category: happy_path
+type: single
+
+input:
+  message: 查一下王明的openId
+
+fixtures:
+  profile: contacts_query_openid
+
+expected:
+  resolved_orchestration_mode: workflow
+  assigned_agent: contacts-agent
+  clarification_expected: false
+  intervention_expected: false
+  verified_facts_min_count: 1
+  final_result_contains:
+    - openId
+
+limits:
+  max_route_count: 2
+  max_task_count: 1
+  max_duration_ms: 10000
+
+tags:
+  - contacts
+  - happy_path
