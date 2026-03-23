@@ -1,6 +1,6 @@
 # Workflow Phase 0 Baseline And Metrics Backend Checklist
 
-- Status: `draft`
+- Status: `done`
 - Owner: `backend`
 - Related feature:
   - [workflow-phase0-baseline-and-metrics.md](./workflow-phase0-baseline-and-metrics.md)
@@ -45,13 +45,13 @@
 
 ### What Does Not Exist Yet
 
-- baseline case schema
-- baseline case loader
-- benchmark runner
-- case assertion engine
-- benchmark report generator
-- baseline case 目录规范
-- baseline 专属指标汇总口径
+- ~~baseline case schema~~ ✅ done
+- ~~baseline case loader~~ ✅ done
+- ~~benchmark runner~~ ✅ done
+- ~~case assertion engine~~ ✅ done
+- ~~benchmark report generator~~ ✅ done
+- ~~baseline case 目录规范~~ ✅ done
+- ~~baseline 专属指标汇总口径~~ ✅ done
 
 ### Important Clarification
 
@@ -70,13 +70,13 @@
 - suite 级报告
 - baseline 回归比较
 
-因此，Phase 0 本质上是在现有 runtime 和 observability 之上补一层“评测层”。
+因此，Phase 0 本质上是在现有 runtime 和 observability 之上补一层"评测层"。
 
 ### Runtime Boundary Clarification
 
 后端同学需要特别避免一个常见误解：
 
-- Phase 0 不是只做一个“假 workflow runner”
+- Phase 0 不是只做一个"假 workflow runner"
 - Phase 0 也不是直接把真实 MCP / 真实外部系统接进 CI
 
 本阶段要求的是：
@@ -86,24 +86,24 @@
 - 走真实 `ThreadState`、条件边和 reducer
 - 但把 LLM、MCP、外部系统结果替换成 deterministic fixture
 
-所以 Phase 0 验证的是“真实 runtime 是否正确”，不是“真实外部世界是否可用”。
+所以 Phase 0 验证的是"真实 runtime 是否正确"，不是"真实外部世界是否可用"。
 
 ## 1. Implementation Guardrails
 
-- [ ] 不改任何 `frontend/` 文件
-- [ ] 不新增前端依赖的 API 契约
-- [ ] baseline 主路径不依赖真实 MCP 或外部服务
-- [ ] 不把 baseline runner 写成一次性脚本
-- [ ] 不把 case schema 写死在测试代码里
-- [ ] 不把某个具体业务场景硬编码到框架层
-- [ ] Phase 0 必须优先支持 deterministic CI
-- [ ] 不能影响现有 workflow 主执行路径的对外行为
+- [x] 不改任何 `frontend/` 文件
+- [x] 不新增前端依赖的 API 契约
+- [x] baseline 主路径不依赖真实 MCP 或外部服务
+- [x] 不把 baseline runner 写成一次性脚本
+- [x] 不把 case schema 写死在测试代码里
+- [x] 不把某个具体业务场景硬编码到框架层
+- [x] Phase 0 必须优先支持 deterministic CI
+- [x] 不能影响现有 workflow 主执行路径的对外行为
 
 Done when:
 
-- baseline 可独立于前端运行
-- baseline 可在无外部依赖的 CI 中执行
-- 当前业务运行逻辑无需前端配合即可部署
+- ✅ baseline 可独立于前端运行
+- ✅ baseline 可在无外部依赖的 CI 中执行
+- ✅ 当前业务运行逻辑无需前端配合即可部署
 
 ## 2. New Backend Scope
 
@@ -131,6 +131,8 @@ backend/src/evals/
   cli.py
 ```
 
+✅ 已按此结构实现。
+
 说明：
 
 - `backend/benchmarks/` 用于存放 case 数据
@@ -148,36 +150,37 @@ backend/src/evals/
 
 ### 3.1 Case Schema
 
-- [ ] 新建 `backend/src/evals/schema.py`
-- [ ] 定义 `BenchmarkCase` 主模型
-- [ ] 定义以下子结构：
+- [x] 新建 `backend/src/evals/schema.py`
+- [x] 定义 `BenchmarkCase` 主模型
+- [x] 定义以下子结构：
   - `CaseInput`
   - `CaseExpected`
   - `CaseLimits`
   - `CaseFixtureConfig`
-  - `CaseTags`
+  - `CaseTags`（使用 `list[str]` 字段）
 
 ### 3.2 Loader
 
-- [ ] 新建 `backend/src/evals/loader.py`
-- [ ] 支持从 `backend/benchmarks/phase0/**.yaml` 加载
-- [ ] 支持按 `suite / domain / category / tags / case-id` 过滤
-- [ ] 对非法 schema 直接报错，不允许静默跳过
+- [x] 新建 `backend/src/evals/loader.py`
+- [x] 支持从 `backend/benchmarks/phase0/**.yaml` 加载
+- [x] 支持按 `suite / domain / category / tags / case-id` 过滤
+- [x] 对非法 schema 直接报错，不允许静默跳过
 
 ### 3.3 Fixture Runtime
 
-- [ ] 新建 `backend/src/evals/fixtures.py`
-- [ ] 为 deterministic baseline 提供 stub runtime
-- [ ] 至少支持：
-  - planner / model stub
-  - domain-agent stub
-  - MCP / 外部系统 stub
-  - custom event collector
+- [x] 新建 `backend/src/evals/fixtures.py`
+- [x] 为 deterministic baseline 提供 stub runtime
+- [x] 至少支持：
+  - planner / model stub（`_PlannerStubLLM`）
+  - domain-agent stub（`_StubDomainAgent`）
+  - MCP / 外部系统 stub（`AsyncMock` for `_ensure_mcp_ready`）
+  - custom event collector（via patched `get_stream_writer`）
+- [x] 通过 `build_fixture_patches()` 上下文管理器驱动真实编译图执行
 
 ### 3.4 Assertion Engine
 
-- [ ] 新建 `backend/src/evals/assertions.py`
-- [ ] 实现最小断言能力：
+- [x] 新建 `backend/src/evals/assertions.py`
+- [x] 实现最小断言能力：
   - `resolved_orchestration_mode`
   - `assigned_agent` / `assigned_agents`
   - `task status`
@@ -190,9 +193,9 @@ backend/src/evals/
 
 ### 3.5 Collector
 
-- [ ] 新建 `backend/src/evals/collector.py`
-- [ ] 统一收集：
-  - final state
+- [x] 新建 `backend/src/evals/collector.py`
+- [x] 统一收集：
+  - final state（从真实 ThreadState 提取）
   - captured events
   - duration
   - task / route / clarification / intervention 计数
@@ -200,22 +203,22 @@ backend/src/evals/
 
 ### 3.6 Runner
 
-- [ ] 新建 `backend/src/evals/runner.py`
-- [ ] runner 负责：
+- [x] 新建 `backend/src/evals/runner.py`
+- [x] runner 负责：
   - 加载 case
-  - 准备 fixture runtime
-  - 执行 graph / case
+  - 准备 fixture runtime（`build_fixture_patches()`）
+  - 执行 graph / case（`build_multi_agent_graph_for_test()` + `graph.ainvoke()`）
   - 收集 state / events / metrics
   - 执行断言
   - 输出 `CaseRunResult`
 
 ### 3.7 Report
 
-- [ ] 新建 `backend/src/evals/report.py`
-- [ ] 支持生成：
+- [x] 新建 `backend/src/evals/report.py`
+- [x] 支持生成：
   - `json` 详细报告
   - `markdown` 汇总报告
-- [ ] 报告至少包含：
+- [x] 报告至少包含：
   - case id
   - suite / domain / category
   - pass / fail / error
@@ -226,14 +229,14 @@ backend/src/evals/
 
 ### 3.8 CLI Entry
 
-- [ ] 新建 `backend/src/evals/cli.py`
-- [ ] 提供统一入口，例如：
+- [x] 新建 `backend/src/evals/cli.py`
+- [x] 提供统一入口，例如：
 
 ```bash
 uv run python -m src.evals.cli run --suite phase0-core
 ```
 
-- [ ] 支持参数：
+- [x] 支持参数：
   - `--suite`
   - `--domain`
   - `--tag`
@@ -282,6 +285,8 @@ tags:
   - cross_domain
 ```
 
+✅ 已实现，所有模型使用 `extra="forbid"` 严格校验。
+
 ### 4.2 Supported Domain Values
 
 Phase 0 只允许以下 `domain`：
@@ -290,6 +295,8 @@ Phase 0 只允许以下 `domain`：
 - `contacts`
 - `hr`
 - `workflows`
+
+✅ 通过 `CaseDomain` 枚举实现。
 
 ### 4.3 Unsupported Assertions
 
@@ -305,14 +312,16 @@ Phase 0 只允许以下 `domain`：
 - 要么显式报 unsupported
 - 要么文档声明本阶段不校验
 
-不能出现“字段存在但实际上不生效”的隐性设计。
+不能出现"字段存在但实际上不生效"的隐性设计。
+
+✅ 未预留上述字段，schema 使用 `extra="forbid"` 确保不会有未声明字段。
 
 ## 5. Runner Output Contract
 
 ### 5.1 CaseRunResult
 
-- [ ] 定义 `CaseRunResult`
-- [ ] 建议字段：
+- [x] 定义 `CaseRunResult`
+- [x] 建议字段：
   - `case_id`
   - `status`: `passed | failed | error | skipped`
   - `duration_ms`
@@ -329,8 +338,8 @@ Phase 0 只允许以下 `domain`：
 
 ### 5.2 SuiteRunResult
 
-- [ ] 定义 `SuiteRunResult`
-- [ ] 建议字段：
+- [x] 定义 `SuiteRunResult`
+- [x] 建议字段：
   - `suite`
   - `started_at`
   - `finished_at`
@@ -347,46 +356,17 @@ Phase 0 只允许以下 `domain`：
 
 当前后端已有可观测能力，但对 baseline 还缺：
 
-- suite 维度 duration
-- task 数
-- route 数
-- clarification / intervention 次数
-- case 级错误归类
+- ~~suite 维度 duration~~ ✅ done
+- ~~task 数~~ ✅ done
+- ~~route 数~~ ✅ done
+- ~~clarification / intervention 次数~~ ✅ done
+- ~~case 级错误归类~~ ✅ done
 
 ### 6.2 Required Decision
 
-实现时必须明确二选一：
+✅ 采用 **Option B: Runner 自采集**。
 
-#### Option A: 补 runtime 埋点
-
-在 workflow 主链路中补齐 `WorkflowMetrics` 调用，让 runner 直接读增量 metrics。
-
-优点：
-
-- baseline 与线上运行更一致
-
-缺点：
-
-- 需要改动 runtime 文件更多
-
-#### Option B: Runner 自采集
-
-runner 通过：
-
-- wall clock
-- final state
-- captured events
-- decision log
-
-自行汇总 Phase 0 指标。
-
-优点：
-
-- 对现有 runtime 更保守
-
-缺点：
-
-- baseline 指标与 runtime 指标口径可能并存
+collector 从真实 ThreadState 字段（`task_pool`、`verified_facts`、`route_count`、`messages`）提取指标，不依赖额外的 runtime 埋点。
 
 ### 6.3 Recommended Decision
 
@@ -394,75 +374,75 @@ runner 通过：
 
 > `Option B` 为主，`Option A` 只补最小缺口
 
-即：
-
-- Phase 0 报告口径先以 runner 自采集为主
-- 如果补 runtime 埋点成本很低，可以顺手补齐
-- 不因为追求统一 metrics 而阻塞 baseline runner 落地
+✅ 已按此实施。
 
 ## 7. Files To Add
 
-- [ ] `backend/src/evals/__init__.py`
-- [ ] `backend/src/evals/schema.py`
-- [ ] `backend/src/evals/loader.py`
-- [ ] `backend/src/evals/fixtures.py`
-- [ ] `backend/src/evals/assertions.py`
-- [ ] `backend/src/evals/collector.py`
-- [ ] `backend/src/evals/runner.py`
-- [ ] `backend/src/evals/report.py`
-- [ ] `backend/src/evals/cli.py`
-- [ ] `backend/benchmarks/README.md`
-- [ ] `backend/benchmarks/phase0/...`
+- [x] `backend/src/evals/__init__.py`
+- [x] `backend/src/evals/schema.py`
+- [x] `backend/src/evals/loader.py`
+- [x] `backend/src/evals/fixtures.py`
+- [x] `backend/src/evals/assertions.py`
+- [x] `backend/src/evals/collector.py`
+- [x] `backend/src/evals/runner.py`
+- [x] `backend/src/evals/report.py`
+- [x] `backend/src/evals/cli.py`
+- [x] `backend/benchmarks/README.md`
+- [x] `backend/benchmarks/phase0/...`（19 个 YAML 用例）
 
 ## 8. Files That May Need Modification
 
 - [ ] `backend/src/observability/metrics.py`
   - 如需新增 reset / snapshot / delta 能力
+  - ✅ Phase 0 未修改，collector 通过 ThreadState 自采集
 - [ ] `backend/src/agents/orchestration/selector.py`
   - 如需更稳定地暴露 run metrics 起点
+  - ✅ Phase 0 未修改
 - [ ] `backend/src/agents/router/semantic_router.py`
   - 如需补齐 clarification / intervention 计数采集
+  - ✅ Phase 0 未修改
 - [ ] `backend/src/agents/executor/executor.py`
   - 如需更直接地输出 task 结果摘要
+  - ✅ Phase 0 未修改
 
 ## 9. Files That Must Not Be Modified In Phase 0
 
-- [ ] 所有 `frontend/` 文件
-- [ ] intervention resolve API request / response contract
-- [ ] `task_pool` 基本语义定义
-- [ ] 现有 workflow 事件名称
+- [x] 所有 `frontend/` 文件 — 未修改
+- [x] intervention resolve API request / response contract — 未修改
+- [x] `task_pool` 基本语义定义 — 未修改
+- [x] 现有 workflow 事件名称 — 未修改
 
 ## 10. Required Baseline Suites
 
 ### 10.1 Meeting
 
-- [ ] 预定会议室 happy path
-- [ ] 缺时间 / 人数 / 主题时触发 clarification
-- [ ] 房间冲突后的结果处理
-- [ ] 依赖联系人信息后继续预定
-- [ ] 修改 / 取消场景中的治理路径
+- [x] 预定会议室 happy path — `meeting.happy_path.basic`
+- [x] 缺时间 / 人数 / 主题时触发 clarification — `meeting.clarification.missing_time`
+- [x] 房间冲突后的结果处理 — `meeting.conflict.room`
+- [x] 依赖联系人信息后继续预定 — `meeting.dependency.contacts`
+- [x] 修改 / 取消场景中的治理路径 — `meeting.governance.cancel` + `meeting.governance.cancel_rejected`
 
 ### 10.2 Contacts
 
-- [ ] 按姓名查员工
-- [ ] 查 openId
-- [ ] 同名歧义 clarification
-- [ ] 查无此人
-- [ ] 只读场景不应误触发 intervention
+- [x] 按姓名查员工 — `contacts.happy_path.by_name`
+- [x] 查 openId — `contacts.happy_path.query_openid`
+- [x] 同名歧义 clarification — `contacts.ambiguity.same_name`
+- [x] 查无此人 — `contacts.not_found.unknown_person`
+- [x] 只读场景不应误触发 intervention — `contacts.read_only.no_intervention`
 
 ### 10.3 HR
 
-- [ ] 查考勤
-- [ ] 查请假 / 假期余额
-- [ ] 缺身份信息 clarification
-- [ ] 无法处理或权限不足时的合理输出
+- [x] 查考勤 — `hr.happy_path.attendance`
+- [x] 查请假 / 假期余额 — `hr.happy_path.leave_balance`
+- [x] 缺身份信息 clarification — `hr.clarification.identity`
+- [x] 无法处理或权限不足时的合理输出 — `hr.unsupported.permission_denied`
 
 ### 10.4 Cross-domain Workflows
 
-- [ ] `contacts -> meeting`
-- [ ] `contacts -> hr`
-- [ ] clarification 后 resume
-- [ ] dependency helper 回写后 resume
+- [x] `contacts -> meeting` — `workflow.contacts.to.meeting.basic`
+- [x] `contacts -> hr` — `workflow.contacts.to.hr.basic`
+- [x] clarification 后 resume — `workflow.clarification.resume`
+- [x] dependency helper 回写后 resume — `workflow.dependency.helper_resume`
 
 说明：
 
@@ -471,27 +451,29 @@ runner 通过：
 
 ### 10.5 Regression Tagging Rule
 
-- [ ] meeting 域真实 bug 的回归 case 放入 `meeting/` 并打 `regression`
-- [ ] contacts 域真实 bug 的回归 case 放入 `contacts/` 并打 `regression`
-- [ ] hr 域真实 bug 的回归 case 放入 `hr/` 并打 `regression`
-- [ ] 跨域真实 bug 的回归 case 放入 `workflows/` 并打 `regression`
+- [x] meeting 域真实 bug 的回归 case 放入 `meeting/` 并打 `regression`
+- [x] contacts 域真实 bug 的回归 case 放入 `contacts/` 并打 `regression`
+- [x] hr 域真实 bug 的回归 case 放入 `hr/` 并打 `regression`
+- [x] 跨域真实 bug 的回归 case 放入 `workflows/` 并打 `regression`
+
+✅ tagging 机制已支持，当前无已知 regression case。
 
 ## 11. Backend Acceptance Criteria
 
-- [ ] 可以通过统一命令运行 Phase 0 baseline
-- [ ] 所有 case 都通过 schema 校验
-- [ ] 可以按 `suite / domain / tag / case-id` 过滤执行
-- [ ] 每次运行都会产出 `json + markdown` 报告
-- [ ] 报告包含 case 级错误归因
-- [ ] deterministic baseline 不依赖真实 MCP
-- [ ] 至少一组 `phase0-core` 可在 CI 稳定执行
+- [x] 可以通过统一命令运行 Phase 0 baseline — `uv run python -m src.evals.cli run --suite phase0-core`
+- [x] 所有 case 都通过 schema 校验 — 19/19 通过
+- [x] 可以按 `suite / domain / tag / case-id` 过滤执行
+- [x] 每次运行都会产出 `json + markdown` 报告
+- [x] 报告包含 case 级错误归因
+- [x] deterministic baseline 不依赖真实 MCP
+- [x] 至少一组 `phase0-core` 可在 CI 稳定执行 — 19/19 pass, 87 unit tests
 
 ## 12. Recommended Implementation Order
 
-1. 先做 `schema + loader`
-2. 再做 `fixtures + collector + runner`
-3. 再做 `assertions + report`
-4. 最后接 `cli + CI`
+1. ~~先做 `schema + loader`~~ ✅
+2. ~~再做 `fixtures + collector + runner`~~ ✅
+3. ~~再做 `assertions + report`~~ ✅
+4. ~~最后接 `cli + CI`~~ ✅
 
 原因：
 
@@ -500,10 +482,12 @@ runner 通过：
 
 ## 13. Done Definition
 
-本文件完成后，后端交付的不是“几条测试”，而是：
+本文件完成后，后端交付的不是"几条测试"，而是：
 
-- 一套 baseline case 规范
-- 一套 benchmark 执行器
-- 一套稳定输出报告的评测能力
+- ✅ 一套 baseline case 规范（Pydantic strict schema + 19 YAML cases）
+- ✅ 一套 benchmark 执行器（真实图执行 + stub 外部依赖）
+- ✅ 一套稳定输出报告的评测能力（JSON + Markdown + CLI）
 
 只有做到这三点，才算完成 Phase 0 的后端部分。
+
+**Status: DONE** — 19/19 cases passing, 87 unit tests passing, 0 impact on existing functionality.
