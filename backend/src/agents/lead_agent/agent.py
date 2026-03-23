@@ -4,7 +4,8 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware, TodoListMiddleware
 from langchain_core.runnables import RunnableConfig
 
-from src.agents.lead_agent.engine_registry import resolve_engine_behavior
+from src.agents.lead_agent.engine_registry import get_engine_builder
+from src.agents.lead_agent.engines.base import BuildContext, get_build_time_hooks
 from src.agents.lead_agent.prompt import apply_prompt_template
 from src.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from src.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
@@ -26,7 +27,7 @@ from src.sandbox.middleware import SandboxMiddleware
 
 logger = logging.getLogger(__name__)
 
-from src.mcp.tool_filter import filter_read_only_tools, is_read_only_tool
+from src.mcp.tool_filter import is_read_only_tool
 
 
 def _is_read_only_tool(tool) -> bool:
@@ -306,7 +307,20 @@ def make_lead_agent(config: RunnableConfig):
     agent_name = cfg.get("agent_name")
 
     agent_config = load_agent_config(agent_name) if not is_bootstrap else None
-    engine_behavior = resolve_engine_behavior(agent_config)
+    engine_builder = get_engine_builder(agent_config.engine_type if agent_config else None)
+    engine_prompt_kwargs = engine_builder.build_prompt_kwargs()
+
+    # Build-time hook context
+    hooks = get_build_time_hooks()
+    build_ctx = BuildContext(
+        agent_name=agent_name,
+        engine_type=engine_builder.canonical_name,
+        model_name=cfg.get("model_name") or cfg.get("model"),
+        is_domain_agent=bool(cfg.get("is_domain_agent", False)),
+        is_bootstrap=is_bootstrap,
+    )
+    hooks.before_agent_build(build_ctx)
+
     # Custom agent model or fallback to global/default model resolution
     agent_model_name = agent_config.model if agent_config and agent_config.model else _resolve_model_name()
 
@@ -355,39 +369,45 @@ def make_lead_agent(config: RunnableConfig):
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
         system_prompt = apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, available_skills=set(["bootstrap"]))
 
-        return create_agent(
+        agent = create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-        tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False) + [setup_agent],
-        middleware=_build_middlewares(config, model_name=model_name),
-        system_prompt=system_prompt,
-        state_schema=ThreadState,
-    )
+            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False) + [setup_agent],
+            middleware=_build_middlewares(config, model_name=model_name),
+            system_prompt=system_prompt,
+            state_schema=ThreadState,
+        )
+        hooks.after_agent_build(build_ctx)
+        return agent
 
     # Resolve available_skills from agent config (domain agents may restrict which skills are exposed)
     available_skills: set[str] | None = None
     if agent_config and agent_config.available_skills is not None:
         available_skills = set(agent_config.available_skills)
+    build_ctx.available_skills = available_skills
+    hooks.before_skill_resolve(build_ctx)
+    available_skills = build_ctx.available_skills
 
     # Fetch per-agent MCP tools from the unified runtime manager (already connected by executor).
     # We look up tools here at agent-build time rather than reading from config.configurable
     # to avoid StructuredTool objects being serialized during LangGraph checkpointing.
-    extra_tools: list = []
+    hooks.before_mcp_bind(build_ctx)
+    extra_tools: list = list(build_ctx.extra_tools)
     if agent_name:
         try:
             from src.mcp.runtime_manager import mcp_runtime
 
             scope_key = mcp_runtime.scope_key_for_agent(agent_name)
-            extra_tools = mcp_runtime.get_tools_sync(scope_key)
+            mcp_tools = mcp_runtime.get_tools_sync(scope_key)
 
-            if engine_behavior.filter_read_only_tools:
-                extra_tools = filter_read_only_tools(extra_tools)
-            if extra_tools:
-                logger.info("Injecting %d MCP tool(s) for agent '%s'.", len(extra_tools), agent_name)
+            mcp_tools = engine_builder.prepare_extra_tools(mcp_tools)
+            extra_tools.extend(mcp_tools)
+            if mcp_tools:
+                logger.info("Injecting %d MCP tool(s) for agent '%s'.", len(mcp_tools), agent_name)
         except Exception as e:
             logger.warning("Failed to get MCP tools for agent '%s': %s", agent_name, e)
 
     # Default lead agent (unchanged behavior)
-    return create_agent(
+    agent = create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
         tools=get_available_tools(
             model_name=model_name,
@@ -404,7 +424,9 @@ def make_lead_agent(config: RunnableConfig):
             agent_name=agent_name,
             available_skills=available_skills,
             is_domain_agent=bool(cfg.get("is_domain_agent", False)),
-            engine_mode=engine_behavior.mode,
+            engine_mode=engine_prompt_kwargs.engine_mode,
         ),
         state_schema=ThreadState,
     )
+    hooks.after_agent_build(build_ctx)
+    return agent

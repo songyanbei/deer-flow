@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.agents.lead_agent import agent as lead_agent_module
-from src.agents.lead_agent.engine_registry import resolve_engine_behavior
+from src.agents.lead_agent.engine_registry import get_engine_builder
 from src.agents.lead_agent.prompt import apply_prompt_template
 from src.config.app_config import AppConfig
 from src.config.model_config import ModelConfig
@@ -290,13 +290,11 @@ def test_make_lead_agent_resolves_engine_mode_from_config(monkeypatch, configure
     assert captured_prompt_kwargs["engine_mode"] == expected_engine_mode
 
 
-def test_resolve_engine_behavior_falls_back_to_default_for_unknown_engine():
-    behavior = resolve_engine_behavior(
-        SimpleNamespace(name="demo-agent", engine_type="UnknownEngine"),
-    )
+def test_get_engine_builder_falls_back_to_default_for_unknown_engine():
+    builder = get_engine_builder("UnknownEngine")
 
-    assert behavior.mode == "default"
-    assert behavior.filter_read_only_tools is False
+    assert builder.canonical_name == "default"
+    assert builder.prepare_runtime_options().filter_read_only_tools is False
 
 
 def test_apply_prompt_template_adds_read_only_explorer_rules():

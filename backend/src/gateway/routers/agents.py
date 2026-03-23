@@ -11,6 +11,7 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from src.agents.lead_agent.engine_registry import normalize_engine_type
 from src.config.agents_config import AgentConfig, McpBindingConfig, list_custom_agents, load_agent_config, load_agent_soul
 from src.config.paths import get_paths
 
@@ -28,6 +29,7 @@ class AgentResponse(BaseModel):
     name: str = Field(..., description="Agent name (hyphen-case)")
     description: str = Field(default="", description="Agent description")
     model: str | None = Field(default=None, description="Optional model override")
+    engine_type: str | None = Field(default=None, description="Engine type (canonical value: default, react, read_only_explorer, sop)")
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
     domain: str | None = Field(default=None, description="Domain handled by this agent")
     system_prompt_file: str | None = Field(default=None, description="Prompt file used for the agent system prompt")
@@ -51,6 +53,7 @@ class AgentCreateRequest(BaseModel):
     name: str = Field(..., description="Agent name (must match ^[A-Za-z0-9-]+$, stored as lowercase)")
     description: str = Field(default="", description="Agent description")
     model: str | None = Field(default=None, description="Optional model override")
+    engine_type: str | None = Field(default=None, description="Engine type (accepts alias, persisted as canonical value)")
     tool_groups: list[str] | None = Field(default=None, description="Optional tool group whitelist")
     domain: str | None = Field(default=None, description="Domain handled by this agent")
     system_prompt_file: str | None = Field(default=None, description="Prompt file used for the agent system prompt")
@@ -67,6 +70,7 @@ class AgentUpdateRequest(BaseModel):
 
     description: str | None = Field(default=None, description="Updated description")
     model: str | None = Field(default=None, description="Updated model override")
+    engine_type: str | None = Field(default=None, description="Updated engine type (accepts alias, persisted as canonical value)")
     tool_groups: list[str] | None = Field(default=None, description="Updated tool group whitelist")
     domain: str | None = Field(default=None, description="Updated domain")
     system_prompt_file: str | None = Field(default=None, description="Updated prompt file name")
@@ -116,6 +120,7 @@ def _build_config_data(
     name: str,
     description: str,
     model: str | None,
+    engine_type: str | None,
     tool_groups: list[str] | None,
     domain: str | None,
     system_prompt_file: str | None,
@@ -128,6 +133,9 @@ def _build_config_data(
     config_data: dict[str, Any] = {"name": name, "description": description}
     if model is not None:
         config_data["model"] = model
+    if engine_type is not None:
+        # Persist as canonical value
+        config_data["engine_type"] = normalize_engine_type(engine_type) or engine_type
     if tool_groups is not None:
         config_data["tool_groups"] = tool_groups
     if domain is not None:
@@ -179,6 +187,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         name=agent_cfg.name,
         description=agent_cfg.description,
         model=agent_cfg.model,
+        engine_type=normalize_engine_type(agent_cfg.engine_type),
         tool_groups=agent_cfg.tool_groups,
         domain=agent_cfg.domain,
         system_prompt_file=agent_cfg.system_prompt_file,
@@ -259,6 +268,7 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
             name=normalized_name,
             description=request.description,
             model=request.model,
+            engine_type=request.engine_type,
             tool_groups=request.tool_groups,
             domain=request.domain,
             system_prompt_file=request.system_prompt_file,
@@ -303,6 +313,7 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
 
     try:
         next_prompt_file = request.system_prompt_file if request.system_prompt_file is not None else agent_cfg.system_prompt_file
+        engine_type_provided = "engine_type" in request.model_fields_set
         config_changed = any(
             value is not None
             for value in [
@@ -316,13 +327,14 @@ async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
                 request.mcp_binding,
                 request.available_skills,
             ]
-        ) or requested_mode_provided
+        ) or requested_mode_provided or engine_type_provided
 
         if config_changed:
             updated = _build_config_data(
                 name=agent_cfg.name,
                 description=request.description if request.description is not None else agent_cfg.description,
                 model=request.model if request.model is not None else agent_cfg.model,
+                engine_type=request.engine_type if engine_type_provided else agent_cfg.engine_type,
                 tool_groups=request.tool_groups if request.tool_groups is not None else agent_cfg.tool_groups,
                 domain=request.domain if request.domain is not None else agent_cfg.domain,
                 system_prompt_file=next_prompt_file,
