@@ -198,7 +198,7 @@ def decide_orchestration(
         return {
             "requested_mode": existing_requested_mode,
             "resolved_mode": existing_resolved_mode,
-            "reason": f"Resume current {existing_resolved_mode} run after clarification",
+            "reason": f"澄清完成后，继续当前{existing_resolved_mode}流程",
             "workflow_score": 0,
             "leader_score": 0,
         }
