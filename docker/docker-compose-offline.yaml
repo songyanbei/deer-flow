@@ -1,0 +1,76 @@
+services:
+  frontend:
+    image: deer-flow/frontend:offline
+    container_name: deer-flow-frontend
+    env_file:
+      - ${DEER_FLOW_RUNTIME_DIR}/app.env
+    environment:
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      - SKIP_ENV_VALIDATION=1
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  gateway:
+    image: deer-flow/backend:offline
+    container_name: deer-flow-gateway
+    command:
+      - uvicorn
+      - src.gateway.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    working_dir: /app/backend
+    env_file:
+      - ${DEER_FLOW_RUNTIME_DIR}/app.env
+    volumes:
+      - ${DEER_FLOW_RUNTIME_DIR}/app.env:/app/backend/.env:ro
+      - ${DEER_FLOW_RUNTIME_DIR}/config.yaml:/app/config.yaml:ro
+      - ${DEER_FLOW_RUNTIME_DIR}/data/deer-flow-home:/app/backend/.deer-flow
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  langgraph:
+    image: deer-flow/backend:offline
+    container_name: deer-flow-langgraph
+    command:
+      - langgraph
+      - dev
+      - --no-browser
+      - --allow-blocking
+      - --no-reload
+      - --host
+      - 0.0.0.0
+      - --port
+      - "2024"
+    working_dir: /app/backend
+    env_file:
+      - ${DEER_FLOW_RUNTIME_DIR}/app.env
+    volumes:
+      - ${DEER_FLOW_RUNTIME_DIR}/app.env:/app/backend/.env:ro
+      - ${DEER_FLOW_RUNTIME_DIR}/config.yaml:/app/config.yaml:ro
+      - ${DEER_FLOW_RUNTIME_DIR}/data/deer-flow-home:/app/backend/.deer-flow
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+  nginx:
+    image: deer-flow/nginx:offline
+    container_name: deer-flow-nginx
+    depends_on:
+      - frontend
+      - gateway
+      - langgraph
+    ports:
+      - "${DEER_FLOW_PORT}:2026"
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
+networks:
+  deer-flow:
+    driver: bridge
