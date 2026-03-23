@@ -85,6 +85,17 @@ def collect_metrics(state: dict[str, Any], *, events: list[dict[str, Any]] | Non
                 if error and ("rejected" in error.lower() or "拒绝" in error):
                     intervention_count += 1
 
+    # Phase 4: Collect verification reports from task pool
+    verification_reports: list[dict[str, Any]] = []
+    for task in task_pool:
+        v_report = task.get("verification_report")
+        if v_report and isinstance(v_report, dict):
+            verification_reports.append(v_report)
+    # Also include workflow-level verification report
+    wf_report = state.get("workflow_verification_report")
+    if wf_report and isinstance(wf_report, dict):
+        verification_reports.append(wf_report)
+
     metrics: dict[str, Any] = {
         "task_count": len(task_pool),
         "route_count": state.get("route_count", 0),
@@ -94,6 +105,7 @@ def collect_metrics(state: dict[str, Any], *, events: list[dict[str, Any]] | Non
         "assigned_agents": assigned_agents,
         "event_count": len(events),
         "stage_transitions": _extract_stage_transitions(events),
+        "verification_reports": verification_reports,
         "llm_metrics": {
             "total_calls": 0,
             "total_input_tokens": 0,

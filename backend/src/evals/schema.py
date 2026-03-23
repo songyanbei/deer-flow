@@ -129,6 +129,11 @@ class CaseRunResult(BaseModel):
     intervention_count: int = 0
     verified_fact_count: int = 0
 
+    # Phase 4: Verification fields
+    verification_status: str | None = Field(None, description="Overall verification status: passed | needs_replan | hard_fail")
+    verification_reports: list[dict[str, Any]] = Field(default_factory=list, description="Verification reports from task/workflow verifiers")
+    verification_retry_count: int = 0
+
     llm_metrics: dict[str, Any] = Field(default_factory=dict)
     failed_assertions: list[AssertionFailure] = Field(default_factory=list)
     error: str | None = None

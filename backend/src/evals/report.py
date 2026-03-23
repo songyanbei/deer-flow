@@ -55,16 +55,38 @@ def generate_markdown_report(result: SuiteRunResult) -> str:
     # Case results table
     lines.append("## Case Results")
     lines.append("")
-    lines.append("| Case ID | Status | Duration | Tasks | Routes | Clarifications | Interventions |")
-    lines.append("|---------|--------|----------|-------|--------|----------------|---------------|")
+    lines.append("| Case ID | Status | Duration | Tasks | Routes | Verification | Retries |")
+    lines.append("|---------|--------|----------|-------|--------|--------------|---------|")
 
     for cr in result.case_results:
         status_icon = _status_icon(cr.status)
+        v_status = cr.verification_status or "n/a"
         lines.append(
             f"| {cr.case_id} | {status_icon} {cr.status.value} | {cr.duration_ms:.1f}ms "
-            f"| {cr.task_count} | {cr.route_count} | {cr.clarification_count} | {cr.intervention_count} |"
+            f"| {cr.task_count} | {cr.route_count} | {v_status} | {cr.verification_retry_count} |"
         )
     lines.append("")
+
+    # Verification details
+    cases_with_verification = [cr for cr in result.case_results if cr.verification_reports]
+    if cases_with_verification:
+        lines.append("## Verification Details")
+        lines.append("")
+        for cr in cases_with_verification:
+            lines.append(f"### {cr.case_id}")
+            lines.append("")
+            lines.append(f"- **Verification status**: {cr.verification_status or 'n/a'}")
+            lines.append(f"- **Retry count**: {cr.verification_retry_count}")
+            lines.append("")
+            for vr in cr.verification_reports:
+                lines.append(f"**{vr.get('verifier_name', '?')}** ({vr.get('scope', '?')}): {vr.get('verdict', '?')}")
+                if vr.get("summary"):
+                    lines.append(f"  Summary: {vr['summary']}")
+                findings = vr.get("findings", [])
+                if findings:
+                    for f in findings:
+                        lines.append(f"  - `{f.get('field', '?')}` [{f.get('severity', '?')}]: {f.get('message', '')}")
+                lines.append("")
 
     # Failed / Error details
     failures = [cr for cr in result.case_results if cr.status in (CaseRunStatus.FAILED, CaseRunStatus.ERROR)]

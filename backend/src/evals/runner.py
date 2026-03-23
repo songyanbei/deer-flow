@@ -59,6 +59,11 @@ async def run_case(case: BenchmarkCase) -> CaseRunResult:
 
         status = CaseRunStatus.PASSED if not failures else CaseRunStatus.FAILED
 
+        # Phase 4: Collect verification data
+        verification_status = final_state.get("workflow_verification_status")
+        verification_reports = metrics.get("verification_reports", [])
+        verification_retry_count = final_state.get("verification_retry_count") or 0
+
         return CaseRunResult(
             case_id=case.id,
             status=status,
@@ -70,6 +75,9 @@ async def run_case(case: BenchmarkCase) -> CaseRunResult:
             clarification_count=metrics.get("clarification_count", 0),
             intervention_count=metrics.get("intervention_count", 0),
             verified_fact_count=metrics.get("verified_fact_count", 0),
+            verification_status=verification_status,
+            verification_reports=verification_reports,
+            verification_retry_count=verification_retry_count,
             llm_metrics=metrics.get("llm_metrics", {}),
             failed_assertions=failures,
         )

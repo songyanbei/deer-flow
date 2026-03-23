@@ -323,6 +323,31 @@ def _pick_first_non_empty(*values: Any) -> str | None:
     return None
 
 
+def _append_verification_feedback(message: str, feedback: dict[str, Any] | None) -> str:
+    if not feedback or not isinstance(feedback, dict):
+        return message
+
+    feedback_summary = _normalize_text_value(feedback.get("summary"))
+    feedback_findings = feedback.get("findings", [])
+    feedback_lines = []
+    if feedback_summary:
+        feedback_lines.append(
+            f"\n\n[Verification Feedback] Previous attempt failed verification: {feedback_summary}"
+        )
+
+    for finding in feedback_findings[:5]:
+        if isinstance(finding, dict):
+            field_name = _normalize_text_value(finding.get("field")) or "?"
+            finding_message = _normalize_text_value(finding.get("message"))
+            feedback_lines.append(f"  - {field_name}: {finding_message}")
+
+    recommended = _normalize_text_value(feedback.get("recommended_action"))
+    if recommended:
+        feedback_lines.append(f"  Recommended action: {recommended}")
+
+    return message + "\n".join(feedback_lines) if feedback_lines else message
+
+
 def _describe_active_stage(task_pool: list[TaskStatus]) -> tuple[WorkflowStage, str | None] | None:
     running_task = next((task for task in task_pool if task["status"] == "RUNNING"), None)
     if running_task is not None:
@@ -446,6 +471,10 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "route_count": 0,
             "validate_retries": 0,
             "final_result": None,
+            "verification_feedback": None,
+            "verification_retry_count": 0,
+            "workflow_verification_status": None,
+            "workflow_verification_report": None,
             "execution_state": "QUEUED",
             **_build_workflow_stage_update("queued", queued_detail),
         }
@@ -494,7 +523,10 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
 
     if is_first_run:
         system_prompt = DECOMPOSE_SYSTEM_PROMPT.format(agent_descriptions=agent_descriptions)
-        user_message = original_input
+        v_feedback = state.get("verification_feedback")
+        user_message = _append_verification_feedback(original_input, v_feedback)
+        if v_feedback and isinstance(v_feedback, dict):
+            logger.info("[Planner] Injecting verification feedback into decomposition prompt.")
         logger.info("[Planner] Mode=decompose, input=%r", original_input[:100])
         stage_name: WorkflowStage = "planning"
         stage_detail = _pick_first_non_empty(original_input, planner_goal)
@@ -508,6 +540,10 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             agent_descriptions=agent_descriptions,
         )
         user_message = "Please evaluate whether the goal has been achieved."
+        v_feedback = state.get("verification_feedback")
+        if v_feedback and isinstance(v_feedback, dict):
+            user_message = _append_verification_feedback(user_message, v_feedback)
+            logger.info("[Planner] Injecting verification feedback into validation prompt.")
         logger.info("[Planner] Mode=validate, %d tasks done", len(task_pool))
         logger.info("[Planner] Validate task summary: %s", tasks_summary[:2000])
         logger.info("[Planner] Validate facts summary: %s", facts_summary[:2000])
@@ -563,11 +599,88 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "任务已完成。",
         )
         logger.info("[Planner] Goal achieved. Summary length=%d", len(summary))
+
+        # --- Phase 4: Workflow-final verification gate ---
+        from src.verification.runtime import run_workflow_verification, build_verification_feedback, check_retry_budget
+        from src.verification.base import VerificationVerdict, VerificationScope
+
+        verification_retry_count = state.get("verification_retry_count") or 0
+        task_pool_dicts = [dict(t) for t in task_pool]
+        # Use the resolved summary (with fallback) for verification, not the raw empty value
+        effective_summary = summary or terminal_detail or "任务已完成。"
+        v_result = run_workflow_verification(
+            final_result=effective_summary,
+            task_pool=task_pool_dicts,
+            verified_facts=state.get("verified_facts") or {},
+            workflow_kind=None,
+        )
+
+        if v_result.verdict == VerificationVerdict.HARD_FAIL:
+            logger.error("[Planner] Workflow verification HARD_FAIL: %s", v_result.report.summary)
+            _emit_workflow_stage(writer, "summarizing", v_result.report.summary, run_id=run_id)
+            return {
+                "execution_state": "ERROR",
+                "final_result": f"Verification hard failure: {v_result.report.summary}",
+                "messages": [AIMessage(content=f"Verification hard failure: {v_result.report.summary}")],
+                "original_input": original_input,
+                "run_id": run_id,
+                "planner_goal": planner_goal,
+                "verification_feedback": None,
+                "workflow_verification_status": "hard_fail",
+                "workflow_verification_report": v_result.report.model_dump(),
+                **_build_workflow_stage_update("summarizing", v_result.report.summary),
+                **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
+            }
+
+        if v_result.verdict == VerificationVerdict.NEEDS_REPLAN:
+            verification_retry_count += 1
+            if not check_retry_budget(verification_retry_count):
+                logger.error(
+                    "[Planner] Workflow verification retry budget exhausted (%d retries). Escalating to hard_fail.",
+                    verification_retry_count,
+                )
+                _emit_workflow_stage(writer, "summarizing", "Verification retry budget exhausted.", run_id=run_id)
+                return {
+                    "execution_state": "ERROR",
+                    "final_result": f"Verification retry budget exhausted after {verification_retry_count} retries: {v_result.report.summary}",
+                    "messages": [AIMessage(content=f"Verification retry budget exhausted: {v_result.report.summary}")],
+                    "original_input": original_input,
+                    "run_id": run_id,
+                    "planner_goal": planner_goal,
+                    "verification_feedback": None,
+                    "verification_retry_count": verification_retry_count,
+                    "workflow_verification_status": "hard_fail",
+                    "workflow_verification_report": v_result.report.model_dump(),
+                    **_build_workflow_stage_update("summarizing", "Verification retry budget exhausted."),
+                    **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
+                }
+
+            logger.warning(
+                "[Planner] Workflow verification NEEDS_REPLAN (retry %d): %s",
+                verification_retry_count, v_result.report.summary,
+            )
+            feedback = build_verification_feedback(v_result, VerificationScope.WORKFLOW_RESULT, "workflow")
+            _emit_workflow_stage(writer, "planning", f"Verification replan: {v_result.report.summary}", run_id=run_id)
+            # Clear task_pool so planner re-enters fresh decomposition with feedback context
+            return {
+                "task_pool": [],
+                "execution_state": "QUEUED",
+                "original_input": original_input,
+                "run_id": run_id,
+                "planner_goal": planner_goal,
+                "verification_feedback": feedback,
+                "verification_retry_count": verification_retry_count,
+                "workflow_verification_status": "needs_replan",
+                "workflow_verification_report": v_result.report.model_dump(),
+                **_build_workflow_stage_update("planning", f"Verification replan: {v_result.report.summary}"),
+            }
+
+        # --- verification passed ---
         record_decision(
             "workflow_completion",
             run_id=run_id,
             inputs={"task_summary": _build_tasks_summary(task_pool)[:500], "facts_summary": _build_facts_summary(state.get("verified_facts") or {})[:500]},
-            output={"done": True, "summary_length": len(summary)},
+            output={"done": True, "summary_length": len(summary), "verification": "passed"},
             reason="planner_validate_done",
         )
         _emit_workflow_stage(writer, "summarizing", terminal_detail, run_id=run_id)
@@ -579,6 +692,10 @@ async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
             "run_id": run_id,
             "planner_goal": planner_goal,
             "validate_retries": 0,
+            "verification_feedback": None,
+            "workflow_verification_status": "passed",
+            "workflow_verification_report": v_result.report.model_dump(),
+            "verification_retry_count": 0,
             **_build_workflow_stage_update("summarizing", terminal_detail),
             **({"task_pool": task_pool} if task_pool_changed and task_pool else {}),
         }

@@ -1425,11 +1425,83 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Executor] Task '%s' DONE. Output length=%d.", task["task_id"], len(agent_output))
         logger.info("[Executor] Agent '%s' final output: %s", agent_name, agent_output[:2000])
 
+        # --- Phase 4: Task-level verification gate ---
+        from src.verification.runtime import run_task_verification, build_verification_feedback
+        from src.verification.base import VerificationVerdict, VerificationScope
+
+        v_result = run_task_verification(
+            task_id=task["task_id"],
+            task_description=task["description"],
+            task_result=agent_output,
+            assigned_agent=agent_name,
+            resolved_inputs=task.get("resolved_inputs"),
+            verified_facts=state.get("verified_facts") or {},
+            artifacts=state.get("artifacts") or [],
+        )
+
+        if v_result.verdict == VerificationVerdict.HARD_FAIL:
+            logger.error("[Executor] Task '%s' verification HARD_FAIL: %s", task["task_id"], v_result.report.summary)
+            hard_fail_task: TaskStatus = {
+                **task,
+                "status": "FAILED",
+                "result": agent_output,
+                "error": f"Verification hard_fail: {v_result.report.summary}",
+                "status_detail": "@verification_hard_fail",
+                "verification_status": "hard_fail",
+                "verification_report": v_result.report.model_dump(),
+                "clarification_prompt": None,
+                "clarification_request": None,
+                "request_help": None,
+                "blocked_reason": None,
+                "agent_messages": None,
+                "intercepted_tool_call": None,
+                **_clear_continuation_fields(),
+                "updated_at": _utc_now_iso(),
+            }
+            _emit_task_event(writer, "task_failed", task, agent_name, error=v_result.report.summary, status_detail="@verification_hard_fail")
+            return _with_intervention_cache({
+                "task_pool": [hard_fail_task],
+                "execution_state": "ERROR",
+                "final_result": f"Verification hard failure on task '{task['task_id']}': {v_result.report.summary}",
+                "workflow_verification_status": "hard_fail",
+                "workflow_verification_report": v_result.report.model_dump(),
+            })
+
+        if v_result.verdict == VerificationVerdict.NEEDS_REPLAN:
+            logger.warning("[Executor] Task '%s' verification NEEDS_REPLAN: %s", task["task_id"], v_result.report.summary)
+            replan_task: TaskStatus = {
+                **task,
+                "status": "FAILED",
+                "result": agent_output,
+                "error": f"Verification needs_replan: {v_result.report.summary}",
+                "status_detail": "@verification_needs_replan",
+                "verification_status": "needs_replan",
+                "verification_report": v_result.report.model_dump(),
+                "clarification_prompt": None,
+                "clarification_request": None,
+                "request_help": None,
+                "blocked_reason": None,
+                "agent_messages": None,
+                "intercepted_tool_call": None,
+                **_clear_continuation_fields(),
+                "updated_at": _utc_now_iso(),
+            }
+            feedback = build_verification_feedback(v_result, VerificationScope.TASK_RESULT, task["task_id"])
+            _emit_task_event(writer, "task_failed", task, agent_name, error=v_result.report.summary, status_detail="@verification_needs_replan")
+            return _with_intervention_cache({
+                "task_pool": [replan_task],
+                "verification_feedback": feedback,
+                "execution_state": "EXECUTING_DONE",
+            })
+
+        # --- verification passed ---
         done_task: TaskStatus = {
             **task,
             "status": "DONE",
             "result": agent_output,
             "status_detail": "@completed",
+            "verification_status": "passed",
+            "verification_report": v_result.report.model_dump(),
             "clarification_prompt": None,
             "clarification_request": None,
             "request_help": None,

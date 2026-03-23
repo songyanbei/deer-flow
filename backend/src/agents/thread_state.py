@@ -287,6 +287,9 @@ class TaskStatus(TypedDict):
     pending_interrupt: NotRequired[PendingInterrupt | None]
     pending_tool_call: NotRequired[PendingToolCall | None]
     agent_history_cutoff: NotRequired[int | None]
+    # Verification fields (Phase 4)
+    verification_status: NotRequired[str | None]
+    verification_report: NotRequired[dict[str, Any] | None]
 
 
 RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
@@ -413,3 +416,8 @@ class ThreadState(AgentState):
     validate_retries: NotRequired[int]
     execution_state: NotRequired[str | None]
     final_result: NotRequired[str | None]
+    # Verification fields (Phase 4)
+    verification_feedback: NotRequired[dict[str, Any] | None]
+    verification_retry_count: NotRequired[int]
+    workflow_verification_status: NotRequired[str | None]
+    workflow_verification_report: NotRequired[dict[str, Any] | None]
