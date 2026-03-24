@@ -71,7 +71,14 @@ def route_after_workflow_executor(state: ThreadState) -> str:
     return "planner"
 
 
+def _ensure_runtime_hooks_installed() -> None:
+    """Install default runtime hooks once per process."""
+    from src.agents.hooks.verification_hooks import install_default_runtime_hooks
+    install_default_runtime_hooks()
+
+
 def _compile_multi_agent_graph(checkpointer=None):
+    _ensure_runtime_hooks_installed()
     graph = StateGraph(ThreadState)
 
     graph.add_node("planner", traced_node("planner")(planner_node))

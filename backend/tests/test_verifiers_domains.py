@@ -114,6 +114,48 @@ def test_workflow_verifier_keeps_warning_findings_when_summary_passes_with_parti
     assert result.report.findings[0].severity == "warning"
 
 
+def test_workflow_verifier_rejects_conflicting_terminal_states_for_same_agent():
+    """If the task_pool has both DONE and FAILED for the same agent,
+    the workflow verifier should reject with an error finding."""
+    result = DefaultWorkflowVerifier().verify(
+        VerificationContext(
+            scope=VerificationScope.WORKFLOW_RESULT,
+            final_result="考勤已查到，孙琦本月出勤20天。",
+            task_pool=[
+                {"task_id": "t-old", "status": "FAILED", "assigned_agent": "hr-agent"},
+                {"task_id": "t-new", "status": "DONE", "assigned_agent": "hr-agent"},
+                {"task_id": "t-contacts", "status": "DONE", "assigned_agent": "contacts-agent"},
+            ],
+            verified_facts={"t-new": {"summary": "考勤OK"}, "t-contacts": {"summary": "联系人OK"}},
+        )
+    )
+
+    assert result.verdict == VerificationVerdict.NEEDS_REPLAN
+    error_findings = [f for f in result.report.findings if f.severity == "error"]
+    assert any("Conflicting terminal states" in f.message for f in error_findings)
+
+
+def test_workflow_verifier_passes_when_different_agents_have_different_terminal_states():
+    """DONE for one agent and FAILED for a different agent is acceptable
+    (partial success), not a conflicting-state error."""
+    result = DefaultWorkflowVerifier().verify(
+        VerificationContext(
+            scope=VerificationScope.WORKFLOW_RESULT,
+            final_result="部分完成：联系人已查到，但HR查询失败。",
+            task_pool=[
+                {"task_id": "t-contacts", "status": "DONE", "assigned_agent": "contacts-agent"},
+                {"task_id": "t-hr", "status": "FAILED", "assigned_agent": "hr-agent"},
+            ],
+            verified_facts={"t-contacts": {"summary": "联系人OK"}},
+        )
+    )
+
+    # Should pass (with warning about failed task), not error about conflicting states
+    assert result.verdict == VerificationVerdict.PASSED
+    error_findings = [f for f in result.report.findings if f.severity == "error"]
+    assert not any("Conflicting terminal states" in f.message for f in error_findings)
+
+
 def test_artifact_validator_is_registered_for_artifact_scope():
     validator = GenericArtifactValidator()
 

@@ -411,6 +411,80 @@ def _contains_choice_enumeration(text: str) -> bool:
     return " or " in lowered and "," in lowered
 
 
+# ---------------------------------------------------------------------------
+# Trailing follow-up detection
+# ---------------------------------------------------------------------------
+
+# Minimum character count of the body *before* the first question signal for
+# the output to be considered "result + optional follow-up" rather than
+# "clarification request".  ~100 Chinese characters / ~40 English words is
+# enough to carry a substantive answer.
+_TRAILING_FOLLOWUP_MIN_BODY_LENGTH = 200
+
+
+def _first_clarification_signal_position(text: str) -> int:
+    """Return the char index of the earliest clarification signal, or *len(text)*.
+
+    Covers all signal types that ``_looks_like_implicit_clarification`` checks:
+    question markers (请选择, ？, etc.) **and** choice enumeration markers
+    (或 + separator, numbered options).
+    """
+    positions: list[int] = []
+    # Question markers (Chinese)
+    for marker in _IMPLICIT_CLARIFICATION_MARKERS[:5]:
+        pos = text.find(marker)
+        if pos >= 0:
+            positions.append(pos)
+    # Question markers (English)
+    lowered = text.lower()
+    for marker in _IMPLICIT_CLARIFICATION_MARKERS[5:]:
+        pos = lowered.find(marker)
+        if pos >= 0:
+            positions.append(pos)
+    # Literal question marks
+    for ch in ("?", "？"):
+        pos = text.find(ch)
+        if pos >= 0:
+            positions.append(pos)
+    # Choice enumeration: "或" paired with a list separator
+    if "或" in text and any(sep in text for sep in ("、", "，", ",")):
+        positions.append(text.find("或"))
+    # Numbered options: e.g. "1. Foo\n2. Bar"
+    match = _NUMBERED_OPTION_PATTERN.search(text)
+    if match:
+        positions.append(match.start())
+
+    return min(positions) if positions else len(text)
+
+
+def _is_trailing_followup(text: str) -> bool:
+    """Return *True* when clarification signals sit in the tail of a substantial result.
+
+    A domain agent may output a complete answer followed by an optional
+    "need anything else?" prompt.  If the substantive body **before** the
+    first clarification signal is already long enough to constitute a real
+    result, the trailing signal is cosmetic and the output should be
+    classified as *complete*, not *clarification*.
+
+    Examples that should return True::
+
+        "以下是孙琦3月考勤汇总：\\n出勤天数：20天\\n...（200+ chars）...\\n
+         如需查看异常详情或需要处理漏打卡，请告诉我。"
+
+    Examples that should return False (short preamble, whole text IS a question)::
+
+        "请问您要查哪个月的考勤？"
+        "找到以下3位同名员工，请选择：\\n1. 张三A\\n2. 张三B"
+    """
+    if len(text) < _TRAILING_FOLLOWUP_MIN_BODY_LENGTH:
+        return False
+    first_sig = _first_clarification_signal_position(text)
+    if first_sig >= len(text):
+        return False  # no signal at all (shouldn't happen if caller checked)
+    body = text[:first_sig].rstrip()
+    return len(body) >= _TRAILING_FOLLOWUP_MIN_BODY_LENGTH
+
+
 def _looks_like_implicit_clarification(agent_output: str) -> bool:
     text = agent_output.strip()
     if not text:
@@ -428,4 +502,13 @@ def _looks_like_implicit_clarification(agent_output: str) -> bool:
     has_question_signal = has_question_signal or any(marker in lowered for marker in _IMPLICIT_CLARIFICATION_MARKERS[5:])
     has_question_signal = has_question_signal or "?" in text or "？" in text
 
-    return has_question_signal or _contains_choice_enumeration(text)
+    if not (has_question_signal or _contains_choice_enumeration(text)):
+        return False
+
+    # If question signals only appear after a substantial body of content,
+    # the output is a completed answer with an optional follow-up prompt —
+    # not a mandatory clarification request.
+    if _is_trailing_followup(text):
+        return False
+
+    return True

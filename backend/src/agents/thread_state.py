@@ -324,8 +324,25 @@ def _is_valid_status_transition(old_status: str, new_status: str) -> bool:
     return new_status in allowed_transitions.get(old_status, set())
 
 
+def _normalize_agent_name(name: str | None) -> str:
+    """Lowercase + strip for agent name comparison."""
+    return (name or "").strip().lower()
+
+
 def merge_task_pool(existing: list[TaskStatus] | None, new: list[TaskStatus] | None) -> list[TaskStatus]:
-    """Reducer for task_pool with transition guard."""
+    """Reducer for task_pool with transition guard and FAILED-task supersession.
+
+    When the planner re-decomposes after a task failure, it creates new tasks
+    (new task_id) targeting the same agent within the same run.  Without
+    supersession the old FAILED entry lingers forever, leaving the pool in a
+    non-convergent state (FAILED + DONE for the "same" logical work).
+
+    Supersession rules (a new task evicts an existing FAILED task when):
+      1. Both share the same ``run_id``.
+      2. Agent match: both have ``assigned_agent`` and they match
+         (case-insensitive), **or** either side lacks ``assigned_agent``.
+      3. The new task is in a non-terminal state (``PENDING`` or ``RUNNING``).
+    """
     if existing is None:
         return new or []
     if new is None:
@@ -334,6 +351,40 @@ def merge_task_pool(existing: list[TaskStatus] | None, new: list[TaskStatus] | N
         return []
 
     mapping: dict[str, dict] = {t["task_id"]: dict(t) for t in existing}
+
+    # -- Supersession: collect incoming replacement candidates ---------------
+    # Key = (run_id_lower, agent_name_lower | "").  A new PENDING/RUNNING task
+    # may supersede an existing FAILED task in the same run for the same agent.
+    _REPLACEMENT_STATUSES = {"PENDING", "RUNNING"}
+    replacements: list[dict] = [
+        t for t in new
+        if t.get("status") in _REPLACEMENT_STATUSES and t.get("run_id")
+    ]
+
+    if replacements:
+        to_remove: list[str] = []
+        for tid, t in mapping.items():
+            if t.get("status") != "FAILED" or not t.get("run_id"):
+                continue
+            old_run = t["run_id"]
+            old_agent = _normalize_agent_name(t.get("assigned_agent"))
+
+            for repl in replacements:
+                if repl["task_id"] == tid:
+                    continue
+                if repl["run_id"] != old_run:
+                    continue
+                new_agent = _normalize_agent_name(repl.get("assigned_agent"))
+                # Match when agents agree, or when either side is unknown.
+                if old_agent and new_agent and old_agent != new_agent:
+                    continue
+                to_remove.append(tid)
+                break
+
+        for tid in to_remove:
+            del mapping[tid]
+
+    # -- Normal merge with transition guard ---------------------------------
     for task in new:
         tid = task["task_id"]
         if tid in mapping:

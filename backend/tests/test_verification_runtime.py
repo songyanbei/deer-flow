@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from langchain_core.messages import HumanMessage, ToolMessage
 
 from src.agents.executor.executor import executor_node
+from src.agents.hooks.registry import runtime_hook_registry
+from src.agents.hooks.verification_hooks import install_default_runtime_hooks
 from src.agents.planner.node import planner_node
 from src.verification.base import (
     VerificationFinding,
@@ -13,6 +16,14 @@ from src.verification.base import (
     VerificationScope,
     VerificationVerdict,
 )
+
+
+@pytest.fixture(autouse=True)
+def _ensure_hooks():
+    """Install default runtime hooks before each test, clean up after."""
+    install_default_runtime_hooks()
+    yield
+    runtime_hook_registry.clear()
 
 
 class DummyResponse:
@@ -253,6 +264,9 @@ def test_planner_workflow_verification_needs_replan_queues_retry(monkeypatch):
     assert result["verification_retry_count"] == 1
     assert result["workflow_verification_status"] == "needs_replan"
     assert result["verification_feedback"]["source_scope"] == VerificationScope.WORKFLOW_RESULT
+    # P3 regression: needs_replan must produce a feedback AIMessage, not empty list
+    assert result["messages"]
+    assert "Verification replan" in result["messages"][0].content
 
 
 def test_planner_workflow_verification_hard_fail_enters_error(monkeypatch):

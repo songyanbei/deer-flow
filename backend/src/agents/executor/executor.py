@@ -1484,83 +1484,14 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Executor] Task '%s' DONE. Output length=%d.", task["task_id"], len(agent_output))
         logger.info("[Executor] Agent '%s' final output: %s", agent_name, agent_output[:2000])
 
-        # --- Phase 4: Task-level verification gate ---
-        from src.verification.runtime import run_task_verification, build_verification_feedback
-        from src.verification.base import VerificationVerdict, VerificationScope
+        # --- Task completion: construct candidate update then run after_task_complete hook ---
+        from src.agents.hooks import RuntimeHookName, HookExecutionError, run_runtime_hooks
 
-        v_result = run_task_verification(
-            task_id=task["task_id"],
-            task_description=task["description"],
-            task_result=agent_output,
-            assigned_agent=agent_name,
-            resolved_inputs=task.get("resolved_inputs"),
-            verified_facts=state.get("verified_facts") or {},
-            artifacts=state.get("artifacts") or [],
-        )
-
-        if v_result.verdict == VerificationVerdict.HARD_FAIL:
-            logger.error("[Executor] Task '%s' verification HARD_FAIL: %s", task["task_id"], v_result.report.summary)
-            hard_fail_task: TaskStatus = {
-                **task,
-                "status": "FAILED",
-                "result": agent_output,
-                "error": f"Verification hard_fail: {v_result.report.summary}",
-                "status_detail": "@verification_hard_fail",
-                "verification_status": "hard_fail",
-                "verification_report": v_result.report.model_dump(),
-                "clarification_prompt": None,
-                "clarification_request": None,
-                "request_help": None,
-                "blocked_reason": None,
-                "agent_messages": None,
-                "intercepted_tool_call": None,
-                **_clear_continuation_fields(),
-                "updated_at": _utc_now_iso(),
-            }
-            _emit_task_event(writer, "task_failed", task, agent_name, error=v_result.report.summary, status_detail="@verification_hard_fail")
-            return _with_intervention_cache({
-                "task_pool": [hard_fail_task],
-                "execution_state": "ERROR",
-                "final_result": f"Verification hard failure on task '{task['task_id']}': {v_result.report.summary}",
-                "workflow_verification_status": "hard_fail",
-                "workflow_verification_report": v_result.report.model_dump(),
-            })
-
-        if v_result.verdict == VerificationVerdict.NEEDS_REPLAN:
-            logger.warning("[Executor] Task '%s' verification NEEDS_REPLAN: %s", task["task_id"], v_result.report.summary)
-            replan_task: TaskStatus = {
-                **task,
-                "status": "FAILED",
-                "result": agent_output,
-                "error": f"Verification needs_replan: {v_result.report.summary}",
-                "status_detail": "@verification_needs_replan",
-                "verification_status": "needs_replan",
-                "verification_report": v_result.report.model_dump(),
-                "clarification_prompt": None,
-                "clarification_request": None,
-                "request_help": None,
-                "blocked_reason": None,
-                "agent_messages": None,
-                "intercepted_tool_call": None,
-                **_clear_continuation_fields(),
-                "updated_at": _utc_now_iso(),
-            }
-            feedback = build_verification_feedback(v_result, VerificationScope.TASK_RESULT, task["task_id"])
-            _emit_task_event(writer, "task_failed", task, agent_name, error=v_result.report.summary, status_detail="@verification_needs_replan")
-            return _with_intervention_cache({
-                "task_pool": [replan_task],
-                "verification_feedback": feedback,
-                "execution_state": "EXECUTING_DONE",
-            })
-
-        # --- verification passed ---
         done_task: TaskStatus = {
             **task,
             "status": "DONE",
             "result": agent_output,
             "status_detail": "@completed",
-            "verification_status": "passed",
-            "verification_report": v_result.report.model_dump(),
             "clarification_prompt": None,
             "clarification_request": None,
             "request_help": None,
@@ -1570,9 +1501,13 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             **_clear_continuation_fields(),
             "updated_at": _utc_now_iso(),
         }
-        _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="@completed")
-        return _with_intervention_cache({
+
+        candidate_update: dict[str, Any] = {
             "task_pool": [done_task],
+            "execution_state": "EXECUTING_DONE",
+            # Private metadata for after_executor hook (stripped by node_wrapper)
+            "_executor_outcome_kind": outcome["kind"],
+            "_executor_used_fallback": used_fallback,
             "verified_facts": {
                 task["task_id"]: {
                     "agent": agent_name,
@@ -1584,8 +1519,67 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     "updated_at": _utc_now_iso(),
                 }
             },
-            "execution_state": "EXECUTING_DONE",
-        })
+        }
+
+        try:
+            final_update = run_runtime_hooks(
+                RuntimeHookName.AFTER_TASK_COMPLETE,
+                node_name="executor",
+                state=dict(state),
+                proposed_update=candidate_update,
+                run_id=task_run_id,
+                metadata={
+                    "task": dict(task),
+                    "assigned_agent": agent_name,
+                    "task_result": agent_output,
+                    "resolved_inputs": task.get("resolved_inputs"),
+                    "verified_facts": state.get("verified_facts") or {},
+                    "artifacts": state.get("artifacts") or [],
+                    "used_fallback": used_fallback,
+                },
+            )
+        except HookExecutionError as hook_err:
+            logger.error("[Executor] after_task_complete hook error: %s", hook_err)
+            hook_error_task: TaskStatus = {
+                **task,
+                "status": "FAILED",
+                "error": f"Hook error: {hook_err}",
+                "status_detail": "@hook_error",
+                **_clear_continuation_fields(),
+                "updated_at": _utc_now_iso(),
+            }
+            _emit_task_event(writer, "task_failed", task, agent_name, error=str(hook_err), status_detail="@hook_error")
+            return _with_intervention_cache({
+                "task_pool": [hook_error_task],
+                "execution_state": "ERROR",
+                "final_result": f"Runtime hook error: {hook_err}",
+            })
+
+        # Apply verification report from hook marker (if present)
+        v_report = final_update.pop("_verification_result", None)
+        if v_report and isinstance(final_update.get("task_pool"), list) and final_update["task_pool"]:
+            verified_task = dict(final_update["task_pool"][0])
+            verified_task["verification_status"] = "passed"
+            verified_task["verification_report"] = v_report
+            final_update["task_pool"] = [verified_task]
+        elif final_update.get("verification_feedback") or final_update.get("execution_state") == "ERROR":
+            # Verification ran but failed — do not commit new task facts.
+            # Pop verified_facts so the reducer returns existing (preserves prior tasks' facts).
+            # Note: setting verified_facts={} would trigger the reducer's "clear all" semantic.
+            final_update.pop("verified_facts", None)
+
+        # Emit appropriate event based on final decision
+        final_exec_state = final_update.get("execution_state", "")
+        if final_exec_state == "ERROR":
+            error_msg = final_update.get("final_result", "Verification failed")
+            _emit_task_event(writer, "task_failed", task, agent_name, error=error_msg, status_detail="@verification_hard_fail")
+        elif final_exec_state == "EXECUTING_DONE" and final_update.get("verification_feedback"):
+            v_feedback = final_update.get("verification_feedback") or {}
+            _emit_task_event(writer, "task_failed", task, agent_name, error=v_feedback.get("summary", ""), status_detail="@verification_needs_replan")
+        else:
+            _emit_task_event(writer, "task_completed", task, agent_name, result=agent_output, status_detail="@completed")
+
+        return _with_intervention_cache(final_update)
     except Exception as e:
         logger.error("[Executor] Task '%s' FAILED: %s", task["task_id"], e, exc_info=True)
         failed_task: TaskStatus = {

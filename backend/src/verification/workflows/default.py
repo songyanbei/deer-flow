@@ -73,7 +73,30 @@ class DefaultWorkflowVerifier(BaseVerifier):
                     actual=f"done={done_count}, failed={failed_count}, total={total}",
                 ))
 
-        # 4. Check verified_facts consistency
+        # 4. Check for conflicting terminal states (FAILED + DONE for same agent in same run)
+        if task_pool:
+            from collections import defaultdict
+            agent_terminal: dict[str, list[str]] = defaultdict(list)
+            for t in task_pool:
+                agent = (t.get("assigned_agent") or "").strip().lower()
+                status = t.get("status")
+                if agent and status in ("DONE", "FAILED"):
+                    agent_terminal[agent].append(status)
+            for agent, statuses in agent_terminal.items():
+                if "DONE" in statuses and "FAILED" in statuses:
+                    findings.append(VerificationFinding(
+                        field="task_pool",
+                        severity="error",
+                        message=(
+                            f"Conflicting terminal states for agent '{agent}': "
+                            f"pool contains both DONE and FAILED tasks. "
+                            f"The superseded FAILED task should have been evicted."
+                        ),
+                        expected="at most one terminal state per agent per run",
+                        actual=f"statuses={statuses}",
+                    ))
+
+        # 5. Check verified_facts consistency
         if task_pool and not ctx.verified_facts:
             findings.append(VerificationFinding(
                 field="verified_facts",

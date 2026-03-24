@@ -206,3 +206,140 @@
 | backend | PASS | 静态审查 + 147 单测 + 真实流程端到端验证，所有验收项通过 |
 | test | PASS | 单测覆盖完整; 真实流程 task/workflow verification gate 正确触发; 无回归 |
 | owner | pending | 待 owner 最终确认 |
+
+## 7. 2026-03-24 Supplementary Revalidation
+
+### 7.1 Background
+
+During the first live-service acceptance pass on 2026-03-23, we found a blocker-level runtime issue:
+
+- HR / cross-domain workflow could still be interrupted by a polite trailing follow-up after the main result was already available.
+- Some resume paths could leave conflicting terminal task states (`FAILED + DONE`) for the same logical HR step.
+
+That blocker corresponded to the review finding:
+
+- `[P1] Optional follow-up is treated as a mandatory workflow interrupt`
+
+After the subsequent fix, the implementation switched to a structured-output guardrail strategy. On 2026-03-24, test re-ran the acceptance-critical live scenarios against the restarted local services.
+
+### 7.2 Revalidation Goal
+
+This supplementary revalidation was executed to answer three questions:
+
+1. Has the original blocker disappeared in the real runtime?
+2. Did the fix preserve existing workflow capabilities?
+3. Can Milestone 1 be formally closed as `PASS`?
+
+### 7.3 Evidence
+
+#### A. Targeted Automated Regression
+
+Executed:
+
+- `tests/test_guardrails.py`
+- `tests/test_multi_agent_core.py`
+- `tests/test_executor_outcome.py`
+- `tests/test_thread_state_continuation.py`
+- `tests/test_verifiers_domains.py`
+
+Result:
+
+- `117 passed`
+
+#### B. Real-Service Single-Domain Validation
+
+1. Employee information
+
+- Prompt: `帮我查一下孙琦的员工信息`
+- Result: `DONE`
+- `workflow_verification_status=passed`
+- Thread: `b0649e5b-6522-4bda-bf9b-366cb663c49c`
+
+2. HR attendance
+
+- Prompt: `帮我查一下孙琦这个月的考勤情况`
+- Result: `DONE`
+- No trailing follow-up interruption observed
+- `workflow_verification_status=passed`
+- Thread: `57987fbb-1b8f-4f5a-92d6-baa03b01bb4e`
+
+#### C. Real-Service Cross-Domain Validation
+
+Prompt:
+
+- `帮我查一下孙琦的信息，再看看他这个月的考勤`
+
+Executed `8` consecutive live runs:
+
+- `8/8 DONE`
+- `interrupted_runs = 0`
+- `duplicate_terminal_runs = 0`
+
+This means:
+
+- no optional follow-up interrupt was reproduced
+- no `hr-agent FAILED + hr-agent DONE` conflicting terminal state was reproduced
+
+Sample threads:
+
+- `e07a7eec-ee87-4e0b-820c-6c4acdfb2c7c`
+- `b09c021e-caf9-4839-ba0a-224042677208`
+- `dc95334c-bf39-425a-a9f9-c735969415ea`
+
+#### D. Historical Capability Regression Check
+
+Meeting workflow still passed end-to-end in the live service:
+
+- clarification / intervention / approve / resume / DONE
+- `workflow_verification_status=passed`
+- Thread: `7dfb5274-cc59-4408-89a3-dd172be3987f`
+
+### 7.4 Supplementary Verdict
+
+Based on the restarted live-service revalidation on 2026-03-24:
+
+- the original blocker is no longer reproducible
+- single-domain HR now converges directly to `DONE`
+- cross-domain workflow now converges stably
+- conflicting HR terminal states were not reproduced
+- the fix did not regress the meeting intervention path
+
+Therefore:
+
+- blocker status: `closed`
+- Milestone 1 final verdict: `PASS`
+
+### 7.5 Final Closure Wording
+
+Conclusion: `PASS`
+
+Acceptance coverage:
+
+- Phase 0
+- Phase 1
+- Phase 4
+- Historical workflow regression review
+- 2026-03-24 restarted live-service blocker revalidation
+
+Passed items:
+
+- existing milestone execution evidence remains valid
+- fix-related automated regression: `117 passed`
+- single-domain contacts / hr live validation passed
+- cross-domain workflow live validation passed `8/8`
+- meeting intervention live regression passed
+- no optional follow-up interrupt reproduced
+- no duplicate terminal task states reproduced
+
+Open blocker items:
+
+- none
+
+Remaining observation items:
+
+- recommended to run one lightweight `leader` shared-runtime smoke before the next milestone starts
+- continue observing other domain agents for similar structured-output misses
+
+May proceed to the next phase:
+
+- yes
