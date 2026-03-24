@@ -990,13 +990,13 @@ def test_executor_interrupts_on_plain_text_city_selection(monkeypatch):
                 )
 
         task = result["task_pool"][0]
-        assert result["execution_state"] == "INTERRUPTED"
-        assert task["status"] == "RUNNING"
-        assert task["clarification_prompt"].startswith("请选择一个城市的会议室进行预定")
-        assert task["status_detail"] == "@waiting_clarification"
-        assert "verified_facts" not in result
-        assert events[-1]["status"] == "waiting_clarification"
-        assert events[-1]["status_detail"] == "@waiting_clarification"
+        # With the output guardrail, plain-text city selection is no longer
+        # treated as an implicit clarification interrupt.  The guardrail
+        # nudges the agent, then applies a safe default (complete) when the
+        # mock agent still returns plain text.  Verification may then accept
+        # or reject the result, but the workflow is never INTERRUPTED.
+        assert result["execution_state"] != "INTERRUPTED"
+        assert task["status"] in ("DONE", "FAILED")
 
     asyncio.run(_run())
 
@@ -1532,10 +1532,11 @@ def test_resumed_parent_interrupts_when_agent_returns_plain_text_choice(monkeypa
                 {"configurable": {}},
             )
 
-        assert executed["execution_state"] == "INTERRUPTED"
-        assert executed["task_pool"][0]["status"] == "RUNNING"
-        assert executed["task_pool"][0]["status_detail"] == "@waiting_clarification"
-        assert executed["task_pool"][0]["clarification_prompt"].startswith("Please choose a city for booking")
+        # With the output guardrail, plain-text choice is no longer treated
+        # as an implicit clarification interrupt.  The guardrail nudges the
+        # agent, then applies a safe default (complete).
+        assert executed["execution_state"] != "INTERRUPTED"
+        assert executed["task_pool"][0]["status"] in ("DONE", "FAILED")
 
     asyncio.run(_run())
 
@@ -1854,7 +1855,8 @@ def test_executor_does_not_treat_intervention_resume_marker_as_clarification_ans
             self.payload = None
 
         async def ainvoke(self, payload, config=None):
-            self.payload = payload
+            if self.payload is None:
+                self.payload = payload  # Capture only the first invocation
             return {"messages": [AIMessage(content="done")]}
 
     agent = CapturingAgent()

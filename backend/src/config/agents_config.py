@@ -75,6 +75,11 @@ class AgentConfig(BaseModel):
     available_skills: list[str] | None = None      # Skill names to expose; None = all enabled skills
     requested_orchestration_mode: Literal["auto", "leader", "workflow"] | None = None
 
+    # Output guardrail settings
+    guardrail_structured_completion: bool = True    # Enforce terminal tool calling via nudge retry
+    guardrail_max_retries: int = 1                  # Max nudge re-invocations (0 = safe default only, no nudge)
+    guardrail_safe_default: str = "complete"        # Fallback when nudge exhausted: "complete" or "fail"
+
     def get_effective_mcp_binding(self) -> McpBindingConfig:
         """Return the effective MCP binding, or an empty binding if not set."""
         return self.mcp_binding or McpBindingConfig()

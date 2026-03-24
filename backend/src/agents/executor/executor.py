@@ -1004,6 +1004,65 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         )
 
         # ---------------------------------------------------------------
+        # Output guardrail gate — enforce structured output contract
+        # ---------------------------------------------------------------
+        from src.agents.executor.guardrails import run_output_guardrails
+        from src.agents.lead_agent.agent import make_lead_agent as _make_lead_agent
+
+        guardrail_enabled = bool(
+            agent_cfg and getattr(agent_cfg, "guardrail_structured_completion", True)
+        ) if agent_cfg is not None else True
+
+        guardrail_max_retries = int(
+            getattr(agent_cfg, "guardrail_max_retries", 1)
+        ) if agent_cfg is not None else 1
+
+        outcome, used_fallback, guardrail_meta = await run_output_guardrails(
+            task=task,
+            agent_name=agent_name,
+            messages=messages,
+            new_messages_start=new_messages_start,
+            outcome=outcome,
+            used_fallback=used_fallback,
+            agent_config=agent_config_override,
+            make_agent_fn=_make_lead_agent,
+            max_retries=guardrail_max_retries,
+            enabled=guardrail_enabled,
+        )
+        if guardrail_meta.nudge_messages is not None:
+            messages = guardrail_meta.nudge_messages
+            new_messages_start = guardrail_meta.nudge_new_messages_start
+
+        if guardrail_meta.guardrail_triggered:
+            logger.info(
+                "[Executor] Output guardrail fired: name=%s nudge_attempted=%s "
+                "nudge_succeeded=%s safe_default=%s original_kind=%s final_kind=%s",
+                guardrail_meta.guardrail_name,
+                guardrail_meta.nudge_attempted,
+                guardrail_meta.nudge_succeeded,
+                guardrail_meta.safe_default_applied,
+                guardrail_meta.original_outcome_kind,
+                guardrail_meta.final_outcome_kind,
+            )
+            record_decision(
+                "output_guardrail",
+                run_id=task_run_id,
+                task_id=task["task_id"],
+                agent_name=agent_name,
+                inputs={
+                    "original_outcome_kind": guardrail_meta.original_outcome_kind,
+                    "used_fallback": True,
+                },
+                output={
+                    "guardrail_name": guardrail_meta.guardrail_name,
+                    "nudge_attempted": guardrail_meta.nudge_attempted,
+                    "nudge_succeeded": guardrail_meta.nudge_succeeded,
+                    "safe_default_applied": guardrail_meta.safe_default_applied,
+                    "final_outcome_kind": guardrail_meta.final_outcome_kind,
+                },
+            )
+
+        # ---------------------------------------------------------------
         # Branch on outcome.kind
         # ---------------------------------------------------------------
         outcome_kind = outcome["kind"]
