@@ -1,6 +1,6 @@
 # Backend Checklist: Workflow Phase 2 Two-Stage Scheduler And Persistent Domain Agent
 
-- Status: `completed` (`Stage 1` backend accepted on `2026-03-25`)
+- Status: `in_progress` (`Stage 1` backend accepted on `2026-03-25`; `Stage 2` backend pilot in progress)
 - Depends on: [workflow-phase2-two-stage-scheduler-and-persistent-domain-agent.md](./workflow-phase2-two-stage-scheduler-and-persistent-domain-agent.md)
 - Last updated: `2026-03-25`
 
@@ -240,6 +240,22 @@ Stage 2 的主要改动范围应控制在：
 - [ ] Stage 2 不顺手扩成全量 knowledge / memory 平台
 
 ## 15. Documentation
+
+## 15.1 Stage 2 Backend Progress Update
+
+- [x] Pilot domain selected as `meeting-agent`
+- [x] Added per-agent Stage 2 switches through `persistent_memory_enabled` and `persistent_runbook_file`
+- [x] Added `RUNBOOK.md` loading path for the pilot domain
+- [x] Injected persistent domain memory in executor context as advisory-only information
+- [x] Limited persistent write-back to verified successful task completion
+- [x] Filtered persistent write-back to safe reusable hints so transactional meeting facts do not enter long-term memory
+- [x] Hardened memory queue dedupe so same-thread conversation memory and persistent-domain memory updates do not overwrite each other
+- [x] Added malformed-memory fallback so Stage 2 memory injection degrades safely without breaking executor flow
+- [x] Kept non-pilot domains on Stage 1 behavior by default
+- [x] Restored non-pilot domain prompt-level memory behavior while keeping Stage 2 executor-level persistence pilot-only
+- [x] Stage 2 backend implementation is ready for formal code review
+- [ ] Real workflow benefit validation is still pending
+- [ ] Stage 2 backend acceptance is still pending
 
 - [ ] 主 feature 文档状态及时更新
 - [ ] 如阶段边界变化，先回填主文档再扩代码

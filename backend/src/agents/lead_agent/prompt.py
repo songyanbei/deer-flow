@@ -1,6 +1,10 @@
 from datetime import datetime
 
 from src.config.agents_config import load_agent_soul
+from src.agents.persistent_domain_memory import (
+    get_persistent_domain_runbook,
+    is_persistent_domain_memory_enabled,
+)
 from src.skills import load_skills
 
 
@@ -153,6 +157,7 @@ You are {agent_name}, an open-source super agent.
 </role>
 
 {soul}
+{runbook}
 {memory_context}
 
 <thinking_style>
@@ -203,7 +208,7 @@ Recent breakthroughs in language models have also accelerated progress
 
 <critical_reminders>
 - **Clarification First**: ALWAYS clarify unclear/missing/ambiguous requirements BEFORE starting work - never assume or guess
-{subagent_reminder}{domain_agent_reminder}{read_only_reminder}- Skill First: Always load the relevant skill before starting **complex** tasks.
+{subagent_reminder}{domain_agent_reminder}{persistent_domain_reminder}{read_only_reminder}- Skill First: Always load the relevant skill before starting **complex** tasks.
 - Progressive Loading: Load resources incrementally as referenced in skills
 - Output Files: Final deliverables must be in `/mnt/user-data/outputs`
 - Clarity: Be direct and helpful, avoid unnecessary meta-commentary
@@ -396,6 +401,25 @@ def _get_memory_context(agent_name: str | None = None) -> str:
         return ""
 
 
+def _get_runbook_context(agent_name: str | None = None, *, is_domain_agent: bool = False) -> str:
+    if not is_domain_agent:
+        return ""
+
+    try:
+        runbook = get_persistent_domain_runbook(agent_name)
+    except Exception as e:
+        print(f"Failed to load domain runbook: {e}")
+        return ""
+
+    if not runbook.strip():
+        return ""
+
+    return f"""<runbook>
+{runbook}
+</runbook>
+"""
+
+
 def get_skills_prompt_section(available_skills: set[str] | None = None) -> str:
     """Generate the skills prompt section with available skills list.
 
@@ -457,8 +481,12 @@ def apply_prompt_template(
     is_domain_agent: bool = False,
     engine_mode: str = "default",
 ) -> str:
-    # Get memory context
-    memory_context = _get_memory_context(agent_name)
+    # Keep Stage 2 pilot domains on executor-level persistent memory injection
+    # so current-task facts remain closer to the work item, while preserving the
+    # prior prompt-level memory behavior for non-pilot domains.
+    use_executor_level_persistent_memory = is_domain_agent and is_persistent_domain_memory_enabled(agent_name)
+    memory_context = "" if use_executor_level_persistent_memory else _get_memory_context(agent_name)
+    runbook_context = _get_runbook_context(agent_name, is_domain_agent=is_domain_agent)
 
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
@@ -503,6 +531,13 @@ def apply_prompt_template(
                 "as plain final text.\n"
             )
 
+    persistent_domain_reminder = (
+        "- **Persistent Domain Memory**: Advisory long-term hints may be present for this pilot domain agent. "
+        "Current thread inputs, resolved dependency inputs, and verified_facts always override remembered hints.\n"
+        if is_domain_agent and runbook_context
+        else ""
+    )
+
     read_only_reminder = (
         "- **Read-Only Explorer**: Use your own domain lookup tools first, stay strictly read-only, and return concrete facts instead of re-delegating queries you can answer yourself.\n"
         if read_only_explorer
@@ -540,12 +575,14 @@ def apply_prompt_template(
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
         soul=get_agent_soul(agent_name),
+        runbook=runbook_context,
         skills_section=skills_section,
         memory_context=memory_context,
         clarification_rules=clarification_rules,
         subagent_section=subagent_section,
         subagent_reminder=subagent_reminder,
         domain_agent_reminder=domain_agent_reminder,
+        persistent_domain_reminder=persistent_domain_reminder,
         read_only_reminder=read_only_reminder + react_reminder + sop_reminder,
         subagent_thinking=subagent_thinking,
     )

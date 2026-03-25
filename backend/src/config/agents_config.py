@@ -14,6 +14,7 @@ from src.config.paths import get_paths
 logger = logging.getLogger(__name__)
 
 SOUL_FILENAME = "SOUL.md"
+RUNBOOK_FILENAME = "RUNBOOK.md"
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
 
@@ -68,6 +69,8 @@ class AgentConfig(BaseModel):
     # Multi-agent orchestration fields
     domain: str | None = None                      # Business domain label (e.g. "hr"). Set to be discovered by Router.
     system_prompt_file: str | None = None          # Optional override for the default SOUL.md prompt file.
+    persistent_memory_enabled: bool = False        # Stage 2 pilot toggle for per-domain persistent memory.
+    persistent_runbook_file: str | None = None     # Optional override for the default RUNBOOK.md file.
     hitl_keywords: list[str] = Field(default_factory=list)  # Keywords triggering Human-in-the-Loop approval (backward-compatible fallback)
     intervention_policies: dict[str, Any] = Field(default_factory=dict)  # Per-tool intervention policies (Phase 1)
     max_tool_calls: int = 20                       # Per-agent safety limit for tool usage inside one task execution.
@@ -132,6 +135,25 @@ def load_agent_soul(agent_name: str | None) -> str | None:
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
+    return content or None
+
+
+def load_agent_runbook(agent_name: str | None) -> str | None:
+    """Read the configured runbook file for a custom agent, if it exists."""
+    if agent_name is None:
+        return None
+
+    agent_dir = get_paths().agent_dir(agent_name)
+    agent_cfg = load_agent_config(agent_name)
+    if not agent_cfg or not agent_cfg.persistent_memory_enabled:
+        return None
+
+    runbook_filename = agent_cfg.persistent_runbook_file or RUNBOOK_FILENAME
+    runbook_path = agent_dir / runbook_filename
+    if not runbook_path.exists():
+        return None
+
+    content = runbook_path.read_text(encoding="utf-8").strip()
     return content or None
 
 

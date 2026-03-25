@@ -3,7 +3,7 @@
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from src.config.memory_config import get_memory_config
@@ -15,8 +15,9 @@ class ConversationContext:
 
     thread_id: str
     messages: list[Any]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_name: str | None = None
+    dedupe_key: str = ""
 
 
 class MemoryUpdateQueue:
@@ -34,34 +35,50 @@ class MemoryUpdateQueue:
         self._timer: threading.Timer | None = None
         self._processing = False
 
-    def add(self, thread_id: str, messages: list[Any], agent_name: str | None = None) -> None:
+    def add(
+        self,
+        thread_id: str,
+        messages: list[Any],
+        agent_name: str | None = None,
+        *,
+        dedupe_key: str | None = None,
+    ) -> None:
         """Add a conversation to the update queue.
 
         Args:
             thread_id: The thread ID.
             messages: The conversation messages.
             agent_name: If provided, memory is stored per-agent. If None, uses global memory.
+            dedupe_key: Optional logical key used to replace stale pending updates.
+                Defaults to a per-thread/per-agent key so global and per-agent
+                memory updates do not overwrite each other.
         """
         config = get_memory_config()
         if not config.enabled:
             return
 
+        effective_dedupe_key = dedupe_key or self._build_default_dedupe_key(thread_id, agent_name)
         context = ConversationContext(
             thread_id=thread_id,
             messages=messages,
             agent_name=agent_name,
+            dedupe_key=effective_dedupe_key,
         )
 
         with self._lock:
-            # Check if this thread already has a pending update
-            # If so, replace it with the newer one
-            self._queue = [c for c in self._queue if c.thread_id != thread_id]
+            # Replace only stale updates for the same logical source.
+            self._queue = [c for c in self._queue if c.dedupe_key != effective_dedupe_key]
             self._queue.append(context)
 
             # Reset or start the debounce timer
             self._reset_timer()
 
         print(f"Memory update queued for thread {thread_id}, queue size: {len(self._queue)}")
+
+    @staticmethod
+    def _build_default_dedupe_key(thread_id: str, agent_name: str | None) -> str:
+        memory_scope = agent_name or "global"
+        return f"memory:{memory_scope}:{thread_id}"
 
     def _reset_timer(self) -> None:
         """Reset the debounce timer."""

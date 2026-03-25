@@ -1,6 +1,6 @@
 # Feature: Workflow Phase 2 Two-Stage Scheduler And Persistent Domain Agent
 
-- Status: `completed` (`Stage 1` accepted on `2026-03-25`; `Stage 2` not started)
+- Status: `in_progress` (`Stage 1` accepted on `2026-03-25`; `Stage 2` pilot started on `2026-03-25`)
 - Owner suggestion: `backend` + `test`
 - Related area: workflow runtime, router, executor, task scheduling, domain agents, thread state
 - Frontend impact: `none required in stage 1`, `none required by default in stage 2`
@@ -286,6 +286,21 @@ Stage 2 不应外溢到：
 - [x] “多个 clarification 同时等待时，每次 resume 仅绑定并恢复第一个 clarification task，剩余 task 等待后续轮次”已补充到实现与测试语义中；回归入口见 `backend/tests/test_workflow_resume_concurrency.py`
 - [x] Stage 1 baseline / regression / observability 验收沉淀已补齐；正式记录见 [workflow-phase2-stage1-scheduler-acceptance-execution.md](./workflow-phase2-stage1-scheduler-acceptance-execution.md)
 - [x] `Stage 1` 现已可判定为正式验收完成，可关闭并进入 `Stage 2`
+
+## Stage 2 Pilot Update
+
+- [x] Pilot domain selected: `meeting-agent`
+- [x] Pilot entry is gated by `persistent_memory_enabled`, so the capability remains rollback-safe
+- [x] `meeting-agent` now has a dedicated `RUNBOOK.md` entry for persistent-domain operating rules
+- [x] Executor injects pilot memory as advisory context only; current-thread inputs and `verified_facts` still take priority
+- [x] Persistent write-back is limited to verified successful task completion and only stores safe reusable hints instead of transactional meeting outputs
+- [x] Memory queue dedupe is isolated by logical source, so conversation memory and persistent-domain memory updates no longer overwrite each other inside one thread
+- [x] Malformed domain memory data now degrades safely to empty context instead of breaking executor flow
+- [x] Non-pilot domains remain on Stage 1 behavior by default
+- [x] Non-pilot domain agents keep their prior prompt-level memory behavior; Stage 2 executor-level persistence remains pilot-only
+- [x] Stage 2 backend implementation and regression repair are complete enough for formal code review
+- [ ] Benefit validation with a real baseline/regression comparison is still pending
+- [ ] Stage 2 formal acceptance is still pending
 
 ## Related Docs
 

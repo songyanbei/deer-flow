@@ -1,5 +1,7 @@
 name: meeting-agent
 domain: meeting
+persistent_memory_enabled: true
+persistent_runbook_file: RUNBOOK.md
 description: |
   负责处理所有会议室预定、查询、修改、取消的请求，以及多地协同会议的全流程。
   可以查询空闲会议室、创建/修改/取消会议、查看指定用户的会议列表、查看会议详情和参会人。

@@ -1,6 +1,6 @@
 # Test Checklist: Workflow Phase 2 Two-Stage Scheduler And Persistent Domain Agent
 
-- Status: `completed` (`Stage 1` test acceptance closed on `2026-03-25`)
+- Status: `in_progress` (`Stage 1` test acceptance closed on `2026-03-25`; `Stage 2` test plan in progress)
 - Depends on: [workflow-phase2-two-stage-scheduler-and-persistent-domain-agent.md](./workflow-phase2-two-stage-scheduler-and-persistent-domain-agent.md)
 - Last updated: `2026-03-25`
 
@@ -172,6 +172,21 @@ Stage 2 至少要确认以下不被破坏：
 - [ ] 不将两个阶段一次性并包验收
 
 ## 14.1 Stage 1 Closure Record
+
+## 14.2 Stage 2 Test Progress Update
+
+- [x] Added pilot-domain prompt/runbook coverage for `meeting-agent`
+- [x] Added non-pilot isolation coverage for `contacts-agent`
+- [x] Added executor-context coverage for persistent domain memory injection
+- [x] Added verified-success write-back coverage for persistent domain memory queueing
+- [x] Added executor integration coverage for post-success Stage 2 queueing
+- [x] Added queue-isolation coverage so same-thread memory updates from different logical sources do not overwrite each other
+- [x] Added malformed-memory fallback coverage so invalid domain memory schema degrades safely to empty context
+- [x] Added boundary coverage proving persistent write-back filters transactional meeting fields and keeps only safe reusable hints
+- [x] Added regression coverage proving non-pilot domain agents keep prompt-level memory behavior
+- [x] Stage 2 regression set is ready for formal code review
+- [ ] Real workflow benefit comparison is still pending
+- [ ] Stage 2 formal test acceptance is still pending
 
 - [x] Stage 1 独立验收已完成
 - [x] baseline / regression 已能稳定区分调度核心、并发调度、hooks 共存和 clarification resume 语义

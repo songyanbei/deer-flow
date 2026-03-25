@@ -1,6 +1,7 @@
 """Prompt templates for memory update and injection."""
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 try:
@@ -179,22 +180,25 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
     if not memory_data:
         return ""
 
+    def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
+        return value if isinstance(value, Mapping) else {}
+
     sections = []
 
     # Format user context
-    user_data = memory_data.get("user", {})
+    user_data = _mapping_or_empty(memory_data.get("user", {}))
     if user_data:
         user_sections = []
 
-        work_ctx = user_data.get("workContext", {})
+        work_ctx = _mapping_or_empty(user_data.get("workContext", {}))
         if work_ctx.get("summary"):
             user_sections.append(f"Work: {work_ctx['summary']}")
 
-        personal_ctx = user_data.get("personalContext", {})
+        personal_ctx = _mapping_or_empty(user_data.get("personalContext", {}))
         if personal_ctx.get("summary"):
             user_sections.append(f"Personal: {personal_ctx['summary']}")
 
-        top_of_mind = user_data.get("topOfMind", {})
+        top_of_mind = _mapping_or_empty(user_data.get("topOfMind", {}))
         if top_of_mind.get("summary"):
             user_sections.append(f"Current Focus: {top_of_mind['summary']}")
 
@@ -202,15 +206,15 @@ def format_memory_for_injection(memory_data: dict[str, Any], max_tokens: int = 2
             sections.append("User Context:\n" + "\n".join(f"- {s}" for s in user_sections))
 
     # Format history
-    history_data = memory_data.get("history", {})
+    history_data = _mapping_or_empty(memory_data.get("history", {}))
     if history_data:
         history_sections = []
 
-        recent = history_data.get("recentMonths", {})
+        recent = _mapping_or_empty(history_data.get("recentMonths", {}))
         if recent.get("summary"):
             history_sections.append(f"Recent: {recent['summary']}")
 
-        earlier = history_data.get("earlierContext", {})
+        earlier = _mapping_or_empty(history_data.get("earlierContext", {}))
         if earlier.get("summary"):
             history_sections.append(f"Earlier: {earlier['summary']}")
 

@@ -156,6 +156,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
 
         # Queue the filtered conversation for memory update
         queue = get_memory_queue()
-        queue.add(thread_id=thread_id, messages=filtered_messages, agent_name=self._agent_name)
+        queue.add(
+            thread_id=thread_id,
+            messages=filtered_messages,
+            agent_name=self._agent_name,
+            dedupe_key=f"conversation:{self._agent_name or 'global'}:{thread_id}",
+        )
 
         return None

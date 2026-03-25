@@ -21,6 +21,10 @@ from src.agents.intervention.fingerprint import (
     generate_tool_snapshot_hash,
 )
 from src.agents.executor.outcome import normalize_agent_outcome
+from src.agents.persistent_domain_memory import (
+    get_persistent_domain_memory_context,
+    queue_persistent_domain_memory_update,
+)
 from src.agents.thread_state import (
     HelpRequestPayload,
     InterventionRequest,
@@ -87,7 +91,13 @@ def _json_block(value: Any) -> str:
         return str(value)
 
 
-def _build_context(task: TaskStatus, verified_facts: VerifiedFact, clarification_answer: str = "") -> str:
+def _build_context(
+    task: TaskStatus,
+    verified_facts: VerifiedFact,
+    clarification_answer: str = "",
+    *,
+    agent_name: str | None = None,
+) -> str:
     # For helper tasks, use the full technical context instead of the short display description
     helper_context = task.get("helper_context")
     context = helper_context if helper_context else task["description"]
@@ -98,6 +108,13 @@ def _build_context(task: TaskStatus, verified_facts: VerifiedFact, clarification
             for i, (fact_key, fact_value) in enumerate(verified_facts.items())
         )
         context += f"\n\nKnown facts (do not re-check):\n{facts_block}"
+
+    persistent_domain_memory = get_persistent_domain_memory_context(agent_name)
+    if persistent_domain_memory:
+        context += (
+            "\n\nPersistent domain memory (advisory only; current thread inputs and verified facts take priority):\n"
+            f"{persistent_domain_memory}"
+        )
 
     resolved_inputs = task.get("resolved_inputs")
     if resolved_inputs:
@@ -817,7 +834,12 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
             clarification_answer = (task.get("resolved_inputs") or {}).get("clarification_answer", "")
         else:
             clarification_answer = ""
-        context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
+        context = _build_context(
+            task,
+            state.get("verified_facts") or {},
+            clarification_answer,
+            agent_name=agent_name,
+        )
 
         # ---------------------------------------------------------------
         # Resume branch selection — prefer continuation_mode, fall back
@@ -985,7 +1007,12 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 if intervention_answer:
                     # Rebuild context WITHOUT the clarification answer to avoid
                     # duplicating it — the answer is injected as a separate message.
-                    context_without_answer = _build_context(task, state.get("verified_facts") or {}, "")
+                    context_without_answer = _build_context(
+                        task,
+                        state.get("verified_facts") or {},
+                        "",
+                        agent_name=agent_name,
+                    )
                     input_messages = prior_messages + [
                         HumanMessage(content=context_without_answer),
                         HumanMessage(content=intervention_answer),
@@ -1689,6 +1716,16 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
 
         # Emit appropriate event based on final decision
         final_exec_state = final_update.get("execution_state", "")
+        if final_exec_state == "EXECUTING_DONE" and not final_update.get("verification_feedback"):
+            verified_fact = (final_update.get("verified_facts") or {}).get(task["task_id"])
+            final_task = final_update.get("task_pool", [done_task])[0] if final_update.get("task_pool") else done_task
+            queue_persistent_domain_memory_update(
+                agent_name,
+                task=final_task,
+                verified_fact=verified_fact,
+                thread_id=config.get("configurable", {}).get("thread_id"),
+            )
+
         if final_exec_state == "ERROR":
             error_msg = final_update.get("final_result", "Verification failed")
             _emit_task_event(writer, "task_failed", task, agent_name, error=error_msg, status_detail="@verification_hard_fail")
