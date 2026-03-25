@@ -447,3 +447,4 @@ See `docs/` directory for detailed documentation:
 - [PATH_EXAMPLES.md](docs/PATH_EXAMPLES.md) - Path types and usage
 - [summarization.md](docs/summarization.md) - Context summarization
 - [plan_mode_usage.md](docs/plan_mode_usage.md) - Plan mode with TodoList
+- [RUNTIME_HOOKS.md](docs/RUNTIME_HOOKS.md) - Runtime hook harness (hook points, metadata contract, usage)
