@@ -64,8 +64,11 @@ def route_after_workflow_executor(state: ThreadState) -> str:
         logger.debug("[Graph] executor -> END (INTERRUPTED)")
         return END
     task_pool = state.get("task_pool") or []
-    if any(task.get("status") in ("RUNNING", "WAITING_DEPENDENCY", "WAITING_INTERVENTION") for task in task_pool):
-        logger.debug("[Graph] executor -> router (RUNNING, WAITING_DEPENDENCY, or WAITING_INTERVENTION)")
+    # Phase 2 Stage 1: after concurrent execution, check for tasks that may
+    # now be runnable (PENDING with newly-satisfied dependencies), or still
+    # active (RUNNING, WAITING_*). All go back to router for scheduling.
+    if any(task.get("status") in ("PENDING", "RUNNING", "WAITING_DEPENDENCY", "WAITING_INTERVENTION") for task in task_pool):
+        logger.debug("[Graph] executor -> router (active or pending tasks remain)")
         return "router"
     logger.debug("[Graph] executor -> planner")
     return "planner"

@@ -287,6 +287,8 @@ class TaskStatus(TypedDict):
     pending_interrupt: NotRequired[PendingInterrupt | None]
     pending_tool_call: NotRequired[PendingToolCall | None]
     agent_history_cutoff: NotRequired[int | None]
+    # Scheduling fields (Phase 2 Stage 1)
+    priority: NotRequired[int | None]
     # Verification fields (Phase 4)
     verification_status: NotRequired[str | None]
     verification_report: NotRequired[dict[str, Any] | None]

@@ -739,15 +739,12 @@ def _auto_resume_from_clarification_cache(
     }
 
 
-async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
-    task_pool: list[TaskStatus] = state.get("task_pool") or []
-    running = [t for t in task_pool if t["status"] == "RUNNING"]
+async def _execute_single_task(task: TaskStatus, state: ThreadState, config: RunnableConfig, writer) -> dict:
+    """Execute a single RUNNING task and return the state update dict.
 
-    if not running:
-        logger.error("[Executor] Called with no RUNNING task.")
-        return {"execution_state": "ERROR", "final_result": "[Executor] No RUNNING task found."}
-
-    task = running[0]
+    This is the core single-task execution path, extracted to support
+    concurrent execution in the Phase 2 Stage 1 parallel scheduler.
+    """
     task_run_id = _resolve_task_run_id(state, task)
     task = {
         **task,
@@ -755,7 +752,6 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         "updated_at": task.get("updated_at") or _utc_now_iso(),
     }
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
-    writer = _get_event_writer()
     continuation_mode = task.get("continuation_mode")
     logger.info(
         "[Executor] Executing task '%s' via agent '%s' continuation_mode=%s.",
@@ -778,6 +774,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
         await _ensure_mcp_ready(agent_name)
 
         # Collect resolved fingerprints for dedup in InterventionMiddleware
+        task_pool: list[TaskStatus] = state.get("task_pool") or []
         resolved_fingerprints = _collect_resolved_fingerprints(task_pool)
 
         # Load agent config for intervention policies
@@ -1710,3 +1707,149 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             "task_pool": [failed_task],
             "execution_state": "EXECUTING_DONE",
         })
+
+
+def _merge_task_results(results: list[dict]) -> dict:
+    """Merge multiple single-task execution results into one state update.
+
+    Handles combining task_pool entries, verified_facts, intervention_cache,
+    and choosing the correct execution_state.
+    """
+    if len(results) == 1:
+        return results[0]
+
+    merged: dict = {}
+    merged_task_pool: list[TaskStatus] = []
+    merged_verified_facts: dict = {}
+    merged_intervention_cache: dict = {}
+    merged_messages: list = []
+    has_interrupted = False
+    has_error = False
+    has_done = False
+
+    for result in results:
+        # Collect task_pool entries
+        task_pool_entries = result.get("task_pool") or []
+        merged_task_pool.extend(task_pool_entries)
+
+        # Collect verified_facts
+        facts = result.get("verified_facts")
+        if isinstance(facts, dict):
+            merged_verified_facts.update(facts)
+
+        # Collect intervention_cache
+        cache = result.get("intervention_cache")
+        if isinstance(cache, dict):
+            merged_intervention_cache.update(cache)
+
+        # Collect messages
+        msgs = result.get("messages")
+        if isinstance(msgs, list):
+            merged_messages.extend(msgs)
+
+        # Track execution states
+        exec_state = result.get("execution_state", "")
+        if exec_state == "INTERRUPTED":
+            has_interrupted = True
+        elif exec_state == "ERROR":
+            has_error = True
+        elif exec_state == "DONE":
+            has_done = True
+
+        # Preserve other fields from first result that has them
+        for key in (
+            "run_id", "final_result",
+            "workflow_stage", "workflow_stage_detail", "workflow_stage_updated_at",
+            # Private metadata for after_executor hook (stripped by node_wrapper)
+            "_executor_outcome_kind", "_executor_used_fallback",
+            # Verification fields
+            "verification_feedback", "workflow_verification_status", "workflow_verification_report",
+        ):
+            if key not in merged and key in result:
+                merged[key] = result[key]
+
+    merged["task_pool"] = merged_task_pool
+    if merged_verified_facts:
+        merged["verified_facts"] = merged_verified_facts
+    if merged_intervention_cache:
+        merged["intervention_cache"] = merged_intervention_cache
+    if merged_messages:
+        merged["messages"] = merged_messages
+
+    # Determine overall execution_state:
+    # - If any task hit ERROR, the overall state is ERROR
+    # - If any task INTERRUPTED, overall is INTERRUPTED
+    # - If any task resulted in DONE (SYSTEM_FINISH), overall is DONE
+    # - Otherwise EXECUTING_DONE
+    if has_error:
+        merged["execution_state"] = "ERROR"
+    elif has_done:
+        merged["execution_state"] = "DONE"
+    elif has_interrupted:
+        merged["execution_state"] = "INTERRUPTED"
+    else:
+        merged["execution_state"] = "EXECUTING_DONE"
+
+    return merged
+
+
+async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
+    """Execute all RUNNING tasks, potentially concurrently within the scheduling window."""
+    import asyncio
+
+    task_pool: list[TaskStatus] = state.get("task_pool") or []
+    running = [t for t in task_pool if t["status"] == "RUNNING"]
+
+    if not running:
+        logger.error("[Executor] Called with no RUNNING task.")
+        return {"execution_state": "ERROR", "final_result": "[Executor] No RUNNING task found."}
+
+    writer = _get_event_writer()
+
+    if len(running) == 1:
+        # Single task — direct execution (original path, no overhead).
+        return await _execute_single_task(running[0], state, config, writer)
+
+    # --- Phase 2 Stage 1: concurrent execution of multiple RUNNING tasks ---
+    logger.info(
+        "[Executor] Concurrent execution of %d tasks: %s",
+        len(running),
+        [(t["task_id"], t.get("assigned_agent")) for t in running],
+    )
+    _emit_workflow_stage(
+        writer, "executing",
+        f"Executing {len(running)} tasks concurrently",
+        run_id=state.get("run_id"),
+    )
+
+    # Execute all tasks concurrently
+    results = await asyncio.gather(
+        *(_execute_single_task(task, state, config, writer) for task in running),
+        return_exceptions=True,
+    )
+
+    # Handle exceptions from gather
+    final_results: list[dict] = []
+    for task, result in zip(running, results, strict=False):
+        if isinstance(result, Exception):
+            logger.error(
+                "[Executor] Task '%s' raised exception during concurrent execution: %s",
+                task["task_id"], result, exc_info=result,
+            )
+            failed_task: TaskStatus = {
+                **task,
+                "status": "FAILED",
+                "error": str(result),
+                "status_detail": "@failed",
+                **_clear_continuation_fields(),
+                "updated_at": _utc_now_iso(),
+            }
+            _emit_task_event(writer, "task_failed", task, task.get("assigned_agent") or "", error=str(result))
+            final_results.append({
+                "task_pool": [failed_task],
+                "execution_state": "EXECUTING_DONE",
+            })
+        else:
+            final_results.append(result)
+
+    return _merge_task_results(final_results)

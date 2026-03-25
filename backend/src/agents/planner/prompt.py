@@ -38,11 +38,18 @@ Anti-pattern examples — do NOT decompose like this:
   ✅ CORRECT decomposition (one coarse task):
        1. "为孙琦预定明天上午9-10点的会议室，容纳10人左右，会议主题为产品介绍会" → meeting-agent
 
+Dependency and priority:
+- If a sub-task depends on the output of another sub-task, set "depends_on" to the 0-based index(es) of those prerequisite tasks.
+- Independent tasks that can run in parallel should NOT list dependencies.
+- Optionally set "priority" (integer, lower = higher priority, default 0).
+
 Output format (JSON array):
 [
   {{
     "description": "<specific sub-task description including all relevant entities, names, dates>",
-    "assigned_agent": "<agent name from the list above, or SYSTEM_FALLBACK>"
+    "assigned_agent": "<agent name from the list above, or SYSTEM_FALLBACK>",
+    "depends_on": [],
+    "priority": 0
   }}
 ]"""
 
@@ -76,7 +83,7 @@ Output format when done:
 {{"done": true, "summary": "<concise final answer to the user>"}}
 
 Output format when more work needed:
-{{"done": false, "tasks": [{{"description": "...", "assigned_agent": "..."}}]}}
+{{"done": false, "tasks": [{{"description": "...", "assigned_agent": "...", "depends_on": [], "priority": 0}}]}}
 
 IMPORTANT: Task descriptions MUST be written in the user's language and from the user's perspective.
 Do NOT include internal identifiers (openId, userId, staffId, etc.), resolved dependency values,

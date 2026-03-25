@@ -38,6 +38,7 @@ from src.agents.workflow_resume import (
     build_intervention_resolved_inputs_entry,
     is_intervention_resolution_message,
 )
+from src.agents.scheduler import get_blocked_by_failed_dependency, select_execution_batch
 from src.config.agents_config import list_domain_agents
 from src.models import create_chat_model
 from src.observability import record_decision
@@ -1360,58 +1361,100 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Router] No pending tasks, signaling planner.")
         return {"execution_state": "PLANNING_NEEDED", "route_count": route_count}
 
-    task = pending[0]
-    logger.info(
-        "[Router] Pending task selected task_id=%s assigned_agent=%s description=%r",
-        task["task_id"],
-        task.get("assigned_agent"),
-        task["description"][:300],
-    )
-    run_id = _resolve_run_id(state, task)
+    # --- Phase 2 Stage 1: dependency-aware batch scheduling ---
+    batch = select_execution_batch(task_pool)
+    if not batch:
+        # No runnable tasks — all pending tasks have unsatisfied deps.
+        # First check if any pending tasks are permanently blocked by failed deps.
+        blocked_by_failure = get_blocked_by_failed_dependency(task_pool)
+        if blocked_by_failure:
+            # Fail tasks whose dependencies have permanently failed.
+            failed_updates: list[TaskStatus] = []
+            for blocked_task in blocked_by_failure:
+                failed_task: TaskStatus = {
+                    **blocked_task,
+                    "status": "FAILED",
+                    "error": "Dependency task failed",
+                    "status_detail": "@dependency_failed",
+                    "updated_at": _utc_now_iso(),
+                }
+                failed_updates.append(failed_task)
+                _emit_task_event(writer, "task_failed", failed_task, blocked_task.get("assigned_agent") or "", error="Dependency task failed")
+            logger.info("[Router] Marked %d tasks as FAILED due to failed dependencies.", len(failed_updates))
+            return {
+                "task_pool": failed_updates,
+                "execution_state": "EXECUTING_DONE",
+                "route_count": route_count,
+            }
+        # Check if there are running/blocked tasks that might eventually unblock.
+        if any(t["status"] in ("RUNNING", "WAITING_DEPENDENCY", "WAITING_INTERVENTION") for t in task_pool):
+            logger.info("[Router] No runnable PENDING tasks, but active tasks exist — forwarding to executor.")
+            return {"execution_state": "ROUTING_DONE", "route_count": route_count}
+        logger.info("[Router] No runnable tasks and no active tasks, signaling planner.")
+        return {"execution_state": "PLANNING_NEEDED", "route_count": route_count}
+
     domain_agents = list_domain_agents()
     valid_names = [a.name for a in domain_agents]
+    agent_profiles = _build_agent_profiles(domain_agents)
+    updated_tasks: list[TaskStatus] = []
+    run_id: str | None = None
 
-    if task.get("assigned_agent") and task["assigned_agent"] in valid_names:
-        assigned = task["assigned_agent"]
-        logger.info("[Router] Fast path: task '%s' -> %s", task["task_id"], assigned)
-        record_decision(
-            "agent_route",
-            run_id=run_id,
-            task_id=task["task_id"],
-            agent_name=assigned,
-            inputs={"task_id": task["task_id"], "task_description": task["description"][:300]},
-            output={"selected_agent": assigned},
-            reason="fast_path_pre_assigned",
-        )
-    else:
-        agent_profiles = _build_agent_profiles(domain_agents)
-        assigned = await _llm_route(task["description"], agent_profiles, valid_names, config)
-        logger.info("[Router] LLM route: task '%s' -> %s", task["task_id"], assigned)
-        record_decision(
-            "agent_route" if assigned != "SYSTEM_FALLBACK" else "agent_route_fallback",
-            run_id=run_id,
-            task_id=task["task_id"],
-            agent_name=assigned,
-            inputs={"task_id": task["task_id"], "task_description": task["description"][:300], "candidates": valid_names},
-            output={"selected_agent": assigned},
-            reason="llm_route" if assigned != "SYSTEM_FALLBACK" else "no_suitable_agent",
-            alternatives=[n for n in valid_names if n != assigned],
+    for task in batch:
+        task_run_id = _resolve_run_id(state, task)
+        if run_id is None:
+            run_id = task_run_id
+
+        if task.get("assigned_agent") and task["assigned_agent"] in valid_names:
+            assigned = task["assigned_agent"]
+            logger.info("[Router] Fast path: task '%s' -> %s", task["task_id"], assigned)
+            record_decision(
+                "agent_route",
+                run_id=task_run_id,
+                task_id=task["task_id"],
+                agent_name=assigned,
+                inputs={"task_id": task["task_id"], "task_description": task["description"][:300]},
+                output={"selected_agent": assigned},
+                reason="fast_path_pre_assigned",
+            )
+        else:
+            assigned = await _llm_route(task["description"], agent_profiles, valid_names, config)
+            logger.info("[Router] LLM route: task '%s' -> %s", task["task_id"], assigned)
+            record_decision(
+                "agent_route" if assigned != "SYSTEM_FALLBACK" else "agent_route_fallback",
+                run_id=task_run_id,
+                task_id=task["task_id"],
+                agent_name=assigned,
+                inputs={"task_id": task["task_id"], "task_description": task["description"][:300], "candidates": valid_names},
+                output={"selected_agent": assigned},
+                reason="llm_route" if assigned != "SYSTEM_FALLBACK" else "no_suitable_agent",
+                alternatives=[n for n in valid_names if n != assigned],
+            )
+
+        updated_task: TaskStatus = {
+            **task,
+            "run_id": task_run_id,
+            "status": "RUNNING",
+            "assigned_agent": assigned,
+            "status_detail": f"@assigned:{assigned}",
+            "clarification_prompt": None,
+            "clarification_request": None,
+            "updated_at": _utc_now_iso(),
+        }
+        updated_tasks.append(updated_task)
+
+    if len(updated_tasks) > 1:
+        logger.info(
+            "[Router] Batch scheduled %d tasks for concurrent execution: %s",
+            len(updated_tasks),
+            [(t["task_id"], t.get("assigned_agent")) for t in updated_tasks],
         )
 
-    updated_task: TaskStatus = {
-        **task,
-        "run_id": run_id,
-        "status": "RUNNING",
-        "assigned_agent": assigned,
-        "status_detail": f"@assigned:{assigned}",
-        "clarification_prompt": None,
-        "clarification_request": None,
-        "updated_at": _utc_now_iso(),
-    }
-    detail = _build_executing_detail(updated_task)
+    detail = _build_executing_detail(updated_tasks[0])
     _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
+    for ut in updated_tasks:
+        _emit_task_event(writer, "task_started", ut, ut.get("assigned_agent") or "", status_detail=ut.get("status_detail"))
     return {
-        "task_pool": [updated_task],
+        "task_pool": updated_tasks,
         "run_id": run_id,
         "execution_state": "ROUTING_DONE",
         "route_count": route_count,

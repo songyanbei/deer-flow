@@ -277,14 +277,26 @@ def _normalize_task_pool(task_pool: list[TaskStatus], run_id: str) -> tuple[list
 
 def _make_tasks(raw_tasks: list[dict], run_id: str) -> list[TaskStatus]:
     tasks: list[TaskStatus] = []
-    for t in raw_tasks:
+    # First pass: create tasks and assign IDs, remembering index->task_id mapping
+    index_to_task_id: dict[int, str] = {}
+    for idx, t in enumerate(raw_tasks):
         desc = (t.get("description") or "").strip()
         if not desc:
             continue
+        task_id = str(uuid.uuid4())[:8]
+        index_to_task_id[idx] = task_id
         now = _utc_now_iso()
+        # Parse priority (default 0)
+        priority = None
+        raw_priority = t.get("priority")
+        if raw_priority is not None:
+            try:
+                priority = int(raw_priority)
+            except (TypeError, ValueError):
+                priority = None
         tasks.append(
             TaskStatus(
-                task_id=str(uuid.uuid4())[:8],
+                task_id=task_id,
                 description=desc,
                 run_id=run_id,
                 assigned_agent=t.get("assigned_agent") or None,
@@ -295,8 +307,39 @@ def _make_tasks(raw_tasks: list[dict], run_id: str) -> list[TaskStatus]:
                 updated_at=now,
                 result=None,
                 error=None,
+                priority=priority,
             )
         )
+
+    # Second pass: resolve depends_on indices to task_ids
+    # Build reverse mapping from original raw index to tasks list position.
+    raw_idx_to_tasks_pos: dict[int, int] = {}
+    pos = 0
+    for idx, t in enumerate(raw_tasks):
+        desc = (t.get("description") or "").strip()
+        if not desc:
+            continue
+        raw_idx_to_tasks_pos[idx] = pos
+        pos += 1
+
+    for idx, t in enumerate(raw_tasks):
+        tasks_pos = raw_idx_to_tasks_pos.get(idx)
+        if tasks_pos is None:
+            continue
+        raw_deps = t.get("depends_on")
+        if isinstance(raw_deps, list) and raw_deps:
+            dep_ids: list[str] = []
+            for dep_idx in raw_deps:
+                try:
+                    dep_idx_int = int(dep_idx)
+                except (TypeError, ValueError):
+                    continue
+                dep_task_id = index_to_task_id.get(dep_idx_int)
+                if dep_task_id and dep_task_id != tasks[tasks_pos]["task_id"]:
+                    dep_ids.append(dep_task_id)
+            if dep_ids:
+                tasks[tasks_pos] = {**tasks[tasks_pos], "depends_on_task_ids": dep_ids}
+
     return tasks
 
 def _normalize_text_value(value: Any) -> str:
