@@ -35,6 +35,7 @@ from src.agents.workflow_resume import (
     build_intervention_resolution_record,
     build_intervention_resolved_inputs_entry,
     extract_latest_clarification_answer,
+    normalize_intervention_clarification_answer,
 )
 from src.config.agents_config import load_agent_config
 from src.observability import record_decision
@@ -934,13 +935,37 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     if isinstance(_msg, ToolMessage) and getattr(_msg, "name", None) == "intervention_required":
                         prior_messages = prior_messages[:_idx]
                         break
-                input_messages = prior_messages + [HumanMessage(content=context)]
+
+                # For intervention clarification resume, inject the user's answer
+                # as a separate conversational HumanMessage so the agent recognises
+                # it as a direct reply to its previous question, rather than buried
+                # inside the context JSON block.
+                intervention_answer = ""
+                if continuation_mode == "continue_after_intervention":
+                    intervention_answer = normalize_intervention_clarification_answer(task)
+
+                if intervention_answer:
+                    # Rebuild context WITHOUT the clarification answer to avoid
+                    # duplicating it — the answer is injected as a separate message.
+                    context_without_answer = _build_context(task, state.get("verified_facts") or {}, "")
+                    input_messages = prior_messages + [
+                        HumanMessage(content=context_without_answer),
+                        HumanMessage(content=intervention_answer),
+                    ]
+                    logger.info(
+                        "[Executor] Resuming with %d prior messages + context + intervention answer for task '%s'.",
+                        len(prior_messages),
+                        task["task_id"],
+                    )
+                else:
+                    input_messages = prior_messages + [HumanMessage(content=context)]
+                    logger.info(
+                        "[Executor] Resuming with %d prior messages + new context for task '%s'.",
+                        len(prior_messages),
+                        task["task_id"],
+                    )
+
                 new_messages_start = len(prior_messages)
-                logger.info(
-                    "[Executor] Resuming with %d prior messages + new context for task '%s'.",
-                    len(prior_messages),
-                    task["task_id"],
-                )
             else:
                 input_messages = [HumanMessage(content=context)]
                 new_messages_start = 0

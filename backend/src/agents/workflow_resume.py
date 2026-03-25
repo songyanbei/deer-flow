@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -240,6 +241,25 @@ def extract_latest_clarification_answer(
     state: ThreadState,
     config: Mapping[str, Any] | None = None,
 ) -> str:
+    # ── Intervention resolution path (source of truth) ──
+    # When a task resumes after a user_clarification intervention, extract
+    # the answer from the persisted intervention_resolution rather than
+    # relying on message-based heuristics.
+    task_pool = state.get("task_pool") or []
+    for task in reversed(task_pool):
+        if not isinstance(task, dict):
+            continue
+        if task.get("continuation_mode") == "continue_after_intervention":
+            answer = normalize_intervention_clarification_answer(task)
+            if answer:
+                return answer
+            # Redundant fallback: try message-based extraction
+            answer = extract_intervention_clarification_from_message(state)
+            if answer:
+                return answer
+            break
+
+    # ── Original paths (structured answers / message heuristic) ──
     structured_answers = extract_structured_clarification_answers(state, config)
     if structured_answers:
         return _format_structured_clarification_answers(state, structured_answers)
@@ -405,3 +425,168 @@ def resolve_intervention(
     if task is None:
         return None, "no_pending_intervention"
     return apply_intervention_resolution(task, resolution)
+
+
+# ---------------------------------------------------------------------------
+# Redundant message-based fallback (方案三)
+# ---------------------------------------------------------------------------
+
+
+def extract_intervention_clarification_from_message(state: ThreadState) -> str:
+    """Extract a user answer from an ``[intervention_resolved]`` resume message.
+
+    The **primary** source of truth is always
+    ``task["intervention_resolution"]["payload"]`` (handled by
+    :func:`normalize_intervention_clarification_answer`).  This function
+    serves only as a **redundant fallback** for edge cases where the primary
+    path fails — for example old task formats missing ``intervention_resolution``.
+
+    It does NOT rely on Chinese keywords or natural-language heuristics.
+    It attempts to parse a JSON object from the message remainder; plain-text
+    content after the prefix is intentionally ignored to avoid false positives.
+    """
+    messages = state.get("messages") or []
+    if not messages:
+        return ""
+    last = messages[-1]
+    if not is_human_message(last):
+        return ""
+    text = content_to_text(getattr(last, "content", "")).strip()
+    if not text.startswith("[intervention_resolved]"):
+        return ""
+    remainder = text[len("[intervention_resolved]"):].strip()
+    if not remainder:
+        return ""
+    # Only parse structured JSON — do not treat arbitrary plain text as answer
+    try:
+        parsed = json.loads(remainder)
+        if isinstance(parsed, dict):
+            return str(parsed.get("answer") or parsed.get("text") or "").strip()
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Intervention clarification answer normalization
+# ---------------------------------------------------------------------------
+
+
+def _extract_value_by_kind(kind: str, payload: Mapping[str, Any]) -> str:
+    """Extract a human-readable answer string from a resolution payload entry
+    according to the action/question *kind*.
+
+    This function is schema-driven — it inspects well-known payload keys
+    (``text``, ``selected``, ``comment``, ``custom_text``) instead of
+    relying on natural-language heuristics or agent-specific patterns.
+    """
+    if kind == "input":
+        text = str(payload.get("text") or "").strip()
+        if text:
+            return text
+        return str(payload.get("comment") or "").strip()
+
+    if kind == "confirm":
+        return "confirmed"
+
+    if kind in ("single_select", "select"):
+        selected = str(payload.get("selected") or "").strip()
+        custom = str(payload.get("custom_text") or "").strip()
+        parts = [p for p in (selected, custom) if p]
+        return ", ".join(parts)
+
+    if kind == "multi_select":
+        raw = payload.get("selected")
+        if isinstance(raw, list):
+            items = [str(item).strip() for item in raw if str(item).strip()]
+            return ", ".join(items)
+        return str(raw or "").strip()
+
+    if kind == "button":
+        return ""
+
+    # Unknown kind — JSON fallback
+    try:
+        return json.dumps(dict(payload), ensure_ascii=False)
+    except Exception:
+        return str(payload)
+
+
+def normalize_intervention_clarification_answer(task: TaskStatus) -> str:
+    """Extract a human-readable user answer from a resolved user_clarification
+    intervention stored on *task*.
+
+    Returns an empty string when the task does not carry a user_clarification
+    intervention or when the resolution cannot be meaningfully extracted.
+
+    This is the **single authoritative extractor** for intervention-based
+    clarification answers.  It operates on the persisted
+    ``intervention_request`` / ``intervention_resolution`` fields — never on
+    message text or Chinese keyword matching.
+    """
+    if task.get("continuation_mode") != "continue_after_intervention":
+        return ""
+
+    intervention_request = task.get("intervention_request")
+    if not isinstance(intervention_request, dict):
+        return ""
+
+    # Only handle user_clarification interventions — NOT before_tool confirmations
+    if intervention_request.get("category") != "user_clarification":
+        return ""
+
+    resolution = task.get("intervention_resolution")
+    if not isinstance(resolution, dict):
+        return ""
+
+    if resolution.get("resolution_behavior") != "resume_current_task":
+        return ""
+
+    payload = resolution.get("payload")
+    if not isinstance(payload, dict) or not payload:
+        return ""
+
+    action_key = resolution.get("action_key", "")
+
+    # Find the matching action to determine its kind
+    action_schema = intervention_request.get("action_schema")
+    actions = (action_schema.get("actions") or []) if isinstance(action_schema, dict) else []
+    matched_action: dict[str, Any] | None = None
+    for action in actions:
+        if isinstance(action, dict) and action.get("key") == action_key:
+            matched_action = action
+            break
+
+    if matched_action is None:
+        # No matching action — try generic extraction
+        return _extract_value_by_kind("input", payload)
+
+    kind = str(matched_action.get("kind") or "input")
+
+    # Composite: expand each sub-question answer with its label
+    if kind == "composite":
+        questions = intervention_request.get("questions") or []
+        if not questions:
+            return _extract_value_by_kind("input", payload)
+
+        lines: list[str] = []
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            q_key = str(question.get("key") or "").strip()
+            q_label = str(question.get("label") or q_key).strip()
+            q_kind = str(question.get("kind") or "input")
+            q_value = payload.get(q_key)
+            if isinstance(q_value, dict):
+                answer_text = _extract_value_by_kind(q_kind, q_value)
+            elif isinstance(q_value, str):
+                answer_text = q_value.strip()
+            elif q_value is not None:
+                answer_text = str(q_value).strip()
+            else:
+                continue
+            if answer_text:
+                lines.append(f"{q_label}: {answer_text}")
+        return "\n".join(lines)
+
+    return _extract_value_by_kind(kind, payload)

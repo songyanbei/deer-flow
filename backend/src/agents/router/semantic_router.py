@@ -277,6 +277,15 @@ def _route_to_helper(
         "help_depth": help_depth,
         "updated_at": _utc_now_iso(),
     }
+    # Carry upstream structured context so the helper agent can see
+    # facts already known by the requester (e.g. organizer name),
+    # avoiding redundant clarification questions.
+    _MAX_CONTEXT_PAYLOAD_CHARS = 2000
+    context_payload = (parent_task.get("request_help") or {}).get("context_payload")
+    if isinstance(context_payload, dict) and context_payload:
+        serialized = json.dumps(context_payload, ensure_ascii=False)
+        if len(serialized) <= _MAX_CONTEXT_PAYLOAD_CHARS:
+            helper_task["resolved_inputs"] = {"upstream_context": context_payload}
     updated_parent: TaskStatus = {
         **parent_task,
         "depends_on_task_ids": [helper_task_id],
