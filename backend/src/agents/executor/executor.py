@@ -805,7 +805,18 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
 
         from src.agents.lead_agent.agent import make_lead_agent
 
-        clarification_answer = extract_latest_clarification_answer(state, config)
+        # Task-scoped answer extraction — each resume path reads from the task
+        # itself to prevent answer leakage between concurrent tasks.
+        if continuation_mode == "continue_after_intervention":
+            # Intervention answer lives on the task itself (structured resolution).
+            clarification_answer = normalize_intervention_clarification_answer(task)
+        elif continuation_mode == "continue_after_clarification":
+            # Clarification answer is bound to the task by the router via
+            # resolved_inputs["clarification_answer"]. No global fallback —
+            # if the answer wasn't bound, this task wasn't the resume target.
+            clarification_answer = (task.get("resolved_inputs") or {}).get("clarification_answer", "")
+        else:
+            clarification_answer = ""
         context = _build_context(task, state.get("verified_facts") or {}, clarification_answer)
 
         # ---------------------------------------------------------------
@@ -1797,12 +1808,23 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
     """Execute all RUNNING tasks, potentially concurrently within the scheduling window."""
     import asyncio
 
+    from src.agents.scheduler import DEFAULT_CONCURRENCY_WINDOW
+
     task_pool: list[TaskStatus] = state.get("task_pool") or []
     running = [t for t in task_pool if t["status"] == "RUNNING"]
 
     if not running:
         logger.error("[Executor] Called with no RUNNING task.")
         return {"execution_state": "ERROR", "final_result": "[Executor] No RUNNING task found."}
+
+    # Hard concurrency cap — safety net regardless of how RUNNING state was set.
+    if len(running) > DEFAULT_CONCURRENCY_WINDOW:
+        logger.warning(
+            "[Executor] RUNNING count %d exceeds concurrency window %d — "
+            "executing first %d only, remainder deferred to next cycle.",
+            len(running), DEFAULT_CONCURRENCY_WINDOW, DEFAULT_CONCURRENCY_WINDOW,
+        )
+        running = running[:DEFAULT_CONCURRENCY_WINDOW]
 
     writer = _get_event_writer()
 

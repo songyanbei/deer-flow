@@ -36,6 +36,7 @@ from src.agents.workflow_resume import (
     apply_intervention_resolution,
     build_intervention_resolution_record,
     build_intervention_resolved_inputs_entry,
+    extract_latest_clarification_answer,
     is_intervention_resolution_message,
 )
 from src.agents.scheduler import get_blocked_by_failed_dependency, select_execution_batch
@@ -1112,11 +1113,34 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
     running = [t for t in task_pool if t["status"] == "RUNNING"]
 
     if running:
+        # --- Bind clarification answers to tasks before forwarding to executor ---
+        # When resuming after clarification, the user's answer is in global messages.
+        # We extract it once and write it onto the specific task's resolved_inputs so
+        # that executor reads from the task itself — never from global state.
+        clarification_tasks = [t for t in running if t.get("continuation_mode") == "continue_after_clarification"]
+        updated_clarification_tasks: list[TaskStatus] = []
+        if clarification_tasks:
+            clarification_answer = extract_latest_clarification_answer(state, config)
+            if clarification_answer:
+                # Bind the answer to the first clarification task only.
+                # The user can only answer one clarification per graph resume;
+                # remaining clarification tasks keep their mode and wait for the next round.
+                target = clarification_tasks[0]
+                existing_inputs = dict(target.get("resolved_inputs") or {})
+                existing_inputs["clarification_answer"] = clarification_answer
+                updated_target: TaskStatus = {**target, "resolved_inputs": existing_inputs}
+                updated_clarification_tasks.append(updated_target)
+                logger.info(
+                    "[Router] Bound clarification answer to task_id=%s (len=%d).",
+                    target["task_id"], len(clarification_answer),
+                )
+
         running_task = running[0]
         run_id = _resolve_run_id(state, running_task)
         logger.info(
-            "[Router] Found RUNNING task, forwarding to executor. run_id=%s task_id=%s assigned_agent=%s "
+            "[Router] Found %d RUNNING task(s), forwarding to executor. run_id=%s first_task_id=%s assigned_agent=%s "
             "status_detail=%r resolved_input_keys=%s resume_count=%s",
+            len(running),
             run_id,
             running_task["task_id"],
             running_task.get("assigned_agent"),
@@ -1126,12 +1150,15 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         )
         detail = _build_executing_detail(running_task)
         _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
-        return {
+        _routing_done_result: dict[str, Any] = {
             "execution_state": "ROUTING_DONE",
             "route_count": route_count,
             "run_id": run_id,
             **_build_workflow_stage_update("executing", detail),
         }
+        if updated_clarification_tasks:
+            _routing_done_result["task_pool"] = updated_clarification_tasks
+        return _routing_done_result
 
     # WAITING_INTERVENTION tasks: check if the latest message resolves one.
     waiting_intervention = [t for t in task_pool if t["status"] == "WAITING_INTERVENTION"]
@@ -1142,7 +1169,44 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             # The user already resolved this intervention via the Gateway endpoint.
             # The update_state() from the Gateway may have created a branch checkpoint
             # that this graph run didn't pick up, so we apply the transition here.
-            task = waiting_intervention[0]
+
+            # --- Precise task targeting (Phase 2 Stage 1) ---
+            # Three-layer lookup: Gateway-written resolution > message request_id > single-task fallback.
+            # Never guess when ambiguous — return INTERRUPTED instead.
+            import re as _re
+            msg_text = getattr(latest_msg, "content", "") if latest_msg else ""
+            req_id_match = _re.search(r"request_id=(\S+)", msg_text)
+            parsed_request_id = req_id_match.group(1) if req_id_match else None
+
+            # Layer 1: Gateway already wrote intervention_resolution onto the correct task.
+            task = next(
+                (t for t in waiting_intervention if isinstance(t.get("intervention_resolution"), dict)),
+                None,
+            )
+            # Layer 2: Match by request_id parsed from the [intervention_resolved] message.
+            if task is None and parsed_request_id:
+                task = next(
+                    (t for t in waiting_intervention
+                     if (t.get("intervention_request") or {}).get("request_id") == parsed_request_id),
+                    None,
+                )
+            # Layer 3: Single waiting task — backward compatible with serial execution.
+            if task is None and len(waiting_intervention) == 1:
+                task = waiting_intervention[0]
+
+            if task is None:
+                logger.warning(
+                    "[Router] Cannot match intervention resolution to any of %d waiting tasks. "
+                    "parsed_request_id=%s waiting_task_ids=%s",
+                    len(waiting_intervention),
+                    parsed_request_id,
+                    [t["task_id"] for t in waiting_intervention],
+                )
+                return {
+                    "execution_state": "INTERRUPTED",
+                    "route_count": route_count,
+                }
+
             intervention_request = task.get("intervention_request") or {}
             intervention_resolution = task.get("intervention_resolution")
             intervention_cache = state.get("intervention_cache") or {}
@@ -1150,12 +1214,8 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             # If the Gateway's update_state was visible, intervention_resolution would
             # already be set.  If not, reconstruct the resolution from the message.
             if not isinstance(intervention_resolution, dict):
-                # Parse the resolution from the [intervention_resolved] message text
-                msg_text = getattr(latest_msg, "content", "") if latest_msg else ""
-                import re as _re
-                req_id_match = _re.search(r"request_id=(\S+)", msg_text)
                 action_key_match = _re.search(r"action_key=(\S+)", msg_text)
-                request_id = req_id_match.group(1) if req_id_match else intervention_request.get("request_id", "")
+                request_id = parsed_request_id or intervention_request.get("request_id", "")
                 action_key = action_key_match.group(1) if action_key_match else "approve"
                 intervention_resolution = build_intervention_resolution_record(
                     request_id=request_id,

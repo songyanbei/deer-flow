@@ -99,7 +99,7 @@ def extract_structured_clarification_answers(
     if not isinstance(raw_answers, Mapping):
         return {}
 
-    task = _latest_waiting_clarification_task(state)
+    task = _next_waiting_clarification_task(state)
     question_keys: set[str] = set()
     clarification_request = task.get("clarification_request") if isinstance(task, dict) else None
     if isinstance(clarification_request, Mapping):
@@ -143,7 +143,7 @@ def _format_structured_clarification_answers(
     if not answers:
         return ""
 
-    task = _latest_waiting_clarification_task(state)
+    task = _next_waiting_clarification_task(state)
     label_map: dict[str, str] = {}
     clarification_request = task.get("clarification_request") if isinstance(task, dict) else None
     if isinstance(clarification_request, Mapping):
@@ -164,13 +164,18 @@ def _format_structured_clarification_answers(
     return "\n".join(lines)
 
 
-def _latest_waiting_clarification_task(state: ThreadState) -> TaskStatus | None:
+def _next_waiting_clarification_task(state: ThreadState) -> TaskStatus | None:
+    # Phase 2 Stage 1 resumes at most one clarification task per graph turn.
+    # Keep extractor targeting aligned with router/executor by picking the
+    # first runnable clarification task in task_pool order.
     task_pool = state.get("task_pool") or []
-    for task in reversed(task_pool):
+    for task in task_pool:
         if not isinstance(task, dict):
             continue
         if task.get("status") != "RUNNING":
             continue
+        if task.get("continuation_mode") == "continue_after_clarification":
+            return task
         prompt = task.get("clarification_prompt")
         if isinstance(prompt, str) and prompt.strip():
             return task
@@ -186,7 +191,7 @@ def workflow_has_pending_clarification(state: ThreadState) -> bool:
         if task.get("continuation_mode") == "continue_after_clarification":
             return True
     # Legacy fallback
-    task = _latest_waiting_clarification_task(state)
+    task = _next_waiting_clarification_task(state)
     if task is None:
         return False
     return state.get("execution_state") == "INTERRUPTED" or task.get("status") == "RUNNING"
