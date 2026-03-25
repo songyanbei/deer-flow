@@ -633,6 +633,34 @@ def _collect_dependency_result_sources(
     return sources
 
 
+def _apply_before_interrupt_emit_safe(
+    *,
+    interrupt_type: str,
+    task: dict[str, Any],
+    agent_name: str,
+    source_path: str,
+    proposed_update: dict[str, Any],
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Wrapper around lifecycle.apply_before_interrupt_emit with fail-closed error handling."""
+    try:
+        from src.agents.hooks.lifecycle import apply_before_interrupt_emit
+        return apply_before_interrupt_emit(
+            interrupt_type=interrupt_type,
+            task=task,
+            agent_name=agent_name,
+            source_path=source_path,
+            proposed_update=proposed_update,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.error("[Router] before_interrupt_emit hook error at %s: %s", source_path, exc)
+        return {
+            "execution_state": "ERROR",
+            "final_result": f"Runtime hook error (before_interrupt_emit at {source_path}): {exc}",
+        }
+
+
 def _interrupt_for_clarification(
     parent_task: TaskStatus,
     prompt: str,
@@ -654,6 +682,22 @@ def _interrupt_for_clarification(
         "status_detail": status_detail,
         "updated_at": _utc_now_iso(),
     }
+    _candidate_return: dict[str, Any] = {
+        "task_pool": [resumed_task],
+        "execution_state": "INTERRUPTED",
+        "route_count": route_count,
+        "messages": [AIMessage(content=prompt, name="ask_clarification")],
+    }
+    _candidate_return = _apply_before_interrupt_emit_safe(
+        interrupt_type="clarification",
+        task=resumed_task,
+        agent_name=agent_name,
+        source_path="router._interrupt_for_clarification",
+        proposed_update=_candidate_return,
+        run_id=parent_task.get("run_id"),
+    )
+    if _candidate_return.get("execution_state") == "ERROR":
+        return _candidate_return
     _emit_task_event(
         writer,
         "task_running",
@@ -664,12 +708,7 @@ def _interrupt_for_clarification(
         clarification_request=clarification_request,
         status_detail=status_detail,
     )
-    return {
-        "task_pool": [resumed_task],
-        "execution_state": "INTERRUPTED",
-        "route_count": route_count,
-        "messages": [AIMessage(content=prompt, name="ask_clarification")],
-    }
+    return _candidate_return
 
 
 def _interrupt_for_intervention(
@@ -708,6 +747,21 @@ def _interrupt_for_intervention(
         "pending_tool_call": None,
         "updated_at": _utc_now_iso(),
     }
+    _candidate_return: dict[str, Any] = {
+        "task_pool": [interrupted_task],
+        "execution_state": "INTERRUPTED",
+        "route_count": route_count,
+    }
+    _candidate_return = _apply_before_interrupt_emit_safe(
+        interrupt_type="intervention",
+        task=interrupted_task,
+        agent_name=agent_name,
+        source_path="router._interrupt_for_intervention",
+        proposed_update=_candidate_return,
+        run_id=parent_task.get("run_id"),
+    )
+    if _candidate_return.get("execution_state") == "ERROR":
+        return _candidate_return
     _emit_task_event(
         writer,
         "task_waiting_intervention",
@@ -719,11 +773,7 @@ def _interrupt_for_intervention(
         intervention_status="pending",
         intervention_fingerprint=intervention_request["fingerprint"],
     )
-    return {
-        "task_pool": [interrupted_task],
-        "execution_state": "INTERRUPTED",
-        "route_count": route_count,
-    }
+    return _candidate_return
 
 
 def _auto_resolve_intervention_from_cache(
@@ -1155,7 +1205,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
             if updated_task["status"] == "RUNNING":
                 detail = _build_executing_detail(updated_task)
                 _emit_workflow_stage(writer, "executing", detail, run_id=run_id)
-                return {
+                _resolve_return: dict[str, Any] = {
                     "task_pool": [updated_task],
                     "execution_state": "ROUTING_DONE",
                     "route_count": route_count,
@@ -1164,12 +1214,31 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     **_build_workflow_stage_update("executing", detail),
                 }
             else:
-                return {
+                _resolve_return = {
                     "task_pool": [updated_task],
                     "execution_state": "EXECUTING_DONE",
                     "route_count": route_count,
                     "intervention_cache": updated_cache,
                 }
+
+            try:
+                from src.agents.hooks.lifecycle import apply_after_interrupt_resolve
+                _resolve_return = apply_after_interrupt_resolve(
+                    task=updated_task,
+                    resolution=intervention_resolution,
+                    source_path="router.in_graph_resolve",
+                    proposed_update=_resolve_return,
+                    state=dict(state) if state else {},
+                    run_id=run_id,
+                )
+            except Exception as _hook_exc:
+                logger.error("[Router] after_interrupt_resolve hook error: %s", _hook_exc)
+                return {
+                    "execution_state": "ERROR",
+                    "final_result": f"Runtime hook error (after_interrupt_resolve): {_hook_exc}",
+                }
+
+            return _resolve_return
 
         logger.info("[Router] Found %d WAITING_INTERVENTION task(s), waiting for user resolution.", len(waiting_intervention))
         return {

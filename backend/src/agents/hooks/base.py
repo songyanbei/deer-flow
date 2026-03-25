@@ -14,8 +14,10 @@ from typing import Any
 class RuntimeHookName(str, Enum):
     """Enumeration of all recognised runtime hook points.
 
-    Only the five Slice-A hooks are active in this MVP.  Slice-B names are
-    listed as documentation placeholders but NOT registered automatically.
+    Slice A: after-node hooks and business decision hooks (active since MVP).
+    Slice B: interrupt lifecycle and state commit hooks (active since Slice B).
+    All hooks share the same execution model; none are registered automatically
+    unless a default handler is installed (e.g. verification hooks for Slice A).
     """
 
     # Slice A — active
@@ -25,11 +27,11 @@ class RuntimeHookName(str, Enum):
     AFTER_TASK_COMPLETE = "after_task_complete"
     BEFORE_FINAL_RESULT_COMMIT = "before_final_result_commit"
 
-    # Slice B — reserved, not implemented in this MVP
-    # BEFORE_INTERRUPT_EMIT = "before_interrupt_emit"
-    # AFTER_INTERRUPT_RESOLVE = "after_interrupt_resolve"
-    # BEFORE_TASK_POOL_COMMIT = "before_task_pool_commit"
-    # BEFORE_VERIFIED_FACTS_COMMIT = "before_verified_facts_commit"
+    # Slice B — interrupt lifecycle & state commit hooks
+    BEFORE_INTERRUPT_EMIT = "before_interrupt_emit"
+    AFTER_INTERRUPT_RESOLVE = "after_interrupt_resolve"
+    BEFORE_TASK_POOL_COMMIT = "before_task_pool_commit"
+    BEFORE_VERIFIED_FACTS_COMMIT = "before_verified_facts_commit"
 
 
 # ---------------------------------------------------------------------------

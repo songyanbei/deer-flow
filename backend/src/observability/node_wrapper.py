@@ -52,15 +52,15 @@ def traced_node(node_name: str):
                 if isinstance(result, dict) and result.get("execution_state"):
                     s.set_attribute("execution_state", result["execution_state"])
 
+                # Extract thread_id from LangGraph config (used by hooks below)
+                _thread_id = None
+                _config = args[0] if args else kwargs.get("config")
+                if isinstance(_config, dict):
+                    _thread_id = (_config.get("configurable") or {}).get("thread_id")
+
                 # --- After-node hook execution ---
                 hook_value = _AFTER_NODE_HOOK_MAP.get(node_name)
                 if hook_value and isinstance(result, dict):
-                    # Extract thread_id from LangGraph config
-                    _thread_id = None
-                    _config = args[0] if args else kwargs.get("config")
-                    if isinstance(_config, dict):
-                        _thread_id = (_config.get("configurable") or {}).get("thread_id")
-
                     # Build hook-specific metadata from state + result
                     _meta = _build_after_node_metadata(node_name, state, result)
 
@@ -71,6 +71,15 @@ def traced_node(node_name: str):
                         proposed_update=result,
                         thread_id=_thread_id,
                         metadata=_meta,
+                    )
+
+                # --- State commit hooks (Slice B) ---
+                if isinstance(result, dict) and ("task_pool" in result or "verified_facts" in result):
+                    result = _run_state_commit_hooks(
+                        result,
+                        state=state,
+                        node_name=node_name,
+                        thread_id=_thread_id,
                     )
 
                 # Strip private executor metadata keys before returning to graph
@@ -168,4 +177,40 @@ def _run_after_node_hook(
         return {
             "execution_state": "ERROR",
             "final_result": f"Runtime hook error ({hook_value}): {exc}",
+        }
+
+
+def _run_state_commit_hooks(
+    proposed_update: dict[str, Any],
+    *,
+    state: dict[str, Any],
+    node_name: str,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """Run BEFORE_TASK_POOL_COMMIT / BEFORE_VERIFIED_FACTS_COMMIT via lifecycle helper.
+
+    Returns the (potentially modified) update dict, or an error state on failure.
+    Empty registry → original proposed_update returned as-is.
+    """
+    try:
+        from src.agents.hooks.lifecycle import apply_state_commit_hooks
+    except ImportError:
+        return proposed_update
+
+    try:
+        return apply_state_commit_hooks(
+            proposed_update=proposed_update,
+            state=state if isinstance(state, dict) else {},
+            source_path=f"node_wrapper.{node_name}",
+            run_id=state.get("run_id") if isinstance(state, dict) else None,
+            thread_id=thread_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "[NodeWrapper] State commit hook error for node '%s': %s. Returning error state.",
+            node_name, exc,
+        )
+        return {
+            "execution_state": "ERROR",
+            "final_result": f"Runtime hook error (state_commit at {node_name}): {exc}",
         }

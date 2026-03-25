@@ -279,15 +279,37 @@ async def resolve_intervention(
             cache_entry.get("max_reuse"),
         )
 
+    # --- Slice B hooks: after_interrupt_resolve + state commit ---
+    _commit_values: dict[str, Any] = {
+        "task_pool": [updated_task],
+        "intervention_cache": intervention_cache,
+    }
+    try:
+        from src.agents.hooks.lifecycle import apply_after_interrupt_resolve, apply_state_commit_hooks
+        _commit_values = apply_after_interrupt_resolve(
+            task=updated_task,
+            resolution=resolution,
+            source_path="gateway.resolve_intervention",
+            proposed_update=_commit_values,
+            state=state_values,
+            thread_id=thread_id,
+        )
+        _commit_values = apply_state_commit_hooks(
+            proposed_update=_commit_values,
+            state=state_values,
+            source_path="gateway.resolve_intervention",
+            thread_id=thread_id,
+        )
+    except Exception as hook_err:
+        logger.error("[Intervention] Hook error during resolve for thread '%s': %s", thread_id, hook_err)
+        raise HTTPException(status_code=500, detail=f"Runtime hook error: {hook_err}") from hook_err
+
     # Persist the resolution by updating thread state
     checkpoint_value: dict[str, Any] | None = None
     try:
         update_response = await client.threads.update_state(
             thread_id,
-            values={
-                "task_pool": [updated_task],
-                "intervention_cache": intervention_cache,
-            },
+            values=_commit_values,
         )
         if isinstance(update_response, dict):
             checkpoint_value = update_response.get("checkpoint")

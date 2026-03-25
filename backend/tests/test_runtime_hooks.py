@@ -85,9 +85,10 @@ class AccumulatorHook(RuntimeHookHandler):
 
 class TestRuntimeHookName:
     def test_slice_a_hooks_exist(self):
-        expected = {"after_planner", "after_router", "after_executor", "after_task_complete", "before_final_result_commit"}
+        expected_slice_a = {"after_planner", "after_router", "after_executor", "after_task_complete", "before_final_result_commit"}
+        expected_slice_b = {"before_interrupt_emit", "after_interrupt_resolve", "before_task_pool_commit", "before_verified_facts_commit"}
         actual = {h.value for h in RuntimeHookName}
-        assert expected == actual
+        assert expected_slice_a | expected_slice_b == actual
 
     def test_enum_string_value(self):
         assert RuntimeHookName.AFTER_PLANNER == "after_planner"

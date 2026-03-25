@@ -196,6 +196,36 @@ def _emit_workflow_stage(
     )
 
 
+def _apply_before_interrupt_emit_safe(
+    *,
+    interrupt_type: str,
+    task: dict[str, Any],
+    agent_name: str,
+    source_path: str,
+    proposed_update: dict[str, Any],
+    state: dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Wrapper around lifecycle.apply_before_interrupt_emit with fail-closed error handling."""
+    try:
+        from src.agents.hooks.lifecycle import apply_before_interrupt_emit
+        return apply_before_interrupt_emit(
+            interrupt_type=interrupt_type,
+            task=task,
+            agent_name=agent_name,
+            source_path=source_path,
+            proposed_update=proposed_update,
+            state=state or {},
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.error("[Executor] before_interrupt_emit hook error at %s: %s", source_path, exc)
+        return {
+            "execution_state": "ERROR",
+            "final_result": f"Runtime hook error (before_interrupt_emit at {source_path}): {exc}",
+        }
+
+
 def _emit_task_event(writer: Callable[[dict[str, Any]], None], event_type: str, task: TaskStatus, agent_name: str, **extra: Any) -> None:
     payload = {
         "type": event_type,
@@ -1214,15 +1244,27 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 interrupt_kind=_interrupt_kind_from_request(intervention_request),
                 tool_name=(pending_tool or {}).get("tool_name"),
             )
+            _candidate_return = _with_intervention_cache({
+                "task_pool": [intervention_task],
+                "execution_state": "INTERRUPTED",
+            })
+            _candidate_return = _apply_before_interrupt_emit_safe(
+                interrupt_type="intervention",
+                task=intervention_task,
+                agent_name=agent_name,
+                source_path="executor.request_intervention",
+                proposed_update=_candidate_return,
+                state=state,
+                run_id=task_run_id,
+            )
+            if _candidate_return.get("execution_state") == "ERROR":
+                return _candidate_return
             _emit_task_event(
                 writer, "task_waiting_intervention", intervention_task, agent_name,
                 status_detail="@waiting_intervention",
                 intervention_request=intervention_request,
             )
-            return _with_intervention_cache({
-                "task_pool": [intervention_task],
-                "execution_state": "INTERRUPTED",
-            })
+            return _candidate_return
 
         # --- request_dependency ---
         if outcome_kind == "request_dependency":
@@ -1364,6 +1406,21 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                         semantic_key=intervention_request.get("semantic_key"),
                         interrupt_kind=interrupt_kind,
                     )
+                    _candidate_return = _with_intervention_cache({
+                        "task_pool": [user_intervention_task],
+                        "execution_state": "INTERRUPTED",
+                    })
+                    _candidate_return = _apply_before_interrupt_emit_safe(
+                        interrupt_type="intervention",
+                        task=user_intervention_task,
+                        agent_name=agent_name,
+                        source_path="executor.request_help_user",
+                        proposed_update=_candidate_return,
+                        state=state,
+                        run_id=task_run_id,
+                    )
+                    if _candidate_return.get("execution_state") == "ERROR":
+                        return _candidate_return
                     _emit_task_event(
                         writer, "task_waiting_intervention", user_intervention_task, agent_name,
                         status_detail="@waiting_intervention",
@@ -1377,10 +1434,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                         requested_by_agent=agent_name,
                         status_detail="@waiting_intervention",
                     )
-                    return _with_intervention_cache({
-                        "task_pool": [user_intervention_task],
-                        "execution_state": "INTERRUPTED",
-                    })
+                    return _candidate_return
 
             # ── True system dependency ──
             # Only system-owned blocking reaches WAITING_DEPENDENCY.
@@ -1405,6 +1459,21 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "pending_tool_call": None,
                 "updated_at": _utc_now_iso(),
             }
+            _candidate_return = _with_intervention_cache({
+                "task_pool": [waiting_task],
+                "execution_state": "EXECUTING_DONE",
+            })
+            _candidate_return = _apply_before_interrupt_emit_safe(
+                interrupt_type="dependency",
+                task=waiting_task,
+                agent_name=agent_name,
+                source_path="executor.request_help_system",
+                proposed_update=_candidate_return,
+                state=state,
+                run_id=task_run_id,
+            )
+            if _candidate_return.get("execution_state") == "ERROR":
+                return _candidate_return
             _emit_task_event(
                 writer, "task_waiting_dependency", waiting_task, agent_name,
                 blocked_reason=help_request["reason"],
@@ -1418,10 +1487,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 requested_by_agent=agent_name,
                 status_detail="@waiting_dependency",
             )
-            return _with_intervention_cache({
-                "task_pool": [waiting_task],
-                "execution_state": "EXECUTING_DONE",
-            })
+            return _candidate_return
 
         # --- request_clarification ---
         if outcome_kind == "request_clarification":
@@ -1455,6 +1521,22 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 "pending_tool_call": None,
                 "updated_at": _utc_now_iso(),
             }
+            _candidate_return = _with_intervention_cache({
+                "task_pool": [interrupted_task],
+                "execution_state": "INTERRUPTED",
+                "messages": [AIMessage(content=clarification_prompt, name="ask_clarification")],
+            })
+            _candidate_return = _apply_before_interrupt_emit_safe(
+                interrupt_type="clarification",
+                task=interrupted_task,
+                agent_name=agent_name,
+                source_path="executor.request_clarification",
+                proposed_update=_candidate_return,
+                state=state,
+                run_id=task_run_id,
+            )
+            if _candidate_return.get("execution_state") == "ERROR":
+                return _candidate_return
             event_message = "需要你补充信息" if not used_fallback else "Waiting for user clarification inferred from plain-text output"
             _emit_task_event(
                 writer, "task_running", interrupted_task, agent_name,
@@ -1463,11 +1545,7 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                 status="waiting_clarification",
                 status_detail="@waiting_clarification",
             )
-            return _with_intervention_cache({
-                "task_pool": [interrupted_task],
-                "execution_state": "INTERRUPTED",
-                "messages": [AIMessage(content=clarification_prompt, name="ask_clarification")],
-            })
+            return _candidate_return
 
         # --- fail ---
         if outcome_kind == "fail":
