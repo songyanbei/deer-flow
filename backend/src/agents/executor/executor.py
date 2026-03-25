@@ -1259,8 +1259,10 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             )
             if _candidate_return.get("execution_state") == "ERROR":
                 return _candidate_return
+            # Use the potentially hook-modified task for event emission
+            _effective_task = _candidate_return.get("task_pool", [intervention_task])[0] if _candidate_return.get("task_pool") else intervention_task
             _emit_task_event(
-                writer, "task_waiting_intervention", intervention_task, agent_name,
+                writer, "task_waiting_intervention", _effective_task, agent_name,
                 status_detail="@waiting_intervention",
                 intervention_request=intervention_request,
             )
@@ -1421,15 +1423,17 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
                     )
                     if _candidate_return.get("execution_state") == "ERROR":
                         return _candidate_return
+                    # Use the potentially hook-modified task for event emission
+                    _effective_task = _candidate_return.get("task_pool", [user_intervention_task])[0] if _candidate_return.get("task_pool") else user_intervention_task
                     _emit_task_event(
-                        writer, "task_waiting_intervention", user_intervention_task, agent_name,
+                        writer, "task_waiting_intervention", _effective_task, agent_name,
                         status_detail="@waiting_intervention",
                         intervention_request=intervention_request,
                         intervention_status="pending",
                         intervention_fingerprint=intervention_request["fingerprint"],
                     )
                     _emit_task_event(
-                        writer, "task_help_requested", user_intervention_task, agent_name,
+                        writer, "task_help_requested", _effective_task, agent_name,
                         request_help=help_request,
                         requested_by_agent=agent_name,
                         status_detail="@waiting_intervention",
@@ -1474,15 +1478,17 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             )
             if _candidate_return.get("execution_state") == "ERROR":
                 return _candidate_return
+            # Use the potentially hook-modified task for event emission
+            _effective_task = _candidate_return.get("task_pool", [waiting_task])[0] if _candidate_return.get("task_pool") else waiting_task
             _emit_task_event(
-                writer, "task_waiting_dependency", waiting_task, agent_name,
+                writer, "task_waiting_dependency", _effective_task, agent_name,
                 blocked_reason=help_request["reason"],
                 request_help=help_request,
                 requested_by_agent=agent_name,
                 status_detail="@waiting_dependency",
             )
             _emit_task_event(
-                writer, "task_help_requested", waiting_task, agent_name,
+                writer, "task_help_requested", _effective_task, agent_name,
                 request_help=help_request,
                 requested_by_agent=agent_name,
                 status_detail="@waiting_dependency",
@@ -1537,9 +1543,11 @@ async def executor_node(state: ThreadState, config: RunnableConfig) -> dict:
             )
             if _candidate_return.get("execution_state") == "ERROR":
                 return _candidate_return
+            # Use the potentially hook-modified task for event emission
+            _effective_task = _candidate_return.get("task_pool", [interrupted_task])[0] if _candidate_return.get("task_pool") else interrupted_task
             event_message = "需要你补充信息" if not used_fallback else "Waiting for user clarification inferred from plain-text output"
             _emit_task_event(
-                writer, "task_running", interrupted_task, agent_name,
+                writer, "task_running", _effective_task, agent_name,
                 message=event_message,
                 clarification_prompt=clarification_prompt,
                 status="waiting_clarification",

@@ -640,6 +640,7 @@ def _apply_before_interrupt_emit_safe(
     agent_name: str,
     source_path: str,
     proposed_update: dict[str, Any],
+    state: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> dict[str, Any]:
     """Wrapper around lifecycle.apply_before_interrupt_emit with fail-closed error handling."""
@@ -651,6 +652,7 @@ def _apply_before_interrupt_emit_safe(
             agent_name=agent_name,
             source_path=source_path,
             proposed_update=proposed_update,
+            state=state or {},
             run_id=run_id,
         )
     except Exception as exc:
@@ -670,6 +672,7 @@ def _interrupt_for_clarification(
     agent_name: str,
     status_detail: str,
     clarification_request: ClarificationRequest | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict:
     resumed_task: TaskStatus = {
         **parent_task,
@@ -694,14 +697,17 @@ def _interrupt_for_clarification(
         agent_name=agent_name,
         source_path="router._interrupt_for_clarification",
         proposed_update=_candidate_return,
+        state=state,
         run_id=parent_task.get("run_id"),
     )
     if _candidate_return.get("execution_state") == "ERROR":
         return _candidate_return
+    # Use the potentially hook-modified task for event emission
+    _effective_task = _candidate_return.get("task_pool", [resumed_task])[0] if _candidate_return.get("task_pool") else resumed_task
     _emit_task_event(
         writer,
         "task_running",
-        resumed_task,
+        _effective_task,
         agent_name,
         status="waiting_clarification",
         clarification_prompt=prompt,
@@ -718,6 +724,7 @@ def _interrupt_for_intervention(
     writer,
     *,
     agent_name: str,
+    state: dict[str, Any] | None = None,
 ) -> dict:
     interrupted_task: TaskStatus = {
         **parent_task,
@@ -758,14 +765,17 @@ def _interrupt_for_intervention(
         agent_name=agent_name,
         source_path="router._interrupt_for_intervention",
         proposed_update=_candidate_return,
+        state=state,
         run_id=parent_task.get("run_id"),
     )
     if _candidate_return.get("execution_state") == "ERROR":
         return _candidate_return
+    # Use the potentially hook-modified task for event emission
+    _effective_task = _candidate_return.get("task_pool", [interrupted_task])[0] if _candidate_return.get("task_pool") else interrupted_task
     _emit_task_event(
         writer,
         "task_waiting_intervention",
-        interrupted_task,
+        _effective_task,
         agent_name,
         status="waiting_intervention",
         status_detail="@waiting_intervention",
@@ -951,6 +961,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
                 route_count,
                 writer,
                 agent_name=agent_name,
+                state=dict(state) if state else None,
             )
         prompt = _build_user_clarification_prompt(parent_task, help_request)
         clarification_request = _build_clarification_request(parent_task, help_request)
@@ -962,6 +973,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             agent_name=agent_name,
             status_detail="@waiting_clarification",
             clarification_request=clarification_request,
+            state=dict(state) if state else None,
         )
 
     requester = parent_task.get("requested_by_agent")
@@ -1024,6 +1036,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             writer,
             agent_name=parent_task.get("assigned_agent") or "workflow-router",
             status_detail="@waiting_clarification",
+            state=dict(state) if state else None,
         )
 
     if not candidate_names:
@@ -1036,6 +1049,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             writer,
             agent_name="workflow-router",
             status_detail="@waiting_clarification",
+            state=dict(state) if state else None,
         )
 
     if len(candidate_names) == 1:
@@ -1073,6 +1087,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             writer,
             agent_name="workflow-router",
             status_detail="@waiting_clarification",
+            state=dict(state) if state else None,
         )
 
     return _route_to_helper(parent_task, state, route_count, assigned)
@@ -1292,6 +1307,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                     writer,
                     agent_name=waiting_task.get("assigned_agent") or "workflow-router",
                     status_detail="@waiting_clarification",
+                    state=dict(state) if state else None,
                 )
             resumed_task = _resume_parent_from_helper(waiting_task, dependency_ids, task_pool, verified_facts)
             if resumed_task is not None:
