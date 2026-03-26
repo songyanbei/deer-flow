@@ -3,8 +3,7 @@
 import logging
 import os
 import re
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -139,17 +138,31 @@ def load_agent_soul(agent_name: str | None) -> str | None:
 
 
 def load_agent_runbook(agent_name: str | None) -> str | None:
-    """Read the configured runbook file for a custom agent, if it exists."""
+    """Read the configured runbook file for a custom agent, if it exists.
+
+    Returns the runbook content when the agent has a ``persistent_runbook_file``
+    configured **or** a default ``RUNBOOK.md`` exists in its directory.
+    This is independent of ``persistent_memory_enabled`` — the runbook profile
+    is a standalone capability that does not require persistent memory.
+    """
     if agent_name is None:
         return None
 
     agent_dir = get_paths().agent_dir(agent_name)
     agent_cfg = load_agent_config(agent_name)
-    if not agent_cfg or not agent_cfg.persistent_memory_enabled:
+    if not agent_cfg:
         return None
 
+    # If the agent has an explicit runbook config, use it.
+    # Otherwise, check for the default RUNBOOK.md file.
     runbook_filename = agent_cfg.persistent_runbook_file or RUNBOOK_FILENAME
     runbook_path = agent_dir / runbook_filename
+
+    # Only load if the agent explicitly requests a runbook (via config)
+    # or if persistent_memory_enabled is set (backward compat).
+    if not agent_cfg.persistent_runbook_file and not agent_cfg.persistent_memory_enabled:
+        return None
+
     if not runbook_path.exists():
         return None
 
@@ -187,3 +200,43 @@ def list_custom_agents() -> list[AgentConfig]:
 def list_domain_agents() -> list[AgentConfig]:
     """Return all agents that have a `domain` field set."""
     return [a for a in list_custom_agents() if a.domain]
+
+
+def validate_agent_platform_readiness(config: AgentConfig) -> dict:
+    """Run onboarding + active profile admission checks for an agent.
+
+    Returns a dict with ``onboarding`` and ``profiles`` reports.
+    This is a convenience wrapper that combines:
+
+    * :func:`src.config.onboarding.validate_onboarding`
+    * :func:`src.config.capability_profiles.validate_all_active_profiles`
+
+    Usage::
+
+        report = validate_agent_platform_readiness(config)
+        if not report["ok"]:
+            for issue_str in report["all_issues"]:
+                logger.warning(issue_str)
+    """
+    from src.config.capability_profiles import validate_all_active_profiles
+    from src.config.onboarding import validate_onboarding
+
+    onboarding = validate_onboarding(config)
+    profiles = validate_all_active_profiles(config)
+
+    all_issues: list[str] = [str(i) for i in onboarding.issues]
+    for pr in profiles:
+        all_issues.extend(str(i) for i in pr.issues)
+
+    ok = onboarding.ok and all(pr.ok for pr in profiles)
+
+    return {
+        "ok": ok,
+        "agent_name": config.name,
+        "onboarding": {
+            "ok": onboarding.ok,
+            "issues": [str(i) for i in onboarding.issues],
+        },
+        "profiles": [pr.to_dict() for pr in profiles],
+        "all_issues": all_issues,
+    }

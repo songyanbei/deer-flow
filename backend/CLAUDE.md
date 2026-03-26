@@ -160,6 +160,24 @@ Configuration priority:
 3. `extensions_config.json` in current directory (backend/)
 4. `extensions_config.json` in parent directory (project root - **recommended location**)
 
+### Platform Capability Standardization (`src/config/`)
+
+The platform classifies all runtime capabilities into three tiers and provides validators for agent onboarding and capability profile admission.
+
+**Modules**:
+- `platform_capabilities.py` — Canonical inventory of 14 capabilities classified as `Platform Core`, `Capability Profile`, or `Pilot / Experimental`. Immutable `CapabilityDescriptor` with `get_capability()`, `list_capabilities()`, `get_capability_matrix()`.
+- `onboarding.py` — Agent minimum onboarding contract. Classifies all 18 `AgentConfig` fields into `Required` (name, domain), `Business Optional`, or `Platform Internal`. `validate_onboarding()` checks configs against the contract.
+- `capability_profiles.py` — Admission contracts for 4 capability profiles (`persistent_domain_memory`, `domain_runbook_support`, `domain_verifier_pack`, `governance_strict_mode`). Each has a `ProfileDefinition` (goal, why_not_core, required config/docs/tests, rollback) and a validator. `validate_profile_admission()` runs admission checks; `validate_all_active_profiles()` auto-detects activated profiles.
+- `agents_config.py` — `validate_agent_platform_readiness()` combines onboarding + profile admission in one call.
+
+**Persistent Domain Memory Hint Extractor Registry** (`src/agents/persistent_domain_memory.py`):
+- `DomainHintExtractor` ABC — contract for domain-specific hint extraction
+- `register_hint_extractor()` / `get_hint_extractor()` — pluggable registry keyed by domain
+- `MeetingHintExtractor` — pilot extractor (auto-registered, marked Pilot/Experimental)
+- `collect_allowed_hints()`, `dedupe_hint_items()` — shared platform utilities for extractors
+
+**Tests**: `test_platform_capabilities.py` (12), `test_onboarding.py` (9), `test_capability_profiles.py` (18), `test_hint_extractor_registry.py` (8), `test_platform_readiness.py` (4)
+
 ### Gateway API (`src/gateway/`)
 
 FastAPI application on port 8001 with health check at `GET /health`.

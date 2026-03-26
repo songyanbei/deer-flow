@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,6 +15,141 @@ from src.agents.thread_state import TaskStatus
 from src.config.agents_config import load_agent_config, load_agent_runbook
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Platform-level hint extractor contract
+# ---------------------------------------------------------------------------
+
+class DomainHintExtractor(ABC):
+    """Abstract base for domain-specific hint extractors.
+
+    Each domain that activates the ``persistent_domain_memory`` capability
+    profile should register a concrete extractor.  The platform entry point
+    (``_extract_persistent_memory_hints``) dispatches to the registered
+    extractor by *domain* (not agent name), so extractor logic is decoupled
+    from a specific agent identity.
+
+    Subclasses must be registered via :func:`register_hint_extractor`.
+    """
+
+    @property
+    @abstractmethod
+    def domain(self) -> str:
+        """The business domain this extractor serves (e.g. ``"meeting"``)."""
+
+    @abstractmethod
+    def extract(
+        self,
+        task: TaskStatus,
+        verified_fact: Mapping[str, Any],
+    ) -> list[tuple[str, str]]:
+        """Return ``(label, value)`` hint pairs from a verified task.
+
+        Implementations should:
+        * only extract *stable, reusable* preference hints;
+        * never include transactional outputs (IDs, attendee lists, etc.);
+        * deduplicate before returning.
+        """
+
+
+# ---------------------------------------------------------------------------
+# Hint extractor registry (platform level)
+# ---------------------------------------------------------------------------
+
+_hint_extractors: dict[str, DomainHintExtractor] = {}
+
+
+def register_hint_extractor(extractor: DomainHintExtractor) -> None:
+    """Register a domain hint extractor.  Overwrites any previous extractor
+    for the same domain."""
+    _hint_extractors[extractor.domain] = extractor
+    logger.info(
+        "[PersistentDomainMemory] Registered hint extractor for domain '%s'",
+        extractor.domain,
+    )
+
+
+def get_hint_extractor(domain: str | None) -> DomainHintExtractor | None:
+    """Return the registered extractor for *domain*, or ``None``."""
+    if domain is None:
+        return None
+    return _hint_extractors.get(domain)
+
+
+def list_registered_extractors() -> dict[str, str]:
+    """Return ``{domain: class_name}`` for introspection."""
+    return {d: type(e).__name__ for d, e in _hint_extractors.items()}
+
+
+# ---------------------------------------------------------------------------
+# Common hint-extraction utilities (shared by all domain extractors)
+# ---------------------------------------------------------------------------
+
+_NULLISH_VALUES = {"", "none", "null", "undefined"}
+
+
+def _normalize_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+
+
+def _render_hint_value(value: Any) -> str:
+    if isinstance(value, str):
+        text = value.strip()
+        return "" if text.lower() in _NULLISH_VALUES else text
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        rendered_items = [_render_hint_value(item) for item in value]
+        rendered_items = [item for item in rendered_items if item]
+        return ", ".join(rendered_items)
+    return ""
+
+
+def collect_allowed_hints(
+    value: Any,
+    *,
+    allow_fields: Mapping[str, str],
+    collected: list[tuple[str, str]],
+) -> None:
+    """Recursively collect ``(label, value)`` hint pairs from *value*
+    wherever keys match *allow_fields*.
+
+    This is a platform utility shared by all domain hint extractors.
+    """
+    if isinstance(value, Mapping):
+        for raw_key, child in value.items():
+            normalized_key = _normalize_key(raw_key)
+            label = allow_fields.get(normalized_key)
+            if label:
+                rendered = _render_hint_value(child)
+                if rendered:
+                    collected.append((label, rendered))
+            collect_allowed_hints(child, allow_fields=allow_fields, collected=collected)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            collect_allowed_hints(item, allow_fields=allow_fields, collected=collected)
+
+
+def dedupe_hint_items(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Deduplicate ``(label, value)`` pairs preserving order."""
+    seen: set[tuple[str, str]] = set()
+    deduped: list[tuple[str, str]] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+# ---------------------------------------------------------------------------
+# Pilot: meeting-agent hint extractor (domain-specific, not yet generalised)
+# ---------------------------------------------------------------------------
 
 _MEETING_ALLOWED_HINT_FIELDS: dict[str, str] = {
     "city": "Preferred booking city",
@@ -37,73 +173,60 @@ _MEETING_ALLOWED_HINT_FIELDS: dict[str, str] = {
     "time_preference": "Preferred booking window",
     "time_preferences": "Preferred booking window",
 }
-_NULLISH_VALUES = {"", "none", "null", "undefined"}
-def _normalize_key(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
 
 
-def _render_hint_value(value: Any) -> str:
-    if isinstance(value, str):
-        text = value.strip()
-        return "" if text.lower() in _NULLISH_VALUES else text
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        rendered_items = [_render_hint_value(item) for item in value]
-        rendered_items = [item for item in rendered_items if item]
-        return ", ".join(rendered_items)
-    return ""
+class MeetingHintExtractor(DomainHintExtractor):
+    """Pilot hint extractor for the ``meeting`` domain.
+
+    .. admonition:: Pilot / Experimental
+
+       This extractor contains domain-specific allowed-field lists that have
+       only been validated for ``meeting-agent``.  It is registered
+       automatically at module load time but should **not** be copied
+       directly for new domains — new domains must define their own
+       extractor with their own allowlist and register it via
+       :func:`register_hint_extractor`.
+    """
+
+    @property
+    def domain(self) -> str:
+        return "meeting"
+
+    def extract(
+        self,
+        task: TaskStatus,
+        verified_fact: Mapping[str, Any],
+    ) -> list[tuple[str, str]]:
+        candidates: list[tuple[str, str]] = []
+
+        resolved_inputs = task.get("resolved_inputs")
+        if isinstance(resolved_inputs, Mapping):
+            collect_allowed_hints(resolved_inputs, allow_fields=_MEETING_ALLOWED_HINT_FIELDS, collected=candidates)
+
+        payload = verified_fact.get("payload")
+        if isinstance(payload, Mapping):
+            collect_allowed_hints(payload, allow_fields=_MEETING_ALLOWED_HINT_FIELDS, collected=candidates)
+
+        return dedupe_hint_items(candidates)
 
 
-def _collect_allowed_hints(
-    value: Any,
-    *,
-    allow_fields: Mapping[str, str],
-    collected: list[tuple[str, str]],
-) -> None:
-    if isinstance(value, Mapping):
-        for raw_key, child in value.items():
-            normalized_key = _normalize_key(raw_key)
-            label = allow_fields.get(normalized_key)
-            if label:
-                rendered = _render_hint_value(child)
-                if rendered:
-                    collected.append((label, rendered))
-            _collect_allowed_hints(child, allow_fields=allow_fields, collected=collected)
-        return
-
-    if isinstance(value, list):
-        for item in value:
-            _collect_allowed_hints(item, allow_fields=allow_fields, collected=collected)
+# Auto-register the meeting pilot extractor.
+register_hint_extractor(MeetingHintExtractor())
 
 
-def _dedupe_hint_items(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[tuple[str, str]] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        deduped.append(item)
-    return deduped
+# ---------------------------------------------------------------------------
+# Platform dispatch — resolves domain from agent config
+# ---------------------------------------------------------------------------
 
-
-def _extract_meeting_memory_hints(
-    task: TaskStatus,
-    verified_fact: Mapping[str, Any],
-) -> list[tuple[str, str]]:
-    candidates: list[tuple[str, str]] = []
-    resolved_inputs = task.get("resolved_inputs")
-    if isinstance(resolved_inputs, Mapping):
-        _collect_allowed_hints(resolved_inputs, allow_fields=_MEETING_ALLOWED_HINT_FIELDS, collected=candidates)
-
-    payload = verified_fact.get("payload")
-    if isinstance(payload, Mapping):
-        _collect_allowed_hints(payload, allow_fields=_MEETING_ALLOWED_HINT_FIELDS, collected=candidates)
-
-    return _dedupe_hint_items(candidates)
+def _resolve_agent_domain(agent_name: str | None) -> str | None:
+    """Return the ``domain`` for an agent, or ``None``."""
+    if not agent_name:
+        return None
+    try:
+        cfg = load_agent_config(agent_name)
+        return cfg.domain if cfg else None
+    except Exception:
+        return None
 
 
 def _extract_persistent_memory_hints(
@@ -111,9 +234,12 @@ def _extract_persistent_memory_hints(
     task: TaskStatus,
     verified_fact: Mapping[str, Any],
 ) -> list[tuple[str, str]]:
-    if agent_name == "meeting-agent":
-        return _extract_meeting_memory_hints(task, verified_fact)
-    return []
+    """Platform entry point: dispatch to the registered domain extractor."""
+    domain = _resolve_agent_domain(agent_name)
+    extractor = get_hint_extractor(domain)
+    if extractor is None:
+        return []
+    return extractor.extract(task, verified_fact)
 
 
 def is_persistent_domain_memory_enabled(agent_name: str | None) -> bool:
