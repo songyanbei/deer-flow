@@ -42,9 +42,10 @@ class GovernanceInterruptEmitAuditHook(RuntimeHookHandler):
         interrupt_type = metadata.get("interrupt_type", "unknown")
         source_path = metadata.get("source_path", "unknown")
 
-        # Extract request_id from the proposed task_pool update if available
+        # Extract request_id and intervention context from the proposed task_pool update
         request_id = _extract_request_id_from_update(ctx.proposed_update)
         risk_level = _extract_risk_level_from_update(ctx.proposed_update)
+        intervention_context = _extract_intervention_context(ctx.proposed_update)
 
         try:
             self._engine.record_interrupt_emit(
@@ -57,7 +58,10 @@ class GovernanceInterruptEmitAuditHook(RuntimeHookHandler):
                 risk_level=risk_level,
                 request_id=request_id,
                 action_summary=f"Interrupt emit: {interrupt_type} from {agent_name}",
-                metadata={"hook_metadata": {k: v for k, v in metadata.items() if isinstance(v, (str, int, float, bool))}},
+                metadata={
+                    "hook_metadata": {k: v for k, v in metadata.items() if isinstance(v, (str, int, float, bool))},
+                    **intervention_context,
+                },
             )
         except Exception:
             logger.exception("[GovernanceAuditHook] Failed to record interrupt emit audit")
@@ -85,7 +89,8 @@ class GovernanceInterruptResolveAuditHook(RuntimeHookHandler):
         request_id = metadata.get("request_id", "")
 
         # Determine resolved_by from source_path
-        resolved_by = "operator" if "gateway" in source_path else "inline"
+        # Both gateway.resolve_intervention and governance.operator_resolve are operator paths
+        resolved_by = "operator" if ("gateway" in source_path or "governance" in source_path) else "inline"
 
         try:
             self._engine.record_interrupt_resolve(
@@ -158,6 +163,28 @@ def _extract_request_id_from_update(proposed_update: dict[str, Any]) -> str | No
         if isinstance(req, dict):
             return req.get("request_id")
     return None
+
+
+def _extract_intervention_context(proposed_update: dict[str, Any]) -> dict[str, Any]:
+    """Extract intervention display/action context for the detail API.
+
+    Pulls title, reason, display sections, action_schema, tool_name, and
+    fingerprint from the intervention_request in the proposed task_pool update.
+    """
+    task_pool = proposed_update.get("task_pool")
+    if not isinstance(task_pool, list):
+        return {}
+    for task in task_pool:
+        req = task.get("intervention_request")
+        if not isinstance(req, dict):
+            continue
+        ctx: dict[str, Any] = {}
+        for key in ("title", "reason", "tool_name", "fingerprint", "display", "action_schema", "questions"):
+            val = req.get(key)
+            if val is not None:
+                ctx[f"intervention_{key}"] = val
+        return ctx
+    return {}
 
 
 def _extract_risk_level_from_update(proposed_update: dict[str, Any]) -> str:

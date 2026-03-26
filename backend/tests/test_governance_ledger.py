@@ -163,3 +163,16 @@ class TestGovernanceLedger:
         assert entry["metadata"]["tool_name"] == "create_event"
         assert entry["action_summary"] == "Execute create_event"
         assert entry["reason"] == "High risk operation"
+
+    def test_query_limit_zero_returns_all(self):
+        """limit=0 should return all matching entries without pagination cap."""
+        for i in range(5):
+            self._record_entry(thread_id=f"th_{i}")
+        results = self.ledger.query(limit=0)
+        assert len(results) == 5
+
+    def test_query_limit_zero_with_offset(self):
+        for i in range(5):
+            self._record_entry(thread_id=f"th_{i}")
+        results = self.ledger.query(limit=0, offset=3)
+        assert len(results) == 2

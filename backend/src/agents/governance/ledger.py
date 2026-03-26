@@ -234,7 +234,10 @@ class GovernanceLedger:
         limit: int = 100,
         offset: int = 0,
     ) -> list[GovernanceLedgerEntry]:
-        """Query ledger entries with optional filters."""
+        """Query ledger entries with optional filters.
+
+        Pass ``limit=0`` to return all matching entries (no pagination cap).
+        """
         with self._lock:
             results = list(self._entries)
 
@@ -251,6 +254,8 @@ class GovernanceLedger:
 
         # Newest first
         results.reverse()
+        if limit <= 0:
+            return results[offset:]
         return results[offset:offset + limit]
 
     def pending_count(self, thread_id: str | None = None) -> int:

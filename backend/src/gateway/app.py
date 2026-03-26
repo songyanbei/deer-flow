@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config.app_config import get_app_config
 from src.gateway.config import get_gateway_config
-from src.gateway.routers import agents, artifacts, interventions, mcp, memory, models, skills, uploads
+from src.gateway.routers import agents, artifacts, governance, interventions, mcp, memory, models, skills, uploads
 from src.observability import WorkflowMetrics, init_observability
 
 # Configure logging
@@ -149,6 +149,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Interventions API is mounted at /api/threads/{thread_id}/interventions
     app.include_router(interventions.router)
+
+    # Governance API is mounted at /api/governance
+    app.include_router(governance.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:

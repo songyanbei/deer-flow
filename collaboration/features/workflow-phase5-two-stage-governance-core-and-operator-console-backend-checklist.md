@@ -1,6 +1,6 @@
 # Backend Checklist: Workflow Phase 5 Two-Stage Governance Core And Operator Console
 
-- Status: `Stage 5A complete and regression-verified; Stage 5B pending`
+- Status: `Stage 5A complete; Stage 5B complete and regression-verified`
 - Depends on: [workflow-phase5-two-stage-governance-core-and-operator-console.md](E:\work\deer-flow\collaboration\features\workflow-phase5-two-stage-governance-core-and-operator-console.md)
 - Last updated: `2026-03-26`
 
@@ -159,11 +159,11 @@ Stage 5A 的主要改动面应控制在：
 
 ## 9. In Scope
 
-- [ ] queue/list API
-- [ ] detail API
-- [ ] history API
-- [ ] operator resolution backend entry
-- [ ] 与现有 intervention resolution 统一 source of truth
+- [x] queue/list API
+- [x] detail API
+- [x] history API
+- [x] operator resolution backend entry
+- [x] 与现有 intervention resolution 统一 source of truth
 
 ## 10. Out Of Scope
 
@@ -191,34 +191,44 @@ Stage 5B 的主要改动面应控制在：
 
 ### 12.1 Queue API
 
-- [ ] 能列出所有 pending governance items
-- [ ] 支持按状态 / 风险等级 / agent / 时间筛选
-- [ ] 返回字段必须足够驱动前端列表，不要求前端再拼 message 文本
+- [x] 能列出所有 pending governance items
+- [x] 支持按状态 / 风险等级 / agent / 时间筛选
+- [x] 返回字段必须足够驱动前端列表，不要求前端再拼 message 文本
 
 ### 12.2 Detail API
 
-- [ ] 能返回单条 governance item 的完整详情
-- [ ] 必须包含 display/action 信息、来源上下文和处理历史
+- [x] 能返回单条 governance item 的完整详情
+- [x] 必须包含 display/action 信息、来源上下文和处理历史
 
 ### 12.3 History API
 
-- [ ] 能查询 resolved / rejected / failed / expired items
-- [ ] 历史记录和 pending queue 必须来自同一 ledger
+- [x] 能查询 resolved / rejected / failed / expired items
+- [x] 历史记录和 pending queue 必须来自同一 ledger
 
 ### 12.4 Operator Action API
 
-- [ ] operator action 必须复用现有 resolution contract 或其薄封装
-- [ ] 不得另造平行审批协议
-- [ ] operator action 后 thread 状态必须和 inline card 行为一致
+- [x] operator action 必须复用现有 resolution contract 或其薄封装
+- [x] 不得另造平行审批协议
+- [x] operator action 后 thread 状态必须和 inline card 行为一致
 
 ## 13. Acceptance Criteria
 
-- [ ] backend 已能支撑 queue/detail/history 三类视图
-- [ ] operator action 能稳定驱动 workflow 恢复或失败
-- [ ] console 与 thread 卡片无状态分叉
-- [ ] queue/history 不依赖解析 thread message 文本
+- [x] backend 已能支撑 queue/detail/history 三类视图
+- [x] operator action 能稳定驱动 workflow 恢复或失败
+- [x] console 与 thread 卡片无状态分叉
+- [x] queue/history 不依赖解析 thread message 文本
+
+## 13.1 Validation Notes (`2026-03-26`)
+
+- [x] Queue API: `GET /api/governance/queue` — pending items with filters (thread_id, run_id, risk_level, source_agent, pagination)
+- [x] Detail API: `GET /api/governance/{governance_id}` — full detail with intervention display/action context
+- [x] History API: `GET /api/governance/history` — non-pending items with status/risk/agent filters
+- [x] Operator Action API: `POST /api/governance/{governance_id}:resolve` — reuses existing intervention resolution contract
+- [x] Audit hooks enhanced to extract intervention context (title, display, action_schema, fingerprint) into ledger metadata
+- [x] All 20 Stage 5B tests passed; all 74 Stage 5A tests passed (zero regression)
+- [x] Full backend suite: 1097 passed (10 pre-existing failures unrelated to governance)
 
 ## 14. Stage Boundary Guard
 
 - [x] Stage 5A 完成前，不启动 Stage 5B UI
-- [ ] Stage 5B 不反向推翻 Stage 5A 的 policy / ledger contract
+- [x] Stage 5B 不反向推翻 Stage 5A 的 policy / ledger contract

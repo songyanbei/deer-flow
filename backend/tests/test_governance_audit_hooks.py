@@ -161,6 +161,33 @@ class TestGovernanceInterruptResolveAuditHook:
         self.hook.handle(ctx2)
         assert self.ledger.total_count == 2
 
+    def test_governance_operator_resolve_detected_as_operator(self):
+        """Governance operator console resolve must set resolved_by=operator."""
+        # Seed a pending entry first
+        self.engine.record_interrupt_emit(
+            thread_id="th1", run_id="r1", task_id="t1",
+            source_agent="agent", interrupt_type="intervention",
+            source_path="executor", request_id="intv_gov_op",
+        )
+        assert self.ledger.pending_count() == 1
+
+        # Resolve via governance.operator_resolve source path
+        ctx = RuntimeHookContext(
+            hook_name=RuntimeHookName.AFTER_INTERRUPT_RESOLVE,
+            node_name="governance",
+            proposed_update={},
+            metadata={
+                "source_path": "governance.operator_resolve",
+                "action_key": "approve",
+                "request_id": "intv_gov_op",
+            },
+        )
+        self.hook.handle(ctx)
+        assert self.ledger.pending_count() == 0
+        entry = self.ledger.get_by_request_id("intv_gov_op")
+        assert entry["status"] == "resolved"
+        assert entry["resolved_by"] == "operator"
+
 
 class TestGovernanceStateCommitAuditHook:
     def setup_method(self):
