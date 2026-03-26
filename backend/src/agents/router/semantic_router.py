@@ -207,23 +207,53 @@ def _build_executing_detail(task: TaskStatus) -> str | None:
 def _build_helper_description(help_request: HelpRequestPayload) -> str:
     """Build a user-friendly, short description for the helper task card.
 
-    The full technical detail (problem, reason, expected_output) is preserved
-    in the task's ``request_help`` payload and injected into the executor
-    context via ``_build_context``, so it is still available to the agent.
+    Prefer ``expected_output`` or ``required_capability`` so the description
+    reflects only the *dependency* the helper must fulfill, not the parent's
+    full business goal (which lives in ``problem``).
     """
-    problem = (help_request.get("problem") or "").strip()
-    if problem:
-        return problem
-    return help_request.get("required_capability", "") or "协助处理依赖任务"
+    for key in ("expected_output", "required_capability", "problem"):
+        value = (help_request.get(key) or "").strip()  # type: ignore[arg-type]
+        if value:
+            return value
+    return "协助处理依赖任务"
 
 
 def _build_helper_context(help_request: HelpRequestPayload) -> str:
-    """Build the full technical context sent to the helper agent as prompt."""
+    """Build a scope-limited prompt for the helper agent.
+
+    Structure:
+    1. **Task** — ``required_capability`` + ``expected_output`` (what to do).
+    2. **Reference context** (read-only) — the parent's ``problem`` is kept so
+       the helper can see entity names / time ranges, but labelled as *do-not-act-on*.
+    3. **Background** — ``reason`` (why the parent cannot do this itself).
+    4. **Bilingual scope constraint** — hard instruction in both Chinese and English.
+    """
     lines: list[str] = []
-    for key in ("problem", "required_capability", "reason", "expected_output"):
+
+    # ── Core task (what the helper must do) ──
+    for key in ("required_capability", "expected_output"):
         value = (help_request.get(key) or "").strip()  # type: ignore[arg-type]
         if value:
             lines.append(f"{key}: {value}")
+
+    # ── Reference context (read-only, preserves entity info) ──
+    problem = (help_request.get("problem") or "").strip()
+    if problem:
+        lines.append(f"\nreference_context (read-only, do NOT act on): {problem}")
+
+    # ── Background (why the requester cannot do it) ──
+    reason = (help_request.get("reason") or "").strip()
+    if reason:
+        lines.append(f"background: {reason}")
+
+    # ── Bilingual scope constraint ──
+    lines.append(
+        "\n【范围约束】你只需完成上面 required_capability / expected_output 描述的工作。"
+        "拿到结果后立即返回，不要继续处理 reference_context 中提到的其他业务目标。"
+        "\nSCOPE: Only fulfil required_capability / expected_output above. "
+        "Return the result immediately once obtained. "
+        "Do NOT pursue any other goals from reference_context."
+    )
     return "\n".join(lines)
 
 
@@ -252,6 +282,111 @@ def _pick_direct_helper_candidate(candidate_names: list[str], hinted: list[str])
 
 def _can_retry_helper(parent_task: TaskStatus) -> bool:
     return int(parent_task.get("helper_retry_count") or 0) < MAX_HELPER_RETRY_COUNT
+
+
+# ---------------------------------------------------------------------------
+# Scope-loop detection & force-complete
+# ---------------------------------------------------------------------------
+
+def _detect_scope_loop(
+    helper_task: TaskStatus,
+    proposed_agent: str,
+    task_pool: list[TaskStatus],
+) -> bool:
+    """Return True if routing *proposed_agent* for *helper_task* would create
+    a scope loop — i.e. the helper is trying to delegate work back to its
+    grandparent's (or any ancestor's) domain agent.
+
+    This catches the pattern:
+        hr-agent → contacts-agent(helper) → hr-agent(sub-helper)
+    where contacts-agent should have returned its result instead of
+    continuing to pursue the parent's business goal.
+    """
+    task_index = {t["task_id"]: t for t in task_pool}
+    ancestor_id = helper_task.get("parent_task_id")
+    visited: set[str] = set()
+    while ancestor_id and ancestor_id not in visited:
+        visited.add(ancestor_id)
+        ancestor = task_index.get(ancestor_id)
+        if ancestor is None:
+            break
+        if ancestor.get("assigned_agent") == proposed_agent:
+            return True
+        ancestor_id = ancestor.get("parent_task_id")
+    return False
+
+
+def _extract_helper_partial_result(helper_task: TaskStatus) -> str:
+    """Best-effort extraction of useful output from a helper that will be
+    force-completed due to scope-loop.
+
+    Priority:
+    1. ``context_payload`` from the blocked request_help  (structured data).
+    2. ``reason`` field (often contains accomplished facts, e.g. "I have the
+       employee's openId (ou_mock_10033)").
+    3. Generic fallback.
+    """
+    rh = helper_task.get("request_help") or {}
+    ctx_payload = rh.get("context_payload")
+    if isinstance(ctx_payload, dict) and ctx_payload:
+        return json.dumps(ctx_payload, ensure_ascii=False)
+    reason = (rh.get("reason") or "").strip()
+    if reason:
+        return reason
+    return "Helper completed with partial results (scope-loop auto-complete)."
+
+
+def _force_complete_helper_scope_loop(
+    helper_task: TaskStatus,
+    proposed_agent: str,
+    state: ThreadState,
+    route_count: int,
+) -> dict:
+    """Force-complete a helper task that would create a scope loop.
+
+    Instead of spawning a sub-helper that routes back to an ancestor agent,
+    mark this helper as DONE with whatever partial result it already has.
+    The normal dependency-resolution flow will then inject this result into
+    the parent task and resume it.
+    """
+    run_id = _resolve_run_id(state, helper_task)
+    partial_result = _extract_helper_partial_result(helper_task)
+
+    logger.warning(
+        "[Router] Scope-loop detected: helper task '%s' (%s) tried to route to '%s' "
+        "which is an ancestor agent. Force-completing helper with partial result.",
+        helper_task["task_id"],
+        helper_task.get("assigned_agent"),
+        proposed_agent,
+    )
+    record_decision(
+        "scope_loop_auto_complete",
+        run_id=run_id,
+        task_id=helper_task["task_id"],
+        agent_name=helper_task.get("assigned_agent"),
+        inputs={
+            "proposed_helper_agent": proposed_agent,
+            "parent_task_id": helper_task.get("parent_task_id"),
+        },
+        output={"partial_result_len": len(partial_result)},
+        reason="helper tried to delegate back to ancestor agent",
+    )
+
+    completed_task: TaskStatus = {
+        **helper_task,
+        "status": "DONE",
+        "result": partial_result,
+        "request_help": None,
+        "blocked_reason": None,
+        "status_detail": "@scope_loop_auto_complete",
+        "updated_at": _utc_now_iso(),
+    }
+    return {
+        "task_pool": [completed_task],
+        "run_id": run_id,
+        "execution_state": "ROUTING_DONE",
+        "route_count": route_count,
+    }
 
 
 def _route_to_helper(
@@ -1091,6 +1226,17 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
             status_detail="@waiting_clarification",
             state=dict(state) if state else None,
         )
+
+    # ── Scope-loop guard ──
+    # If this task is itself a helper (has parent_task_id) and the proposed
+    # agent is an ancestor in the helper chain, force-complete this helper
+    # with its partial results instead of creating a sub-helper loop.
+    if parent_task.get("parent_task_id"):
+        task_pool: list[TaskStatus] = state.get("task_pool") or []
+        if _detect_scope_loop(parent_task, assigned, task_pool):
+            return _force_complete_helper_scope_loop(
+                parent_task, assigned, state, route_count,
+            )
 
     return _route_to_helper(parent_task, state, route_count, assigned)
 
