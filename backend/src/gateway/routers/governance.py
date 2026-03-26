@@ -140,13 +140,15 @@ async def list_queue(
     run_id: str | None = Query(None, description="Filter by run ID"),
     risk_level: str | None = Query(None, description="Filter by risk level (medium/high/critical)"),
     source_agent: str | None = Query(None, description="Filter by source agent"),
+    created_from: str | None = Query(None, description="Filter by created_at >= ISO datetime"),
+    created_to: str | None = Query(None, description="Filter by created_at <= ISO datetime"),
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
 ) -> GovernanceListResponse:
     """List pending governance items (operator queue).
 
     Returns items with ``status=pending_intervention``, newest first.
-    Supports filtering by thread, run, risk level, and agent.
+    Supports filtering by thread, run, risk level, agent, and creation time.
     """
     # Query all matching pending entries (no pagination yet) to get accurate total
     all_matching = governance_ledger.query(
@@ -155,6 +157,8 @@ async def list_queue(
         status="pending_intervention",
         risk_level=risk_level,
         source_agent=source_agent,
+        created_from=created_from,
+        created_to=created_to,
         limit=0,
         offset=0,
     )
@@ -175,6 +179,10 @@ async def list_history(
     status: str | None = Query(None, description="Filter by status (resolved/rejected/failed/expired/decided)"),
     risk_level: str | None = Query(None, description="Filter by risk level"),
     source_agent: str | None = Query(None, description="Filter by source agent"),
+    created_from: str | None = Query(None, description="Filter by created_at >= ISO datetime"),
+    created_to: str | None = Query(None, description="Filter by created_at <= ISO datetime"),
+    resolved_from: str | None = Query(None, description="Filter by resolved_at >= ISO datetime"),
+    resolved_to: str | None = Query(None, description="Filter by resolved_at <= ISO datetime"),
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
 ) -> GovernanceListResponse:
@@ -182,6 +190,10 @@ async def list_history(
 
     By default returns all non-pending items. Use the ``status`` filter to
     narrow to a specific terminal status.
+
+    Time range filters:
+    - ``created_from`` / ``created_to`` — filter by creation time (applies to all entries)
+    - ``resolved_from`` / ``resolved_to`` — filter by resolution time (only entries with resolved_at)
     """
     # Validate status filter
     if status == "pending_intervention":
@@ -197,6 +209,10 @@ async def list_history(
         status=status,
         risk_level=risk_level,
         source_agent=source_agent,
+        created_from=created_from,
+        created_to=created_to,
+        resolved_from=resolved_from,
+        resolved_to=resolved_to,
         limit=0,
         offset=0,
     )

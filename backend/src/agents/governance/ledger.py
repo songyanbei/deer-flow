@@ -231,12 +231,20 @@ class GovernanceLedger:
         status: GovernanceLedgerStatus | None = None,
         risk_level: str | None = None,
         source_agent: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        resolved_from: str | None = None,
+        resolved_to: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[GovernanceLedgerEntry]:
         """Query ledger entries with optional filters.
 
         Pass ``limit=0`` to return all matching entries (no pagination cap).
+
+        Time range filters use ISO-8601 string comparison on ``created_at``
+        and ``resolved_at`` fields.  Entries without ``resolved_at`` are
+        excluded when ``resolved_from`` or ``resolved_to`` is specified.
         """
         with self._lock:
             results = list(self._entries)
@@ -251,6 +259,16 @@ class GovernanceLedger:
             results = [e for e in results if e["risk_level"] == risk_level]
         if source_agent:
             results = [e for e in results if e.get("source_agent", "").lower() == source_agent.lower()]
+
+        # Time range filters — ISO strings are lexicographically comparable
+        if created_from:
+            results = [e for e in results if e["created_at"] >= created_from]
+        if created_to:
+            results = [e for e in results if e["created_at"] <= created_to]
+        if resolved_from:
+            results = [e for e in results if (e.get("resolved_at") or "") >= resolved_from]
+        if resolved_to:
+            results = [e for e in results if (e.get("resolved_at") or "") and e["resolved_at"] <= resolved_to]
 
         # Newest first
         results.reverse()

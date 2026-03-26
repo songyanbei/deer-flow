@@ -209,6 +209,33 @@ class TestHistoryAPI:
         data = resp.json()
         assert all(item["thread_id"] == "th1" for item in data["items"])
 
+    def test_filter_by_created_from(self, client, engine, ledger):
+        _seed_decided(engine)
+        e2 = _seed_decided(engine)
+        cutoff = e2["created_at"]
+
+        with patch("src.gateway.routers.governance.governance_ledger", ledger):
+            resp = client.get("/api/governance/history", params={"created_from": cutoff})
+
+        data = resp.json()
+        assert all(item["created_at"] >= cutoff for item in data["items"])
+
+    def test_filter_by_resolved_from_to(self, client, engine, ledger):
+        _seed_pending(engine, request_id="intv_time")
+        ledger.resolve(request_id="intv_time", status="resolved", resolved_by="operator")
+        entry = ledger.get_by_request_id("intv_time")
+        cutoff = entry["resolved_at"]
+
+        with patch("src.gateway.routers.governance.governance_ledger", ledger):
+            resp = client.get("/api/governance/history", params={
+                "resolved_from": cutoff,
+                "resolved_to": cutoff,
+            })
+
+        data = resp.json()
+        assert len(data["items"]) >= 1
+        assert all(item.get("resolved_at") for item in data["items"])
+
 
 # ---------------------------------------------------------------------------
 # Detail API tests

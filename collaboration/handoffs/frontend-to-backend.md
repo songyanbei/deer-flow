@@ -19,6 +19,88 @@ contracts.
 
 ## Open Items
 
+## [closed] Governance history lacks server-side time range filtering
+- Date: 2026-03-26
+- Related feature:
+  - `features/workflow-phase5-two-stage-governance-core-and-operator-console.md`
+  - `features/workflow-phase5-two-stage-governance-core-and-operator-console-frontend-checklist.md`
+- Blocking area:
+  operator console history filtering accuracy for large governance ledgers
+- Current frontend implementation:
+  Phase 5B governance console is now using `GET /api/governance/history` for
+  status/risk/agent/thread/run filters and then applying `dateFrom/dateTo`
+  locally on the loaded history results.
+- Current frontend assumption:
+  each history item already exposes enough timestamp data (`created_at`,
+  `resolved_at`) for a basic date range filter, so the UI can provide an
+  immediate first version without inventing additional contracts.
+- What is missing from backend:
+  the history API does not currently accept server-side date range filters, so
+  frontend cannot guarantee a complete time-bounded result set once the ledger
+  grows beyond the loaded page/limit.
+- Why this matters:
+  local filtering over the current response page is acceptable for initial
+  operator console development, but it is not equivalent to true backend
+  filtering plus pagination. The UI may under-report matching records outside
+  the loaded slice.
+- Needed response:
+  backend should add one of these stable options to
+  `GET /api/governance/history`:
+  1. `created_from` / `created_to`
+  2. `resolved_from` / `resolved_to`
+  3. a clearly documented single time-field contract for history filtering
+- Suggested payload or API:
+  preferred smallest-scope contract:
+  - `resolved_from`: ISO datetime or date
+  - `resolved_to`: ISO datetime or date
+  because the history tab is operator-facing and primarily about terminal
+  decisions.
+- Backend response (2026-03-26):
+  implemented all four server-side time range filters on both queue and history
+  endpoints. The contract is:
+
+  **Queue API** (`GET /api/governance/queue`):
+  - `created_from`: ISO datetime — filter by `created_at >=`
+  - `created_to`: ISO datetime — filter by `created_at <=`
+
+  **History API** (`GET /api/governance/history`):
+  - `created_from`: ISO datetime — filter by `created_at >=`
+  - `created_to`: ISO datetime — filter by `created_at <=`
+  - `resolved_from`: ISO datetime — filter by `resolved_at >=`
+  - `resolved_to`: ISO datetime — filter by `resolved_at <=`
+
+  Design rationale:
+  - `created_from/created_to` applies to all entries (both decided and resolved)
+    and is the primary general-purpose time filter. Available on both queue and
+    history endpoints.
+  - `resolved_from/resolved_to` is history-only and targets the operator use
+    case of "show me what was resolved in this window". Entries without
+    `resolved_at` (e.g., auto-decided allow/deny) are automatically excluded
+    when `resolved_from` or `resolved_to` is specified.
+  - ISO-8601 string comparison is used (lexicographically sortable). Frontend
+    should pass full ISO datetime strings (e.g., `2026-03-26T00:00:00+00:00`).
+  - All time range filters compose with existing filters (thread_id, run_id,
+    risk_level, source_agent, status) and with pagination (limit/offset).
+  - The `total` field in paginated responses reflects the true count of all
+    matching entries after all filters are applied, not just the returned page.
+
+  Implementation:
+  - `GovernanceLedger.query()` now accepts `created_from`, `created_to`,
+    `resolved_from`, `resolved_to` parameters.
+  - Both API endpoints pass these through to the ledger query.
+  - 5 ledger-level tests + 2 API-level tests cover the new filters.
+  - All 61 governance tests pass.
+
+  Frontend can now remove the "date filtering is applied on loaded results only"
+  UI hint and switch to server-side filtering.
+
+- Notes:
+  frontend has consumed this contract in Phase 5B:
+  - governance history date filters now submit server-side `resolved_from` /
+    `resolved_to`
+  - the old "loaded results only" UI hint has been removed
+  no further backend work is required for this specific blocker.
+
 ## [open] Intervention resolve accepted but runtime continuation is not yet verifiably observable
 - Date: 2026-03-17
 - Related feature:

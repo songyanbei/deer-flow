@@ -176,3 +176,60 @@ class TestGovernanceLedger:
             self._record_entry(thread_id=f"th_{i}")
         results = self.ledger.query(limit=0, offset=3)
         assert len(results) == 2
+
+    def test_query_created_from(self):
+        """created_from filters entries by created_at >=."""
+        self._record_entry(thread_id="th_old")
+        e2 = self._record_entry(thread_id="th_new")
+        # Use the later entry's timestamp as the cutoff
+        cutoff = e2["created_at"]
+        results = self.ledger.query(created_from=cutoff, limit=0)
+        assert all(r["created_at"] >= cutoff for r in results)
+        assert any(r["thread_id"] == "th_new" for r in results)
+
+    def test_query_created_to(self):
+        """created_to filters entries by created_at <=."""
+        e1 = self._record_entry(thread_id="th_old")
+        self._record_entry(thread_id="th_new")
+        cutoff = e1["created_at"]
+        results = self.ledger.query(created_to=cutoff, limit=0)
+        assert all(r["created_at"] <= cutoff for r in results)
+
+    def test_query_created_from_to_range(self):
+        """Both created_from and created_to together form a range."""
+        entries = [self._record_entry(thread_id=f"th_{i}") for i in range(3)]
+        mid = entries[1]["created_at"]
+        results = self.ledger.query(created_from=mid, created_to=mid, limit=0)
+        assert all(r["created_at"] == mid for r in results)
+
+    def test_query_resolved_from_excludes_unresolved(self):
+        """resolved_from excludes entries without resolved_at."""
+        self._record_entry(thread_id="th_decided")  # status=decided, no resolved_at
+        self._record_entry(
+            thread_id="th_pending",
+            decision="require_intervention",
+            request_id="intv_rf",
+        )
+        # Resolve the second entry
+        self.ledger.resolve(request_id="intv_rf", status="resolved", resolved_by="operator")
+        resolved_entry = self.ledger.get_by_request_id("intv_rf")
+        cutoff = resolved_entry["resolved_at"]
+
+        results = self.ledger.query(resolved_from=cutoff, limit=0)
+        # Only the resolved entry should match — decided has no resolved_at
+        assert len(results) >= 1
+        assert all(r.get("resolved_at") for r in results)
+
+    def test_query_resolved_to(self):
+        """resolved_to filters entries by resolved_at <=."""
+        self._record_entry(
+            thread_id="th_r1",
+            decision="require_intervention",
+            request_id="intv_rt1",
+        )
+        self.ledger.resolve(request_id="intv_rt1", status="resolved", resolved_by="op")
+        resolved = self.ledger.get_by_request_id("intv_rt1")
+        cutoff = resolved["resolved_at"]
+
+        results = self.ledger.query(resolved_to=cutoff, limit=0)
+        assert all(r.get("resolved_at") and r["resolved_at"] <= cutoff for r in results)
