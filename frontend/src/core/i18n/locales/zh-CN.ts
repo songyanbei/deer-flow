@@ -156,6 +156,7 @@ export const zhCN: Translations = {
     recentChats: "最近的对话",
     demoChats: "演示对话",
     agents: "智能体",
+    governance: "治理台",
   },
 
   // Agents
@@ -191,6 +192,7 @@ export const zhCN: Translations = {
   breadcrumb: {
     workspace: "工作区",
     chats: "对话",
+    governance: "治理台",
   },
 
   // Workspace
@@ -215,10 +217,87 @@ export const zhCN: Translations = {
     searchChats: "搜索对话",
   },
 
+  governance: {
+    title: "治理操作台",
+    description:
+      "查看待处理治理队列、审计历史和详细上下文，并在 thread 外完成审批处理。",
+    queueTab: "待处理队列",
+    historyTab: "处理历史",
+    refresh: "刷新",
+    queueCount: (count: number) => `${count} 条待处理`,
+    historyCount: (count: number) => `${count} 条记录`,
+    filters: {
+      risk: "风险等级",
+      status: "状态",
+      agent: "来源 Agent",
+      threadId: "Thread ID",
+      runId: "Run ID",
+      dateFrom: "开始日期",
+      dateTo: "结束日期",
+      allRisks: "全部风险",
+      allStatuses: "全部状态",
+      allAgents: "全部 Agent",
+      reset: "重置筛选",
+    },
+    labels: {
+      sourceAgent: "来源 Agent",
+      createdAt: "创建时间",
+      resolvedAt: "处理时间",
+      status: "状态",
+      risk: "风险",
+      category: "分类",
+      hook: "Hook",
+      thread: "Thread",
+      run: "Run",
+      task: "Task",
+      request: "Request",
+      fingerprint: "Fingerprint",
+      tool: "工具",
+      actionSummary: "动作摘要",
+      riskTip: "风险提示",
+      reason: "原因",
+      detail: "详情",
+      operatorAction: "处理动作",
+    },
+    actions: {
+      openThread: "打开对话",
+      approve: "批准",
+      resolve: "提交处理",
+    },
+    states: {
+      loadingQueue: "正在加载待处理队列...",
+      loadingHistory: "正在加载处理历史...",
+      loadingDetail: "正在加载详情...",
+      selectQueueItem: "选择一条待处理治理项以查看详情并执行处理。",
+      selectHistoryItem: "选择一条历史记录以查看对应的审计详情。",
+      emptyQueueTitle: "当前没有待处理治理项",
+      emptyQueueDescription: "当前筛选条件下没有待处理治理项。",
+      emptyHistoryTitle: "当前没有历史记录",
+      emptyHistoryDescription: "当前筛选条件下没有处理历史记录。",
+      noActionSchema: "该治理项暂未提供可执行的 operator action schema。",
+    },
+    result: {
+      success: "治理处理已提交",
+      resumeFailed: "治理决策已保存，但工作流续跑未能自动触发。",
+      stale: "该治理项已过期，请刷新后重试。",
+      invalid: "提交的治理处理参数无效。",
+      failed: "提交治理处理失败。",
+    },
+    statusText: {
+      pending_intervention: "待处理",
+      resolved: "已处理",
+      rejected: "已拒绝",
+      failed: "失败",
+      expired: "已过期",
+      decided: "已决策",
+    },
+  },
+
   // Page titles (document title)
   pages: {
     appName: "LaiFuAI",
     chats: "对话",
+    governance: "治理台",
     newChat: "新对话",
     untitled: "未命名",
   },

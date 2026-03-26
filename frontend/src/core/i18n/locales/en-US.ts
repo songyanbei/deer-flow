@@ -164,6 +164,7 @@ export const enUS: Translations = {
     recentChats: "Recent chats",
     demoChats: "Demo chats",
     agents: "Agents",
+    governance: "Governance",
   },
 
   // Agents
@@ -204,6 +205,7 @@ export const enUS: Translations = {
   breadcrumb: {
     workspace: "Workspace",
     chats: "Chats",
+    governance: "Governance",
   },
 
   // Workspace
@@ -228,10 +230,90 @@ export const enUS: Translations = {
     searchChats: "Search chats",
   },
 
+  governance: {
+    title: "Governance Console",
+    description:
+      "Review pending interventions, inspect audit history, and resolve operator actions from the governance ledger.",
+    queueTab: "Queue",
+    historyTab: "History",
+    refresh: "Refresh",
+    queueCount: (count: number) => `${count} pending`,
+    historyCount: (count: number) => `${count} records`,
+    filters: {
+      risk: "Risk",
+      status: "Status",
+      agent: "Agent",
+      threadId: "Thread ID",
+      runId: "Run ID",
+      dateFrom: "From",
+      dateTo: "To",
+      allRisks: "All risks",
+      allStatuses: "All statuses",
+      allAgents: "All agents",
+      reset: "Reset filters",
+    },
+    labels: {
+      sourceAgent: "Source agent",
+      createdAt: "Created",
+      resolvedAt: "Resolved",
+      status: "Status",
+      risk: "Risk",
+      category: "Category",
+      hook: "Hook",
+      thread: "Thread",
+      run: "Run",
+      task: "Task",
+      request: "Request",
+      fingerprint: "Fingerprint",
+      tool: "Tool",
+      actionSummary: "Action summary",
+      riskTip: "Risk tip",
+      reason: "Reason",
+      detail: "Detail",
+      operatorAction: "Operator action",
+    },
+    actions: {
+      openThread: "Open thread",
+      approve: "Approve",
+      resolve: "Resolve",
+    },
+    states: {
+      loadingQueue: "Loading queue...",
+      loadingHistory: "Loading history...",
+      loadingDetail: "Loading detail...",
+      selectQueueItem: "Select a pending governance item to inspect and resolve.",
+      selectHistoryItem: "Select a resolved governance item to inspect its audit detail.",
+      emptyQueueTitle: "Queue is clear",
+      emptyQueueDescription:
+        "No pending governance items match the current filters.",
+      emptyHistoryTitle: "No history records",
+      emptyHistoryDescription:
+        "No resolved governance items match the current filters.",
+      noActionSchema: "No operator action schema is available for this item.",
+    },
+    result: {
+      success: "Governance action submitted",
+      resumeFailed:
+        "The governance decision was saved, but workflow continuation did not resume automatically.",
+      stale: "This governance item is stale. Refresh and try again.",
+      invalid: "The submitted governance payload is invalid.",
+      failed: "Failed to submit governance action.",
+    },
+    statusText: {
+      pending_intervention: "Pending",
+      resolved: "Resolved",
+      rejected: "Rejected",
+      failed: "Failed",
+      expired: "Expired",
+      decided: "Decided",
+    },
+  },
+
   // Page titles (document title)
   pages: {
     appName: "DeerFlow",
     chats: "Chats",
+    governance: "Governance",
     newChat: "New chat",
     untitled: "Untitled",
   },

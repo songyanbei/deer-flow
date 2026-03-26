@@ -107,6 +107,7 @@ export interface Translations {
     chats: string;
     demoChats: string;
     agents: string;
+    governance: string;
   };
 
   // Agents
@@ -140,6 +141,7 @@ export interface Translations {
   breadcrumb: {
     workspace: string;
     chats: string;
+    governance: string;
   };
 
   // Workspace
@@ -164,10 +166,87 @@ export interface Translations {
     searchChats: string;
   };
 
+  // Governance
+  governance: {
+    title: string;
+    description: string;
+    queueTab: string;
+    historyTab: string;
+    refresh: string;
+    queueCount: (count: number) => string;
+    historyCount: (count: number) => string;
+    filters: {
+      risk: string;
+      status: string;
+      agent: string;
+      threadId: string;
+      runId: string;
+      dateFrom: string;
+      dateTo: string;
+      allRisks: string;
+      allStatuses: string;
+      allAgents: string;
+      reset: string;
+    };
+    labels: {
+      sourceAgent: string;
+      createdAt: string;
+      resolvedAt: string;
+      status: string;
+      risk: string;
+      category: string;
+      hook: string;
+      thread: string;
+      run: string;
+      task: string;
+      request: string;
+      fingerprint: string;
+      tool: string;
+      actionSummary: string;
+      riskTip: string;
+      reason: string;
+      detail: string;
+      operatorAction: string;
+    };
+    actions: {
+      openThread: string;
+      approve: string;
+      resolve: string;
+    };
+    states: {
+      loadingQueue: string;
+      loadingHistory: string;
+      loadingDetail: string;
+      selectQueueItem: string;
+      selectHistoryItem: string;
+      emptyQueueTitle: string;
+      emptyQueueDescription: string;
+      emptyHistoryTitle: string;
+      emptyHistoryDescription: string;
+      noActionSchema: string;
+    };
+    result: {
+      success: string;
+      resumeFailed: string;
+      stale: string;
+      invalid: string;
+      failed: string;
+    };
+    statusText: {
+      pending_intervention: string;
+      resolved: string;
+      rejected: string;
+      failed: string;
+      expired: string;
+      decided: string;
+    };
+  };
+
   // Page titles (document title)
   pages: {
     appName: string;
     chats: string;
+    governance: string;
     newChat: string;
     untitled: string;
   };
