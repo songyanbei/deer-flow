@@ -13,6 +13,38 @@ type RunsCreatePayload = Parameters<
   ReturnType<typeof getAPIClient>["runs"]["create"]
 >[2];
 
+export type GovernanceItemKind =
+  | "clarification"
+  | "dependency"
+  | "approval"
+  | "review";
+
+export type GovernanceActionTarget = "console" | "thread" | "history";
+
+function normalizeGovernanceSignal(value: unknown) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.trim().toLowerCase();
+}
+
+function collectGovernanceSignals(item: GovernanceItem) {
+  return [
+    item.category,
+    item.hook_name,
+    item.action_summary,
+    item.reason,
+    item.intervention_title,
+    item.intervention_display?.title,
+    item.intervention_display?.summary,
+    item.intervention_display?.risk_tip,
+  ]
+    .map((value) => normalizeGovernanceSignal(value))
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function getGovernanceDisplayTitle(item: GovernanceItem) {
   return getInterventionDisplayTitle({
     title: item.intervention_title ?? "",
@@ -31,6 +63,46 @@ export function getGovernanceDisplaySummary(item: GovernanceItem) {
     action_summary: item.action_summary ?? undefined,
     display: item.intervention_display ?? undefined,
   });
+}
+
+export function getGovernanceItemKind(item: GovernanceItem): GovernanceItemKind {
+  const signals = collectGovernanceSignals(item);
+
+  if (signals.includes("clarification")) {
+    return "clarification";
+  }
+
+  if (
+    signals.includes("dependency") ||
+    signals.includes("help request") ||
+    signals.includes("waiting_dependency")
+  ) {
+    return "dependency";
+  }
+
+  if (
+    item.decision === "require_intervention" ||
+    item.status === "pending_intervention" ||
+    (item.intervention_action_schema?.actions.length ?? 0) > 0
+  ) {
+    return "approval";
+  }
+
+  return "review";
+}
+
+export function getGovernanceActionTarget(
+  item: GovernanceItem,
+): GovernanceActionTarget {
+  if (item.status !== "pending_intervention") {
+    return "history";
+  }
+
+  if ((item.intervention_action_schema?.actions.length ?? 0) > 0) {
+    return "console";
+  }
+
+  return "thread";
 }
 
 export function getGovernanceQuestions(item: GovernanceItem) {

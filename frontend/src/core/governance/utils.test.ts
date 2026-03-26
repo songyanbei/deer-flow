@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { GovernanceItem } from "./types";
 import {
   buildGovernanceResumeRequest,
+  getGovernanceActionTarget,
   getGovernanceDisplaySummary,
+  getGovernanceItemKind,
   pathOfGovernanceThread,
   toGovernanceFilterEndISO,
   toGovernanceFilterStartISO,
@@ -51,6 +53,56 @@ describe("governance utils", () => {
     });
 
     expect(getGovernanceDisplaySummary(item)).toBe("Display summary");
+  });
+
+  it("classifies clarification items and routes them back to the thread when no console action exists", () => {
+    const item = createGovernanceItem({
+      category: "interrupt_emit",
+      action_summary: "Interrupt emit: clarification from planner",
+      reason: null,
+      intervention_action_schema: null,
+    });
+
+    expect(getGovernanceItemKind(item)).toBe("clarification");
+    expect(getGovernanceActionTarget(item)).toBe("thread");
+  });
+
+  it("classifies dependency items separately from approvals", () => {
+    const item = createGovernanceItem({
+      category: "interrupt_emit",
+      action_summary: "Interrupt emit: dependency from planner",
+      reason: "Waiting for dependency",
+      intervention_action_schema: null,
+    });
+
+    expect(getGovernanceItemKind(item)).toBe("dependency");
+  });
+
+  it("routes actionable pending items to the governance console", () => {
+    const item = createGovernanceItem({
+      intervention_action_schema: {
+        actions: [
+          {
+            key: "approve",
+            label: "Approve",
+            kind: "button",
+            resolution_behavior: "resume_current_task",
+          },
+        ],
+      },
+    });
+
+    expect(getGovernanceItemKind(item)).toBe("approval");
+    expect(getGovernanceActionTarget(item)).toBe("console");
+  });
+
+  it("treats resolved items as audit history", () => {
+    const item = createGovernanceItem({
+      status: "resolved",
+      decision: "continue_after_resolution",
+    });
+
+    expect(getGovernanceActionTarget(item)).toBe("history");
   });
 
   it("builds agent-aware thread paths for custom agent governance items", () => {

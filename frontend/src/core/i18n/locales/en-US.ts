@@ -231,18 +231,18 @@ export const enUS: Translations = {
   },
 
   governance: {
-    title: "Governance Console",
-    description:
-      "Review pending interventions, inspect audit history, and resolve operator actions from the governance ledger.",
-    queueTab: "Queue",
-    historyTab: "History",
-    refresh: "Refresh",
-    queueCount: (count: number) => `${count} pending`,
-    historyCount: (count: number) => `${count} records`,
-    filters: {
-      risk: "Risk",
-      status: "Status",
-      agent: "Agent",
+      title: "Governance Console",
+      description:
+        "Review the governance tasks that need extra handling, plus the audit trail of what was already processed. Routine back-and-forth clarification is usually still best handled in the original thread.",
+      queueTab: "Pending tasks",
+      historyTab: "History",
+      refresh: "Refresh",
+      queueCount: (count: number) => `${count} pending tasks`,
+      historyCount: (count: number) => `${count} records`,
+      filters: {
+        risk: "Risk",
+        status: "Status",
+        agent: "Agent",
       threadId: "Thread ID",
       runId: "Run ID",
       dateFrom: "From",
@@ -252,17 +252,22 @@ export const enUS: Translations = {
       allAgents: "All agents",
       reset: "Reset filters",
     },
-    labels: {
-      sourceAgent: "Source agent",
-      createdAt: "Created",
-      resolvedAt: "Resolved",
-      status: "Status",
-      risk: "Risk",
-      category: "Category",
-      hook: "Hook",
-      thread: "Thread",
-      run: "Run",
-      task: "Task",
+      labels: {
+        sourceAgent: "Source agent",
+        createdAt: "Created",
+        resolvedAt: "Resolved",
+        status: "Status",
+        risk: "Risk",
+        eventType: "Event type",
+        currentSituation: "What is happening",
+        nextStep: "Suggested next step",
+        relatedContext: "Related context",
+        technicalDetail: "Technical detail",
+        category: "Category",
+        hook: "Hook",
+        thread: "Thread",
+        run: "Run",
+        task: "Task",
       request: "Request",
       fingerprint: "Fingerprint",
       tool: "Tool",
@@ -272,36 +277,78 @@ export const enUS: Translations = {
       detail: "Detail",
       operatorAction: "Operator action",
     },
-    actions: {
-      openThread: "Open thread",
-      approve: "Approve",
-      resolve: "Resolve",
-    },
-    states: {
-      loadingQueue: "Loading queue...",
-      loadingHistory: "Loading history...",
-      loadingDetail: "Loading detail...",
-      selectQueueItem: "Select a pending governance item to inspect and resolve.",
-      selectHistoryItem: "Select a resolved governance item to inspect its audit detail.",
-      emptyQueueTitle: "Queue is clear",
-      emptyQueueDescription:
-        "No pending governance items match the current filters.",
-      emptyHistoryTitle: "No history records",
-      emptyHistoryDescription:
-        "No resolved governance items match the current filters.",
-      noActionSchema: "No operator action schema is available for this item.",
-    },
-    result: {
-      success: "Governance action submitted",
-      resumeFailed:
-        "The governance decision was saved, but workflow continuation did not resume automatically.",
-      stale: "This governance item is stale. Refresh and try again.",
-      invalid: "The submitted governance payload is invalid.",
-      failed: "Failed to submit governance action.",
-    },
-    statusText: {
-      pending_intervention: "Pending",
-      resolved: "Resolved",
+      actions: {
+        openThread: "Open thread",
+        approve: "Approve",
+        resolve: "Resolve",
+        technicalDetail: "Show technical detail",
+      },
+      states: {
+        loadingQueue: "Loading queue...",
+        loadingHistory: "Loading history...",
+        loadingDetail: "Loading detail...",
+        selectQueueItem:
+          "Select a pending task to see what happened and how it should be handled.",
+        selectHistoryItem:
+          "Select a history record to inspect the outcome and audit context.",
+        emptyQueueTitle: "Queue is clear",
+        emptyQueueDescription:
+          "No governance tasks that need extra handling match the current filters.",
+        emptyHistoryTitle: "No history records",
+        emptyHistoryDescription:
+          "No resolved governance items match the current filters.",
+        noActionSchema:
+          "This item cannot be handled directly in the console yet. Open the original thread to continue.",
+      },
+      result: {
+        success: "Governance action submitted",
+        resumeFailed:
+          "The governance decision was saved, but workflow continuation did not resume automatically.",
+        stale: "This governance item is stale. Refresh and try again.",
+        invalid: "The submitted governance payload is invalid.",
+        failed: "Failed to submit governance action.",
+      },
+      kindText: {
+        clarification: "Needs input",
+        dependency: "Needs assistance",
+        approval: "Needs approval",
+        review: "Audit record",
+      },
+      guidance: {
+        resolveInConsole:
+          "You can handle this directly below. Once submitted, the workflow will continue.",
+        continueInThread:
+          "This item has no direct console action. Open the original thread to provide the missing input or confirmation.",
+        auditOnly:
+          "This item is already complete. The view is mainly for audit and retrospective review.",
+        noReason: "The backend did not provide a more detailed reason.",
+        noActionSummary: "The backend did not provide a more detailed action summary.",
+      },
+      readable: {
+        titleClarification: (agent: string) => `${agent} needs more input`,
+        titleDependency: (agent: string) => `${agent} is waiting for help`,
+        titleApproval: (agent: string) => `${agent} is waiting for a decision`,
+        titleReview: (agent: string) => `${agent} governance record`,
+        summaryClarification: (agent: string) =>
+          `${agent} paused because it does not have enough information to continue yet.`,
+        summaryDependency: (agent: string) =>
+          `${agent} is blocked on outside help or an upstream result before it can continue.`,
+        summaryApproval: (agent: string) =>
+          `${agent}'s next action needs a human decision before execution can continue.`,
+        summaryReview: (agent: string) =>
+          `${agent}'s human-in-the-loop event has already been recorded and can now be reviewed for audit purposes.`,
+        situationClarification: (agent: string) =>
+          `${agent} asked for more information. The current task will resume only after the missing input is provided.`,
+        situationDependency: (agent: string) =>
+          `${agent} cannot finish this step on its own yet and is waiting for outside help, an upstream dependency, or additional input.`,
+        situationApproval: (agent: string) =>
+          `${agent}'s next action was stopped by governance policy and now needs a human decision before the workflow can continue.`,
+        situationReview: (agent: string) =>
+          `${agent}'s human-in-the-loop step is already finished. This page now shows the outcome and audit context.`,
+      },
+      statusText: {
+        pending_intervention: "Pending",
+        resolved: "Resolved",
       rejected: "Rejected",
       failed: "Failed",
       expired: "Expired",

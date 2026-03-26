@@ -3,6 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangleIcon,
+  ChevronDownIcon,
   ExternalLinkIcon,
   Loader2Icon,
   RefreshCwIcon,
@@ -22,6 +23,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Empty,
   EmptyDescription,
@@ -50,8 +56,10 @@ import {
   WorkspaceHeader,
 } from "@/components/workspace/workspace-container";
 import {
+  getGovernanceActionTarget,
   getGovernanceDisplaySummary,
   getGovernanceDisplayTitle,
+  getGovernanceItemKind,
   pathOfGovernanceThread,
   resumeGovernanceThread,
   toGovernanceFilterEndISO,
@@ -177,6 +185,111 @@ function getStatusLabel(
   return t.governance.statusText[status] ?? item.status;
 }
 
+function hasReadableText(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const text = value.trim();
+  return Boolean(text && text !== "--");
+}
+
+function getKindBadgeClass(kind: ReturnType<typeof getGovernanceItemKind>) {
+  switch (kind) {
+    case "clarification":
+      return "border-cyan-300/80 bg-cyan-500/10 text-cyan-700";
+    case "dependency":
+      return "border-orange-300/80 bg-orange-500/10 text-orange-700";
+    case "approval":
+      return "border-emerald-300/80 bg-emerald-500/10 text-emerald-700";
+    default:
+      return "border-border bg-muted text-muted-foreground";
+  }
+}
+
+function getGovernanceKindLabel(
+  item: GovernanceItem,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  const kind = getGovernanceItemKind(item);
+  return t.governance.kindText[kind];
+}
+
+function getReadableGovernanceTitle(
+  item: GovernanceItem,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  const title = getGovernanceDisplayTitle(item);
+  if (hasReadableText(title)) {
+    return title!;
+  }
+
+  const kind = getGovernanceItemKind(item);
+  switch (kind) {
+    case "clarification":
+      return t.governance.readable.titleClarification(item.source_agent);
+    case "dependency":
+      return t.governance.readable.titleDependency(item.source_agent);
+    case "approval":
+      return t.governance.readable.titleApproval(item.source_agent);
+    default:
+      return t.governance.readable.titleReview(item.source_agent);
+  }
+}
+
+function getReadableGovernanceSummary(
+  item: GovernanceItem,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  const summary = getGovernanceDisplaySummary(item);
+  if (hasReadableText(summary)) {
+    return summary!;
+  }
+
+  const kind = getGovernanceItemKind(item);
+  switch (kind) {
+    case "clarification":
+      return t.governance.readable.summaryClarification(item.source_agent);
+    case "dependency":
+      return t.governance.readable.summaryDependency(item.source_agent);
+    case "approval":
+      return t.governance.readable.summaryApproval(item.source_agent);
+    default:
+      return t.governance.readable.summaryReview(item.source_agent);
+  }
+}
+
+function getReadableGovernanceSituation(
+  item: GovernanceItem,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  const kind = getGovernanceItemKind(item);
+  switch (kind) {
+    case "clarification":
+      return t.governance.readable.situationClarification(item.source_agent);
+    case "dependency":
+      return t.governance.readable.situationDependency(item.source_agent);
+    case "approval":
+      return t.governance.readable.situationApproval(item.source_agent);
+    default:
+      return t.governance.readable.situationReview(item.source_agent);
+  }
+}
+
+function getReadableGovernanceNextStep(
+  item: GovernanceItem,
+  t: ReturnType<typeof useI18n>["t"],
+) {
+  const actionTarget = getGovernanceActionTarget(item);
+  if (actionTarget === "console") {
+    return t.governance.guidance.resolveInConsole;
+  }
+  if (actionTarget === "thread") {
+    return t.governance.guidance.continueInThread;
+  }
+  return t.governance.guidance.auditOnly;
+}
+
 function GovernanceList({
   items,
   selectedId,
@@ -223,8 +336,10 @@ function GovernanceList({
     <ScrollArea className="min-h-0 flex-1">
       <div className="space-y-3 p-1">
         {items.map((item) => {
-          const summary = getGovernanceDisplaySummary(item);
-          const title = getGovernanceDisplayTitle(item) ?? item.governance_id;
+          const kind = getGovernanceItemKind(item);
+          const summary = getReadableGovernanceSummary(item, t);
+          const nextStep = getReadableGovernanceNextStep(item, t);
+          const title = getReadableGovernanceTitle(item, t);
           const isActive = item.governance_id === selectedId;
 
           return (
@@ -242,6 +357,9 @@ function GovernanceList({
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline" className={getRiskBadgeClass(item.risk_level)}>
                   {item.risk_level}
+                </Badge>
+                <Badge variant="outline" className={getKindBadgeClass(kind)}>
+                  {getGovernanceKindLabel(item, t)}
                 </Badge>
                 <Badge
                   variant="outline"
@@ -261,6 +379,9 @@ function GovernanceList({
                   {summary}
                 </div>
               ) : null}
+              <div className="mt-3 text-xs leading-5 text-foreground/80">
+                {nextStep}
+              </div>
               <div className="mt-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
                 <span>{formatTimeAgo(item.created_at)}</span>
                 <span className="font-mono">{item.thread_id}</span>
@@ -516,6 +637,114 @@ function GovernanceDetail({
     );
   }
 
+  const title = getReadableGovernanceTitle(item, t);
+  const summary = getReadableGovernanceSummary(item, t);
+  const situation = getReadableGovernanceSituation(item, t);
+  const nextStep = getReadableGovernanceNextStep(item, t);
+  const kind = getGovernanceItemKind(item);
+  const relatedEntries = [
+    {
+      key: "createdAt",
+      label: t.governance.labels.createdAt,
+      value: formatTimestamp(item.created_at),
+      mono: false,
+    },
+    hasReadableText(item.resolved_at)
+      ? {
+          key: "resolvedAt",
+          label: t.governance.labels.resolvedAt,
+          value: formatTimestamp(item.resolved_at),
+          mono: false,
+        }
+      : null,
+    {
+      key: "status",
+      label: t.governance.labels.status,
+      value: getStatusLabel(item, t),
+      mono: false,
+    },
+    {
+      key: "risk",
+      label: t.governance.labels.risk,
+      value: item.risk_level,
+      mono: false,
+    },
+    {
+      key: "sourceAgent",
+      label: t.governance.labels.sourceAgent,
+      value: item.source_agent,
+      mono: false,
+    },
+    hasReadableText(item.intervention_tool_name)
+      ? {
+          key: "tool",
+          label: t.governance.labels.tool,
+          value: item.intervention_tool_name,
+          mono: false,
+        }
+      : null,
+  ].filter(Boolean) as Array<{
+    key: string;
+    label: string;
+    value: string;
+    mono: boolean;
+  }>;
+  const technicalEntries = [
+    {
+      key: "category",
+      label: t.governance.labels.category,
+      value: item.category,
+      mono: false,
+    },
+    {
+      key: "hook",
+      label: t.governance.labels.hook,
+      value: item.hook_name,
+      mono: false,
+    },
+    {
+      key: "thread",
+      label: t.governance.labels.thread,
+      value: item.thread_id,
+      mono: true,
+    },
+    {
+      key: "run",
+      label: t.governance.labels.run,
+      value: item.run_id,
+      mono: true,
+    },
+    {
+      key: "task",
+      label: t.governance.labels.task,
+      value: item.task_id,
+      mono: true,
+    },
+    hasReadableText(item.request_id)
+      ? {
+          key: "request",
+          label: t.governance.labels.request,
+          value: item.request_id,
+          mono: true,
+        }
+      : null,
+    hasReadableText(item.intervention_fingerprint)
+      ? {
+          key: "fingerprint",
+          label: t.governance.labels.fingerprint,
+          value: item.intervention_fingerprint,
+          mono: true,
+        }
+      : null,
+  ].filter(Boolean) as Array<{
+    key: string;
+    label: string;
+    value: string;
+    mono: boolean;
+  }>;
+  const hasReason = hasReadableText(item.reason);
+  const hasActionSummary = hasReadableText(item.action_summary);
+
   return (
     <ScrollArea className="min-h-0 flex-1">
       <div className="space-y-4 p-4">
@@ -525,17 +754,18 @@ function GovernanceDetail({
               <Badge variant="outline" className={getRiskBadgeClass(item.risk_level)}>
                 {item.risk_level}
               </Badge>
+              <Badge variant="outline" className={getKindBadgeClass(kind)}>
+                {getGovernanceKindLabel(item, t)}
+              </Badge>
               <Badge variant="outline" className={getStatusBadgeClass(item.status)}>
                 {getStatusLabel(item, t)}
               </Badge>
               <span className="text-sm text-muted-foreground">{item.source_agent}</span>
             </div>
-            <div className="text-xl font-semibold text-foreground">
-              {getGovernanceDisplayTitle(item) ?? item.governance_id}
-            </div>
-            {getGovernanceDisplaySummary(item) ? (
+            <div className="text-xl font-semibold text-foreground">{title}</div>
+            {summary ? (
               <div className="max-w-3xl text-sm leading-7 text-muted-foreground">
-                {getGovernanceDisplaySummary(item)}
+                {summary}
               </div>
             ) : null}
           </div>
@@ -554,33 +784,42 @@ function GovernanceDetail({
           </div>
         ) : null}
 
-        <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-          <MetaRow
-            label={t.governance.labels.createdAt}
-            value={formatTimestamp(item.created_at)}
-          />
-          <MetaRow
-            label={t.governance.labels.resolvedAt}
-            value={formatTimestamp(item.resolved_at)}
-          />
-          <MetaRow
-            label={t.governance.labels.status}
-            value={getStatusLabel(item, t)}
-          />
-          <MetaRow label={t.governance.labels.category} value={item.category} />
-          <MetaRow label={t.governance.labels.hook} value={item.hook_name} />
-          <MetaRow label={t.governance.labels.tool} value={item.intervention_tool_name} />
-          <MetaRow label={t.governance.labels.thread} value={item.thread_id} mono />
-          <MetaRow label={t.governance.labels.run} value={item.run_id} mono />
-          <MetaRow label={t.governance.labels.task} value={item.task_id} mono />
-          <MetaRow label={t.governance.labels.request} value={item.request_id} mono />
-          <MetaRow
-            label={t.governance.labels.fingerprint}
-            value={item.intervention_fingerprint}
-            mono
-          />
-          <MetaRow label={t.governance.labels.sourceAgent} value={item.source_agent} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card className="border-border/70 bg-background/80 py-0">
+            <CardHeader>
+              <CardTitle className="text-base">
+                {t.governance.labels.currentSituation}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm leading-7 text-muted-foreground">
+              {situation}
+            </CardContent>
+          </Card>
+          <Card className="border-border/70 bg-background/80 py-0">
+            <CardHeader>
+              <CardTitle className="text-base">{t.governance.labels.nextStep}</CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm leading-7 text-muted-foreground">
+              {nextStep}
+            </CardContent>
+          </Card>
         </div>
+
+        <Card className="border-border/70 bg-background/80 py-0">
+          <CardHeader>
+            <CardTitle className="text-base">{t.governance.labels.relatedContext}</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+            {relatedEntries.map((entry) => (
+              <MetaRow
+                key={entry.key}
+                label={entry.label}
+                value={entry.value}
+                mono={entry.mono}
+              />
+            ))}
+          </CardContent>
+        </Card>
 
         {item.intervention_display?.sections?.length ? (
           <Card className="border-border/70 bg-background/80 py-0">
@@ -613,26 +852,30 @@ function GovernanceDetail({
           </Card>
         ) : null}
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card className="border-border/70 bg-background/80 py-0">
-            <CardHeader>
-              <CardTitle className="text-base">{t.governance.labels.reason}</CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm leading-7 text-muted-foreground">
-              {item.reason ?? "--"}
-            </CardContent>
-          </Card>
-          <Card className="border-border/70 bg-background/80 py-0">
-            <CardHeader>
-              <CardTitle className="text-base">
-                {t.governance.labels.actionSummary}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm leading-7 text-muted-foreground">
-              {item.action_summary ?? "--"}
-            </CardContent>
-          </Card>
-        </div>
+        {hasReason || hasActionSummary ? (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="border-border/70 bg-background/80 py-0">
+              <CardHeader>
+                <CardTitle className="text-base">{t.governance.labels.reason}</CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm leading-7 text-muted-foreground">
+                {hasReason ? item.reason : t.governance.guidance.noReason}
+              </CardContent>
+            </Card>
+            <Card className="border-border/70 bg-background/80 py-0">
+              <CardHeader>
+                <CardTitle className="text-base">
+                  {t.governance.labels.actionSummary}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-sm leading-7 text-muted-foreground">
+                {hasActionSummary
+                  ? item.action_summary
+                  : t.governance.guidance.noActionSummary}
+              </CardContent>
+            </Card>
+          </div>
+        ) : null}
 
         {item.intervention_display?.risk_tip ? (
           <Card className="border-amber-300/60 bg-amber-500/5 py-0">
@@ -647,6 +890,32 @@ function GovernanceDetail({
             </CardContent>
           </Card>
         ) : null}
+
+        <Collapsible className="rounded-2xl border border-border/70 bg-background/80">
+          <CollapsibleTrigger className="group flex w-full items-center justify-between gap-3 px-5 py-4 text-left">
+            <div>
+              <div className="text-base font-semibold text-foreground">
+                {t.governance.labels.technicalDetail}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {item.governance_id}
+              </div>
+            </div>
+            <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="border-t border-border/60 px-5 py-4">
+            <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+              {technicalEntries.map((entry) => (
+                <MetaRow
+                  key={entry.key}
+                  label={entry.label}
+                  value={entry.value}
+                  mono={entry.mono}
+                />
+              ))}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         {showActions ? (
           <Card className="border-border/70 bg-background/80 py-0">
@@ -710,7 +979,14 @@ export function GovernanceConsole() {
   });
   const resolveMutation = useResolveGovernanceItem();
 
-  const queueItems = queueQuery.data?.items ?? EMPTY_GOVERNANCE_ITEMS;
+  const rawQueueItems = queueQuery.data?.items ?? EMPTY_GOVERNANCE_ITEMS;
+  const queueItems = useMemo(
+    () =>
+      rawQueueItems.filter(
+        (item) => getGovernanceActionTarget(item) === "console",
+      ),
+    [rawQueueItems],
+  );
   const rawHistoryItems = historyQuery.data?.items ?? EMPTY_GOVERNANCE_ITEMS;
   const historyItems = rawHistoryItems;
 
@@ -843,7 +1119,7 @@ export function GovernanceConsole() {
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <Badge variant="outline" className="border-border/70 bg-muted/20">
-                  {t.governance.queueCount(queueQuery.data?.total ?? 0)}
+                  {t.governance.queueCount(queueItems.length)}
                 </Badge>
                 <Badge variant="outline" className="border-border/70 bg-muted/20">
                   {t.governance.historyCount(historyQuery.data?.total ?? 0)}

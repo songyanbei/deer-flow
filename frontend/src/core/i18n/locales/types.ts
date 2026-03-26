@@ -194,6 +194,11 @@ export interface Translations {
       resolvedAt: string;
       status: string;
       risk: string;
+      eventType: string;
+      currentSituation: string;
+      nextStep: string;
+      relatedContext: string;
+      technicalDetail: string;
       category: string;
       hook: string;
       thread: string;
@@ -212,6 +217,7 @@ export interface Translations {
       openThread: string;
       approve: string;
       resolve: string;
+      technicalDetail: string;
     };
     states: {
       loadingQueue: string;
@@ -231,6 +237,33 @@ export interface Translations {
       stale: string;
       invalid: string;
       failed: string;
+    };
+    kindText: {
+      clarification: string;
+      dependency: string;
+      approval: string;
+      review: string;
+    };
+    guidance: {
+      resolveInConsole: string;
+      continueInThread: string;
+      auditOnly: string;
+      noReason: string;
+      noActionSummary: string;
+    };
+    readable: {
+      titleClarification: (agent: string) => string;
+      titleDependency: (agent: string) => string;
+      titleApproval: (agent: string) => string;
+      titleReview: (agent: string) => string;
+      summaryClarification: (agent: string) => string;
+      summaryDependency: (agent: string) => string;
+      summaryApproval: (agent: string) => string;
+      summaryReview: (agent: string) => string;
+      situationClarification: (agent: string) => string;
+      situationDependency: (agent: string) => string;
+      situationApproval: (agent: string) => string;
+      situationReview: (agent: string) => string;
     };
     statusText: {
       pending_intervention: string;

@@ -1,6 +1,6 @@
 # Feature: Workflow Phase 5 Two-Stage Governance Core And Operator Console
 
-- Status: `Stage 5A backend + regression complete; Stage 5B pending`
+- Status: `Stage 5A backend + regression complete; Stage 5B in progress`
 - Owner suggestion: `backend` + `frontend` + `test`
 - Related area: workflow runtime, intervention lifecycle, runtime hooks, policy enforcement, audit, approval ops
 - Frontend impact: `none required in Stage 5A`, `required in Stage 5B`
@@ -257,6 +257,14 @@ Stage 5A 不应外溢到：
 - inline card / resolve / resume / clarification regression
 
 ## Stage 5B: Operator Console / Approval Ops
+
+### Implementation Snapshot (`2026-03-26`)
+
+- Stage 5B operator console route, queue/detail/history flow, and operator resolve path are implemented.
+- The console now presents governance items as readable tasks first, instead of exposing runtime hook fields on the first screen.
+- Pending queue items are narrowed to actionable console tasks.
+- Thread-only clarification style events are intentionally filtered out of the main pending queue because they are better handled in the original thread.
+- Hook/category/request/fingerprint remain available for audit and debugging, but they now live under technical detail instead of the primary summary area.
 
 ### Stage Goal
 

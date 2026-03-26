@@ -1,6 +1,6 @@
 # Frontend Checklist: Workflow Phase 5 Two-Stage Governance Core And Operator Console
 
-- Status: `Stage 5A regression verified; Stage 5B pending`
+- Status: `Stage 5A regression verified; Stage 5B in progress`
 - Depends on: [workflow-phase5-two-stage-governance-core-and-operator-console.md](E:\work\deer-flow\collaboration\features\workflow-phase5-two-stage-governance-core-and-operator-console.md)
 - Last updated: `2026-03-26`
 
@@ -60,6 +60,21 @@ Stage 5A 期间必须坚持：
 - [x] Stage 5A 未新增 operator console 入口，前端边界保持不变
 
 ## Stage 5B: Operator Console / Approval Ops
+
+## 5B Snapshot (`2026-03-26`)
+
+- [x] Governance console route, queue/detail/history views, and operator resolve flow are implemented.
+- [x] The console now uses a task-first reading order instead of exposing runtime hook fields first.
+- [x] Pending queue items are filtered to actionable console tasks only.
+- [x] Thread-only clarification style items are no longer shown in the main pending queue.
+- [x] Hook/category/request/fingerprint are still available, but only inside technical detail.
+- [ ] History is still a broad audit view and has not yet been split into lighter record groups.
+
+## 5B Progress Notes (`2026-03-26`)
+
+- [x] Queue, detail, history, and resolve flow are no longer just protocol views; they now explain what happened and what the operator should do next.
+- [x] Governance item kinds are mapped into readable task categories such as clarification, dependency, approval, and audit record.
+- [x] The main pending queue intentionally excludes items that are better resolved by replying in the original thread.
 
 ## 6. Stage Goal
 
