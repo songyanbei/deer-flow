@@ -144,6 +144,10 @@ describe("workflow progress helpers", () => {
             intervention_type: "approval",
             title: "Need approval",
             reason: "Please approve the risky action.",
+            display: {
+              title: "Confirm email delivery",
+              summary: "An external email will be sent to the customer.",
+            },
             source_agent: "ops-agent",
             source_task_id: "task-1",
             action_schema: { actions: [] },
@@ -160,7 +164,7 @@ describe("workflow progress helpers", () => {
     });
 
     expect(summary?.title).toBe("Waiting for your decision");
-    expect(summary?.detail).toBe("Please approve the risky action.");
+    expect(summary?.detail).toBe("An external email will be sent to the customer.");
     expect(summary?.isWaitingIntervention).toBe(true);
   });
 

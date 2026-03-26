@@ -1,4 +1,5 @@
 import type { Translations } from "@/core/i18n/locales/types";
+import { getInterventionDisplaySummary } from "@/core/interventions/view";
 import { localizeStatusDetail } from "@/core/tasks/status-detail";
 import type { TaskViewModel } from "@/core/tasks/types";
 import type { AgentThreadState } from "@/core/threads";
@@ -145,9 +146,9 @@ export function getWorkflowProgressSummary({
       workflowStage === "routing");
   const waitingTaskDetail = interventionTask
     ? pickFirstNonEmpty([
-        interventionTask.interventionRequest?.reason,
-        interventionTask.interventionRequest?.description,
-        interventionTask.interventionRequest?.action_summary,
+        interventionTask.interventionRequest
+          ? getInterventionDisplaySummary(interventionTask.interventionRequest)
+          : undefined,
         l(interventionTask.statusDetail),
         interventionTask.description,
       ])

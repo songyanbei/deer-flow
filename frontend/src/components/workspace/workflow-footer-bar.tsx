@@ -16,6 +16,7 @@ import { useMemo, useState } from "react";
 
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { useI18n } from "@/core/i18n/hooks";
+import { getInterventionDisplaySummary } from "@/core/interventions/view";
 import { useSubtaskContext } from "@/core/tasks/context";
 import { localizeStatusDetail } from "@/core/tasks/status-detail";
 import type { TaskViewModel } from "@/core/tasks/types";
@@ -61,7 +62,10 @@ function getTaskDetail(
   if (task.clarificationRequest?.title) return task.clarificationRequest.title;
   if (task.clarificationPrompt) return task.clarificationPrompt;
   if (task.blockedReason) return task.blockedReason;
-  if (task.interventionRequest?.reason) return task.interventionRequest.reason;
+  if (task.interventionRequest) {
+    const summary = getInterventionDisplaySummary(task.interventionRequest);
+    if (summary) return summary;
+  }
 
   const localized =
     localizeStatusDetail(task.latestUpdate, t) ??
@@ -298,7 +302,7 @@ export function WorkflowFooterBar({
             className="overflow-hidden"
           >
             <div className="border-border/60 bg-accent flex max-h-[34vh] flex-col gap-2 border-t px-2 pb-2 pt-2">
-              {(progress || stopped) && (
+              {(progress != null || stopped) && (
                 <div className="text-muted-foreground px-2 text-xs leading-4">
                   <span className="font-medium text-foreground">
                     {stopped ? t.workflowStatus.stopped : progress?.title}

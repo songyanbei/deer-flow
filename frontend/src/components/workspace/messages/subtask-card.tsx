@@ -17,6 +17,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/core/i18n/hooks";
+import { getInterventionDisplaySummary } from "@/core/interventions/view";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { streamdownPluginsWithWordAnimation } from "@/core/streamdown";
@@ -28,8 +29,8 @@ import { cn } from "@/lib/utils";
 import { CitationLink } from "../citations/citation-link";
 import { FlipDisplay } from "../flip-display";
 
-import { MarkdownContent } from "./markdown-content";
 import { InterventionCard } from "./intervention-card";
+import { MarkdownContent } from "./markdown-content";
 
 const INTERNAL_ERROR_PATTERNS = [
   /domain agent returned no final answer/i,
@@ -81,8 +82,11 @@ function getStatusLabel(task: ReturnType<typeof useSubtask>, t: ReturnType<typeo
     );
   }
   if (task.status === "waiting_intervention") {
+    const summary = task.interventionRequest
+      ? getInterventionDisplaySummary(task.interventionRequest)
+      : undefined;
     return (
-      task.interventionRequest?.reason ??
+      summary ??
       localizedDetail ??
       localizedUpdate ??
       t.subtasks.waiting_intervention

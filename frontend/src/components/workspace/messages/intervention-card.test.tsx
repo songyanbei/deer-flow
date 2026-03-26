@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/core/i18n/context";
 import type { TaskViewModel } from "@/core/tasks/types";
 
-import { ThreadContext } from "./context";
+import { ThreadContext, type ThreadContextType } from "./context";
 import { InterventionCard } from "./intervention-card";
 
 const mutateAsyncMock = vi.fn();
@@ -83,7 +83,7 @@ function renderCard(task: TaskViewModel) {
     root.render(
       <I18nProvider initialLocale="en-US">
         <ThreadContext.Provider
-          value={{ thread: mockThread as Parameters<typeof ThreadContext.Provider>[0]["value"]["thread"] }}
+          value={{ thread: mockThread as ThreadContextType["thread"] }}
         >
           <InterventionCard task={task} />
         </ThreadContext.Provider>
@@ -328,7 +328,7 @@ describe("InterventionCard", () => {
 
     // thread.submit must be called to create the observable resume run
     expect(submitMock).toHaveBeenCalledTimes(1);
-    const [submitValues, submitOptions] = submitMock.mock.calls[0];
+    const [submitValues, submitOptions] = submitMock.mock.calls[0]!;
 
     // Verify the human message carries the intervention_resolved prefix
     expect(submitValues.messages[0].type).toBe("human");

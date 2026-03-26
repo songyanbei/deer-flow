@@ -188,6 +188,10 @@ describe("WorkflowFooterBar", () => {
           intervention_type: "approval",
           title: "Need approval",
           reason: "Please approve the risky action.",
+          display: {
+            title: "Confirm outbound email",
+            summary: "An external email is ready to send.",
+          },
           source_agent: "ops-agent",
           source_task_id: "task-1",
           action_schema: { actions: [] },
@@ -202,7 +206,6 @@ describe("WorkflowFooterBar", () => {
     ]);
 
     expect(rendered.container.textContent).toContain("Approve sending the email");
-    expect(rendered.container.textContent).toContain("intervention:Need approval");
 
     const trigger = rendered.container.querySelector("button");
     if (!trigger) {
@@ -214,7 +217,7 @@ describe("WorkflowFooterBar", () => {
     });
 
     expect(rendered.container.textContent).toContain(
-      "Please approve the risky action.",
+      "An external email is ready to send.",
     );
 
     rendered.cleanup();
