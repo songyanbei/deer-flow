@@ -39,6 +39,10 @@ def ensure_default_hooks() -> None:
     from .verification_hooks import install_default_runtime_hooks
     install_default_runtime_hooks()
 
+    # Phase 5A: install governance audit hooks alongside verification hooks
+    from src.agents.governance.audit_hooks import install_governance_audit_hooks
+    install_governance_audit_hooks()
+
 
 # ---------------------------------------------------------------------------
 # Error type

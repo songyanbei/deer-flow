@@ -3,6 +3,11 @@
 Phase 1: tool-originated intervention only. Intercepts risky tool calls before they
 execute side effects, emits an `intervention_required` ToolMessage, and returns
 Command(goto=END) so the executor can write WAITING_INTERVENTION state.
+
+Phase 5A: Governance Core integration. When a governance policy rule matches,
+the engine's decision takes precedence (allow / require_intervention / deny).
+When no policy matches, falls back to the existing keyword-based detection.
+All decisions are recorded in the governance ledger for audit.
 """
 
 import hashlib
@@ -20,6 +25,8 @@ from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from src.agents.governance.engine import GovernanceEngine, governance_engine
+from src.agents.governance.types import GovernanceDecision
 from src.agents.intervention.decision_cache import (
     increment_cache_reuse_count,
     is_intervention_cache_valid,
@@ -218,16 +225,20 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         run_id: str = "",
         task_id: str = "",
         agent_name: str = "",
+        thread_id: str = "",
         resolved_fingerprints: set[str] | None = None,
         intervention_cache: dict[str, dict[str, Any]] | None = None,
+        engine: GovernanceEngine | None = None,
     ):
         self._intervention_policies = intervention_policies or {}
         self._hitl_keywords = hitl_keywords or []
         self._run_id = run_id
         self._task_id = task_id
         self._agent_name = agent_name
+        self._thread_id = thread_id
         self._resolved_fingerprints = resolved_fingerprints or set()
         self._intervention_cache = intervention_cache if intervention_cache is not None else {}
+        self._engine = engine or governance_engine
 
     def _should_intervene(self, tool_name: str, tool_args: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         """Determine whether a tool call should trigger intervention.
@@ -335,14 +346,74 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         return Command(update={"messages": [tool_message]}, goto=END)
 
     def _process_tool_call(self, request: ToolCallRequest, handler: Callable) -> ToolMessage | Command:
-        """Common logic for sync/async tool call processing."""
-        tool_name = request.tool_call.get("name", "")
+        """Common logic for sync/async tool call processing.
 
-        should_intervene, policy = self._should_intervene(tool_name, request.tool_call.get("args", {}))
+        Phase 5A: governance engine is consulted first.  If a policy rule
+        matches, its decision is authoritative (allow / deny / require_intervention).
+        When no policy matches, fall back to existing keyword-based detection.
+        """
+        tool_name = request.tool_call.get("name", "")
+        tool_args = request.tool_call.get("args", {})
+
+        # --- Phase 5A: Governance engine evaluation ---
+        evaluation = self._engine.evaluate_before_tool(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            agent_name=self._agent_name,
+            task_id=self._task_id,
+            run_id=self._run_id,
+            thread_id=self._thread_id,
+        )
+
+        if evaluation.policy_matched:
+            if evaluation.decision == GovernanceDecision.ALLOW:
+                logger.info(
+                    "[InterventionMiddleware] governance_allow tool='%s' rule=%s",
+                    tool_name, evaluation.rule_id,
+                )
+                return None  # allow — proceed to handler
+
+            if evaluation.decision == GovernanceDecision.DENY:
+                logger.warning(
+                    "[InterventionMiddleware] governance_deny tool='%s' rule=%s reason=%s",
+                    tool_name, evaluation.rule_id, evaluation.reason,
+                )
+                tool_call_id = request.tool_call.get("id", "")
+                deny_message = ToolMessage(
+                    content=json.dumps({
+                        "error": "governance_denied",
+                        "reason": evaluation.reason or f"Tool {tool_name} is denied by governance policy.",
+                        "rule_id": evaluation.rule_id,
+                        "governance_id": evaluation.governance_id,
+                    }, ensure_ascii=False),
+                    tool_call_id=tool_call_id,
+                    name="governance_denied",
+                )
+                return Command(update={"messages": [deny_message]}, goto=END)
+
+            # GovernanceDecision.REQUIRE_INTERVENTION — build policy override
+            policy_override = {
+                "risk_level": evaluation.risk_level.value,
+            }
+            if evaluation.title:
+                policy_override["title"] = evaluation.title
+            if evaluation.reason:
+                policy_override["reason"] = evaluation.reason
+            if evaluation.display_overrides:
+                policy_override.update(evaluation.display_overrides)
+
+            # Still check dedup before emitting
+            if self._check_already_resolved(tool_name, tool_args):
+                return None
+            if self._check_cached_resolution(tool_name, tool_args):
+                return None
+
+            return self._handle_intervention(request, tool_name, tool_args, policy_override or None)
+
+        # --- Fallback: existing keyword-based detection (no policy matched) ---
+        should_intervene, policy = self._should_intervene(tool_name, tool_args)
         if not should_intervene:
             return None  # signal to call handler
-
-        tool_args = request.tool_call.get("args", {})
 
         # Dedup: skip if already resolved in this run
         if self._check_already_resolved(tool_name, tool_args):

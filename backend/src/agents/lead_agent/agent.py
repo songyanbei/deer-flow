@@ -272,6 +272,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
         intervention_agent_name = config.get("configurable", {}).get("agent_name") or ""
         resolved_fingerprints = config.get("configurable", {}).get("resolved_fingerprints") or set()
         intervention_cache = config.get("configurable", {}).get("intervention_cache")
+        intervention_thread_id = config.get("configurable", {}).get("thread_id") or ""
         middlewares.append(
             InterventionMiddleware(
                 intervention_policies=intervention_policies,
@@ -279,6 +280,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
                 run_id=run_id,
                 task_id=task_id,
                 agent_name=intervention_agent_name,
+                thread_id=intervention_thread_id,
                 resolved_fingerprints=resolved_fingerprints,
                 intervention_cache=intervention_cache,
             )
