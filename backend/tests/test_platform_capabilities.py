@@ -25,7 +25,7 @@ def test_all_capabilities_assigned_to_exactly_one_tier():
 
 def test_platform_core_count():
     core = list_capabilities(CapabilityTier.PLATFORM_CORE)
-    assert len(core) >= 12, "Expected at least 12 Platform Core capabilities"
+    assert len(core) >= 14, "Expected at least 14 Platform Core capabilities"
 
 
 def test_capability_profile_count():
@@ -83,6 +83,29 @@ def test_middleware_chain_is_platform_core():
     cap = get_capability("middleware_chain")
     assert cap is not None
     assert cap.tier == CapabilityTier.PLATFORM_CORE
+
+
+def test_build_time_extension_hooks_is_platform_core():
+    cap = get_capability("build_time_extension_hooks")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
+
+
+def test_sandbox_workspace_runtime_is_platform_core():
+    cap = get_capability("sandbox_workspace_runtime")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
+
+
+def test_intervention_protocol_covers_help_and_clarification():
+    cap = get_capability("intervention_protocol")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
+    # Verify the descriptor now explicitly covers all three interrupt paths
+    assert "ask_clarification" in cap.notes
+    assert "request_help" in cap.notes
+    assert "ClarificationMiddleware" in cap.evidence
+    assert "HelpRequestMiddleware" in cap.evidence
 
 
 def test_meeting_hints_is_pilot():

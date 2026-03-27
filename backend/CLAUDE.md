@@ -170,7 +170,7 @@ The platform classifies all runtime capabilities into three tiers and provides v
 - `capability_profiles.py` — Admission contracts for 4 capability profiles + platform core wiring validation. `validate_profile_admission()` runs profile admission checks; `validate_all_active_profiles()` auto-detects activated profiles; `validate_platform_core_wiring()` checks guardrail/MCP/tool-call config integrity.
 - `agents_config.py` — `validate_agent_platform_readiness()` combines onboarding + platform core wiring + profile admission in one call.
 
-**Platform Core capabilities** (12): engine_registry, workflow_runtime, intervention_protocol, runtime_hook_harness, parallel_scheduler, governance_core, observability_base, verifier_runtime, output_guardrails, mcp_binding_runtime, subagent_delegation, middleware_chain.
+**Platform Core capabilities** (14): engine_registry, workflow_runtime, intervention_protocol, runtime_hook_harness, parallel_scheduler, governance_core, observability_base, verifier_runtime, output_guardrails, mcp_binding_runtime, subagent_delegation, middleware_chain, build_time_extension_hooks, sandbox_workspace_runtime.
 
 **Persistent Domain Memory Hint Extractor Registry** (`src/agents/persistent_domain_memory.py`):
 - `DomainHintExtractor` ABC — contract for domain-specific hint extraction

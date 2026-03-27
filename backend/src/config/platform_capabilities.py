@@ -107,11 +107,25 @@ _CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
     CapabilityDescriptor(
         key="intervention_protocol",
         tier=CapabilityTier.PLATFORM_CORE,
-        display_name="Intervention / Clarification / Resume Protocol",
-        description="Unified thread_state / workflow_resume / gateway resolve protocol.",
+        display_name="Intervention / Clarification / Help Escalation Protocol",
+        description=(
+            "Unified interrupt-resume protocol covering three paths: "
+            "(1) risky-tool intervention via InterventionMiddleware + governance engine, "
+            "(2) agent clarification via ask_clarification tool + ClarificationMiddleware, "
+            "(3) cross-domain help escalation via request_help tool + HelpRequestMiddleware "
+            "with user-owned vs system-level classification. All paths converge on "
+            "thread_state / workflow_resume / gateway resolve for storage and resumption."
+        ),
         open_strategy="default",
-        evidence="thread_state / workflow_resume / gateway resolve unified",
-        notes="Must not be exposed as per-agent protocol config.",
+        evidence=(
+            "InterventionMiddleware + ClarificationMiddleware + HelpRequestMiddleware "
+            "feed into unified thread_state / workflow_resume / gateway resolve"
+        ),
+        notes=(
+            "Agents use ask_clarification (all) and request_help (domain-only) tools; "
+            "the platform handles interrupt storage, fingerprint dedup, semantic caching, "
+            "outcome classification, and resume routing. Must not be per-agent configured."
+        ),
     ),
     CapabilityDescriptor(
         key="runtime_hook_harness",
@@ -219,6 +233,42 @@ _CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         notes=(
             "Middleware composition is fully platform-managed. New agents inherit the correct "
             "middleware set automatically based on is_domain_agent, model capabilities, and config."
+        ),
+    ),
+    CapabilityDescriptor(
+        key="build_time_extension_hooks",
+        tier=CapabilityTier.PLATFORM_CORE,
+        display_name="Build-Time Extension Hooks",
+        description=(
+            "Four-phase build-time hook contract (before_agent_build → before_skill_resolve → "
+            "before_mcp_bind → after_agent_build) driven by BuildContext + BuildTimeHooks. "
+            "Enables governance, capability filtering, tool injection, and audit at agent "
+            "construction time without modifying the core build pipeline."
+        ),
+        open_strategy="default",
+        evidence="BuildContext dataclass + BuildTimeHooks ABC + set_build_time_hooks() singleton in engines/base.py",
+        notes=(
+            "Hooks are global singleton with no-op defaults. Agents do not register their own "
+            "hooks; the platform or extension layer sets them once at startup. Writable fields "
+            "limited to available_skills, extra_tools, and metadata."
+        ),
+    ),
+    CapabilityDescriptor(
+        key="sandbox_workspace_runtime",
+        tier=CapabilityTier.PLATFORM_CORE,
+        display_name="Sandbox & Thread Workspace Runtime",
+        description=(
+            "Per-thread isolated workspace (workspace / uploads / outputs) with virtual path "
+            "translation (/mnt/user-data/ ↔ host paths), lazy directory creation, sandbox "
+            "provider abstraction (local / Docker), and path-traversal protection. "
+            "Managed by ThreadDataMiddleware + SandboxMiddleware + UploadsMiddleware."
+        ),
+        open_strategy="default",
+        evidence="Paths singleton + ThreadDataMiddleware + SandboxMiddleware + virtual path regex in tools.py",
+        notes=(
+            "All agents inherit thread workspace automatically. Sandbox tools (bash, ls, "
+            "read_file, write_file, str_replace) translate virtual paths transparently. "
+            "Subagents reuse parent thread workspace and sandbox instance."
         ),
     ),
 
