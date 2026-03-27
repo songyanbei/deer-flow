@@ -153,17 +153,22 @@ def load_agent_runbook(agent_name: str | None) -> str | None:
     if not agent_cfg:
         return None
 
-    # If the agent has an explicit runbook config, use it.
-    # Otherwise, check for the default RUNBOOK.md file.
     runbook_filename = agent_cfg.persistent_runbook_file or RUNBOOK_FILENAME
     runbook_path = agent_dir / runbook_filename
 
-    # Only load if the agent explicitly requests a runbook (via config)
-    # or if persistent_memory_enabled is set (backward compat).
-    if not agent_cfg.persistent_runbook_file and not agent_cfg.persistent_memory_enabled:
+    # Load the runbook when ANY of these is true:
+    #   1. persistent_runbook_file is explicitly configured
+    #   2. persistent_memory_enabled is set (backward compat)
+    #   3. the default RUNBOOK.md exists on disk
+    # This ensures domain_runbook_support works independently of persistent memory.
+    has_explicit_config = bool(agent_cfg.persistent_runbook_file)
+    has_memory_enabled = bool(agent_cfg.persistent_memory_enabled)
+    has_file_on_disk = runbook_path.exists()
+
+    if not (has_explicit_config or has_memory_enabled or has_file_on_disk):
         return None
 
-    if not runbook_path.exists():
+    if not has_file_on_disk:
         return None
 
     content = runbook_path.read_text(encoding="utf-8").strip()
@@ -203,12 +208,13 @@ def list_domain_agents() -> list[AgentConfig]:
 
 
 def validate_agent_platform_readiness(config: AgentConfig) -> dict:
-    """Run onboarding + active profile admission checks for an agent.
+    """Run onboarding + platform core wiring + active profile admission checks.
 
-    Returns a dict with ``onboarding`` and ``profiles`` reports.
+    Returns a dict with ``onboarding``, ``platform_core``, and ``profiles`` reports.
     This is a convenience wrapper that combines:
 
     * :func:`src.config.onboarding.validate_onboarding`
+    * :func:`src.config.capability_profiles.validate_platform_core_wiring`
     * :func:`src.config.capability_profiles.validate_all_active_profiles`
 
     Usage::
@@ -218,17 +224,19 @@ def validate_agent_platform_readiness(config: AgentConfig) -> dict:
             for issue_str in report["all_issues"]:
                 logger.warning(issue_str)
     """
-    from src.config.capability_profiles import validate_all_active_profiles
+    from src.config.capability_profiles import validate_all_active_profiles, validate_platform_core_wiring
     from src.config.onboarding import validate_onboarding
 
     onboarding = validate_onboarding(config)
+    platform_core = validate_platform_core_wiring(config)
     profiles = validate_all_active_profiles(config)
 
     all_issues: list[str] = [str(i) for i in onboarding.issues]
+    all_issues.extend(str(i) for i in platform_core.issues)
     for pr in profiles:
         all_issues.extend(str(i) for i in pr.issues)
 
-    ok = onboarding.ok and all(pr.ok for pr in profiles)
+    ok = onboarding.ok and platform_core.ok and all(pr.ok for pr in profiles)
 
     return {
         "ok": ok,
@@ -237,6 +245,7 @@ def validate_agent_platform_readiness(config: AgentConfig) -> dict:
             "ok": onboarding.ok,
             "issues": [str(i) for i in onboarding.issues],
         },
+        "platform_core": platform_core.to_dict(),
         "profiles": [pr.to_dict() for pr in profiles],
         "all_issues": all_issues,
     }

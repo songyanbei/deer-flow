@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from src.agents.persistent_domain_memory import (
     DomainHintExtractor,
@@ -11,9 +13,11 @@ from src.agents.persistent_domain_memory import (
     collect_allowed_hints,
     dedupe_hint_items,
     get_hint_extractor,
+    get_persistent_domain_runbook,
     list_registered_extractors,
     register_hint_extractor,
 )
+from src.config.agents_config import AgentConfig
 from src.agents.thread_state import TaskStatus
 
 # ---------------------------------------------------------------------------
@@ -124,3 +128,72 @@ def test_dedupe_hint_items_preserves_order():
     items = [("A", "1"), ("B", "2"), ("A", "1"), ("C", "3")]
     result = dedupe_hint_items(items)
     assert result == [("A", "1"), ("B", "2"), ("C", "3")]
+
+
+# ---------------------------------------------------------------------------
+# get_persistent_domain_runbook — independent of persistent_memory_enabled
+# ---------------------------------------------------------------------------
+
+def test_runbook_returned_when_only_persistent_runbook_file_set(tmp_path: Path):
+    """domain_runbook_support should work without persistent_memory_enabled."""
+    agent_dir = tmp_path / "agents" / "runbook-only-agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "CUSTOM_RUNBOOK.md").write_text("# Custom Runbook\nSome rules\n")
+
+    agent_cfg = AgentConfig(
+        name="runbook-only-agent",
+        domain="test",
+        persistent_runbook_file="CUSTOM_RUNBOOK.md",
+        persistent_memory_enabled=False,
+    )
+
+    with (
+        patch("src.agents.persistent_domain_memory.load_agent_config", return_value=agent_cfg),
+        patch("src.config.agents_config.load_agent_config", return_value=agent_cfg),
+        patch("src.config.agents_config.get_paths") as mock_paths,
+    ):
+        mock_paths.return_value.agent_dir.return_value = agent_dir
+        result = get_persistent_domain_runbook("runbook-only-agent")
+
+    assert "Custom Runbook" in result
+
+
+def test_runbook_returned_when_default_runbook_exists_on_disk(tmp_path: Path):
+    """A default RUNBOOK.md on disk should be injected even without explicit config."""
+    agent_dir = tmp_path / "agents" / "default-rb-agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "RUNBOOK.md").write_text("# Default Runbook\nDefault rules\n")
+    (agent_dir / "config.yaml").write_text("name: default-rb-agent\ndomain: test\n")
+
+    agent_cfg = AgentConfig(
+        name="default-rb-agent",
+        domain="test",
+        # Neither persistent_runbook_file nor persistent_memory_enabled
+    )
+
+    with (
+        patch("src.config.agents_config.load_agent_config", return_value=agent_cfg),
+        patch("src.config.agents_config.get_paths") as mock_paths,
+    ):
+        mock_paths.return_value.agent_dir.return_value = agent_dir
+        result = get_persistent_domain_runbook("default-rb-agent")
+
+    assert "Default Runbook" in result
+
+
+def test_runbook_empty_when_no_file_and_no_memory(tmp_path: Path):
+    """Without persistent_runbook_file, persistent_memory_enabled, or RUNBOOK.md on disk, no runbook."""
+    agent_dir = tmp_path / "agents" / "plain-agent"
+    agent_dir.mkdir(parents=True)
+    # No RUNBOOK.md on disk
+
+    agent_cfg = AgentConfig(name="plain-agent", domain="test")
+
+    with (
+        patch("src.config.agents_config.load_agent_config", return_value=agent_cfg),
+        patch("src.config.agents_config.get_paths") as mock_paths,
+    ):
+        mock_paths.return_value.agent_dir.return_value = agent_dir
+        result = get_persistent_domain_runbook("plain-agent")
+
+    assert result == ""

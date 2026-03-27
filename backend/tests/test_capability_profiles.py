@@ -10,6 +10,7 @@ from src.config.capability_profiles import (
     PROFILE_DEFINITIONS,
     get_profile_admission_matrix,
     validate_all_active_profiles,
+    validate_platform_core_wiring,
     validate_profile_admission,
 )
 
@@ -267,3 +268,72 @@ def test_admission_matrix_structure():
         assert "profile" in entry
         assert "goal" in entry
         assert "rollback" in entry
+
+
+# ---------------------------------------------------------------------------
+# Platform core wiring validation
+# ---------------------------------------------------------------------------
+
+def test_platform_core_passes_for_default_agent():
+    config = AgentConfig(name="clean-agent", domain="test")
+    report = validate_platform_core_wiring(config)
+    assert report.ok
+    assert len(report.issues) == 0
+
+
+def test_platform_core_rejects_negative_guardrail_retries():
+    config = AgentConfig(name="bad-agent", domain="test", guardrail_max_retries=-1)
+    report = validate_platform_core_wiring(config)
+    assert not report.ok
+    assert any(i.check == "guardrail_max_retries" for i in report.issues)
+
+
+def test_platform_core_warns_high_guardrail_retries():
+    config = AgentConfig(name="high-retry-agent", domain="test", guardrail_max_retries=10)
+    report = validate_platform_core_wiring(config)
+    assert report.ok  # warning, not error
+    assert any(i.check == "guardrail_max_retries" and i.severity == "warning" for i in report.issues)
+
+
+def test_platform_core_rejects_invalid_safe_default():
+    config = AgentConfig(name="bad-default-agent", domain="test", guardrail_safe_default="ignore")
+    report = validate_platform_core_wiring(config)
+    assert not report.ok
+    assert any(i.check == "guardrail_safe_default" for i in report.issues)
+
+
+def test_platform_core_accepts_valid_safe_defaults():
+    for value in ("complete", "fail"):
+        config = AgentConfig(name="agent", domain="test", guardrail_safe_default=value)
+        report = validate_platform_core_wiring(config)
+        assert not any(i.check == "guardrail_safe_default" for i in report.issues)
+
+
+def test_platform_core_rejects_empty_mcp_binding_ref():
+    from src.config.agents_config import McpBindingConfig
+    config = AgentConfig(name="mcp-agent", domain="test", mcp_binding=McpBindingConfig(domain=[""]))
+    report = validate_platform_core_wiring(config)
+    assert not report.ok
+    assert any(i.check == "mcp_binding_empty_ref" for i in report.issues)
+
+
+def test_platform_core_warns_ephemeral_mcp_binding():
+    from src.config.agents_config import McpBindingConfig
+    config = AgentConfig(name="eph-agent", domain="test", mcp_binding=McpBindingConfig(ephemeral=["temp-server"]))
+    report = validate_platform_core_wiring(config)
+    assert report.ok  # warning only
+    assert any(i.check == "mcp_binding_ephemeral" for i in report.issues)
+
+
+def test_platform_core_rejects_zero_max_tool_calls():
+    config = AgentConfig(name="no-tools-agent", domain="test", max_tool_calls=0)
+    report = validate_platform_core_wiring(config)
+    assert not report.ok
+    assert any(i.check == "max_tool_calls" for i in report.issues)
+
+
+def test_platform_core_warns_high_max_tool_calls():
+    config = AgentConfig(name="many-tools-agent", domain="test", max_tool_calls=200)
+    report = validate_platform_core_wiring(config)
+    assert report.ok  # warning only
+    assert any(i.check == "max_tool_calls" and i.severity == "warning" for i in report.issues)

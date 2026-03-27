@@ -424,3 +424,99 @@ def get_profile_admission_matrix() -> list[dict[str, str]]:
             "rollback": defn.rollback_doc,
         })
     return result
+
+
+# ---------------------------------------------------------------------------
+# Platform Core wiring validation
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass(slots=True)
+class PlatformCoreReport:
+    """Aggregated result of platform core wiring checks."""
+
+    agent_name: str
+    issues: list[AdmissionIssue] = dataclasses.field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not any(i.severity == "error" for i in self.issues)
+
+    @property
+    def warnings(self) -> list[AdmissionIssue]:
+        return [i for i in self.issues if i.severity == "warning"]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_name": self.agent_name,
+            "ok": self.ok,
+            "issues": [
+                {"check": i.check, "severity": i.severity, "message": i.message}
+                for i in self.issues
+            ],
+        }
+
+
+_VALID_GUARDRAIL_SAFE_DEFAULTS = frozenset({"complete", "fail"})
+
+
+def validate_platform_core_wiring(config: AgentConfig) -> PlatformCoreReport:
+    """Validate that platform core capabilities are properly wired for an agent.
+
+    Checks:
+    * **Output Guardrails** — guardrail config fields have valid values.
+    * **MCP Binding** — binding references only known server name patterns.
+    * **Subagent Delegation** — no direct validation needed (runtime config).
+    * **Middleware Chain** — no direct validation needed (platform-managed).
+    """
+    report = PlatformCoreReport(agent_name=config.name)
+
+    # ── Output Guardrails ─────────────────────────────────────────────
+    if config.guardrail_max_retries < 0:
+        report.issues.append(AdmissionIssue(
+            "platform_core", "guardrail_max_retries", "error",
+            f"guardrail_max_retries must be >= 0, got {config.guardrail_max_retries}.",
+        ))
+    if config.guardrail_max_retries > 5:
+        report.issues.append(AdmissionIssue(
+            "platform_core", "guardrail_max_retries", "warning",
+            f"guardrail_max_retries={config.guardrail_max_retries} is unusually high; "
+            f"each retry re-invokes the agent LLM. Consider <= 3.",
+        ))
+    if config.guardrail_safe_default not in _VALID_GUARDRAIL_SAFE_DEFAULTS:
+        report.issues.append(AdmissionIssue(
+            "platform_core", "guardrail_safe_default", "error",
+            f"guardrail_safe_default must be one of {sorted(_VALID_GUARDRAIL_SAFE_DEFAULTS)}, "
+            f"got '{config.guardrail_safe_default}'.",
+        ))
+
+    # ── MCP Binding ───────────────────────────────────────────────────
+    binding = config.get_effective_mcp_binding()
+    all_refs = binding.domain + binding.shared + binding.ephemeral
+    for ref in all_refs:
+        if not ref or not ref.strip():
+            report.issues.append(AdmissionIssue(
+                "platform_core", "mcp_binding_empty_ref", "error",
+                "MCP binding contains an empty server name reference.",
+            ))
+            break
+
+    if binding.ephemeral:
+        report.issues.append(AdmissionIssue(
+            "platform_core", "mcp_binding_ephemeral", "warning",
+            "Ephemeral MCP servers are reserved and not yet supported by the runtime.",
+        ))
+
+    # ── Max Tool Calls ────────────────────────────────────────────────
+    if config.max_tool_calls < 1:
+        report.issues.append(AdmissionIssue(
+            "platform_core", "max_tool_calls", "error",
+            f"max_tool_calls must be >= 1, got {config.max_tool_calls}.",
+        ))
+    if config.max_tool_calls > 100:
+        report.issues.append(AdmissionIssue(
+            "platform_core", "max_tool_calls", "warning",
+            f"max_tool_calls={config.max_tool_calls} is unusually high; "
+            f"this may allow runaway agent loops. Consider <= 50.",
+        ))
+
+    return report

@@ -281,9 +281,21 @@ def get_persistent_domain_memory_context(agent_name: str | None, *, max_tokens: 
 
 
 def get_persistent_domain_runbook(agent_name: str | None) -> str:
-    if not is_persistent_domain_memory_enabled(agent_name):
-        return ""
+    """Return the runbook content for an agent.
+
+    Delegates entirely to :func:`load_agent_runbook`, which loads the
+    runbook when **any** of the following is true:
+
+    * ``persistent_memory_enabled`` is set (original behaviour), OR
+    * ``persistent_runbook_file`` is explicitly configured, OR
+    * a default ``RUNBOOK.md`` exists on disk for the agent.
+
+    This allows ``domain_runbook_support`` to work independently of
+    the ``persistent_domain_memory`` profile.
+    """
     return load_agent_runbook(agent_name) or ""
+
+    return ""
 
 
 def _build_verified_task_memory_messages(

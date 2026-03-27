@@ -25,7 +25,7 @@ def test_all_capabilities_assigned_to_exactly_one_tier():
 
 def test_platform_core_count():
     core = list_capabilities(CapabilityTier.PLATFORM_CORE)
-    assert len(core) >= 8, "Expected at least 8 Platform Core capabilities"
+    assert len(core) >= 12, "Expected at least 12 Platform Core capabilities"
 
 
 def test_capability_profile_count():
@@ -58,6 +58,31 @@ def test_get_persistent_domain_memory_is_capability_profile():
     assert cap is not None
     assert cap.tier == CapabilityTier.CAPABILITY_PROFILE
     assert cap.open_strategy == "admission_required"
+
+
+def test_output_guardrails_is_platform_core():
+    cap = get_capability("output_guardrails")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
+    assert cap.open_strategy == "default"
+
+
+def test_mcp_binding_runtime_is_platform_core():
+    cap = get_capability("mcp_binding_runtime")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
+
+
+def test_subagent_delegation_is_platform_core():
+    cap = get_capability("subagent_delegation")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
+
+
+def test_middleware_chain_is_platform_core():
+    cap = get_capability("middleware_chain")
+    assert cap is not None
+    assert cap.tier == CapabilityTier.PLATFORM_CORE
 
 
 def test_meeting_hints_is_pilot():

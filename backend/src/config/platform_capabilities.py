@@ -158,6 +158,69 @@ _CAPABILITIES: tuple[CapabilityDescriptor, ...] = (
         evidence="verifier attached via runtime hooks",
         notes="Profiles only define domain-specific verifier packs.",
     ),
+    CapabilityDescriptor(
+        key="output_guardrails",
+        tier=CapabilityTier.PLATFORM_CORE,
+        display_name="Output Guardrails",
+        description=(
+            "Structured-output enforcement with verdict-based evaluation, "
+            "nudge retry, and safe-default override. Ensures all domain agents "
+            "terminate via explicit tool calls (task_complete / task_fail / request_help)."
+        ),
+        open_strategy="default",
+        evidence="GuardrailVerdict ABC + StructuredCompletionGuardrail + runner in executor",
+        notes=(
+            "Three AgentConfig fields (guardrail_structured_completion, guardrail_max_retries, "
+            "guardrail_safe_default) are platform-internal; agents should not override."
+        ),
+    ),
+    CapabilityDescriptor(
+        key="mcp_binding_runtime",
+        tier=CapabilityTier.PLATFORM_CORE,
+        display_name="MCP Binding & Runtime Manager",
+        description=(
+            "Declarative MCP binding resolution (global / domain / shared / ephemeral) "
+            "and scope-aware connection lifecycle with lazy initialization, OAuth support, "
+            "and health checking."
+        ),
+        open_strategy="default",
+        evidence="binding_resolver + McpRuntimeManager singleton + scope-based isolation",
+        notes=(
+            "Agents declare mcp_binding (business-optional); platform resolves to concrete "
+            "server connections. Runtime manager handles connect/cache/disconnect lifecycle."
+        ),
+    ),
+    CapabilityDescriptor(
+        key="subagent_delegation",
+        tier=CapabilityTier.PLATFORM_CORE,
+        display_name="Subagent Delegation System",
+        description=(
+            "Background task delegation to specialized subagents with dual thread pool "
+            "execution, timeout management, concurrency control, and real-time progress streaming."
+        ),
+        open_strategy="default",
+        evidence="SubagentExecutor + registry + SubagentLimitMiddleware + task tool",
+        notes=(
+            "Enabled via runtime config (subagent_enabled). Agents do not configure delegation "
+            "internals; the platform manages thread pools, concurrency limits, and tool filtering."
+        ),
+    ),
+    CapabilityDescriptor(
+        key="middleware_chain",
+        tier=CapabilityTier.PLATFORM_CORE,
+        display_name="Agent Middleware Chain",
+        description=(
+            "Ordered middleware pipeline for agent lifecycle (pre-agent, pre-model, "
+            "tool interception, post-model, post-agent). 14 middlewares with strict "
+            "ordering and conditional activation based on agent type and config."
+        ),
+        open_strategy="default",
+        evidence="_build_middlewares() in agent.py composes chain; always-on + conditional middlewares",
+        notes=(
+            "Middleware composition is fully platform-managed. New agents inherit the correct "
+            "middleware set automatically based on is_domain_agent, model capabilities, and config."
+        ),
+    ),
 
     # ── Capability Profile ─────────────────────────────────────────────
     CapabilityDescriptor(

@@ -14,6 +14,7 @@ def test_plain_domain_agent_is_ready():
     assert result["ok"] is True
     assert result["agent_name"] == "simple-agent"
     assert result["onboarding"]["ok"] is True
+    assert result["platform_core"]["ok"] is True
     assert len(result["profiles"]) == 0
 
 
