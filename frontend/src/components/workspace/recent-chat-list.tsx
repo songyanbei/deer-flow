@@ -38,6 +38,7 @@ import {
   useThreads,
 } from "@/core/threads/hooks";
 import { pathOfThread, titleOfThread } from "@/core/threads/utils";
+import { writeTextToClipboard } from "@/core/utils/clipboard";
 import { env } from "@/env";
 
 export function RecentChatList() {
@@ -101,10 +102,10 @@ export function RecentChatList() {
       // On localhost: use Vercel URL; On production: use current origin
       const baseUrl = isLocalhost ? VERCEL_URL : window.location.origin;
       const shareUrl = `${baseUrl}/workspace/chats/${threadId}`;
-      try {
-        await navigator.clipboard.writeText(shareUrl);
+      const copied = await writeTextToClipboard(shareUrl);
+      if (copied) {
         toast.success(t.clipboard.linkCopied);
-      } catch {
+      } else {
         toast.error(t.clipboard.failedToCopyToClipboard);
       }
     },

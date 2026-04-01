@@ -34,6 +34,7 @@ import { urlOfArtifact } from "@/core/artifacts/utils";
 import { useI18n } from "@/core/i18n/hooks";
 import { installSkill } from "@/core/skills/api";
 import { streamdownPlugins } from "@/core/streamdown";
+import { writeTextToClipboard } from "@/core/utils/clipboard";
 import { checkCodeFile, getFileName } from "@/core/utils/files";
 import { env } from "@/env";
 import { cn } from "@/lib/utils";
@@ -202,12 +203,13 @@ export function ArtifactFileDetail({
                 label={t.clipboard.copyToClipboard}
                 disabled={!content}
                 onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(displayContent ?? "");
+                  const copied = await writeTextToClipboard(
+                    displayContent ?? "",
+                  );
+                  if (copied) {
                     toast.success(t.clipboard.copiedToClipboard);
-                  } catch (error) {
-                    toast.error("Failed to copy to clipboard");
-                    console.error(error);
+                  } else {
+                    toast.error(t.clipboard.failedToCopyToClipboard);
                   }
                 }}
                 tooltip={t.clipboard.copyToClipboard}
