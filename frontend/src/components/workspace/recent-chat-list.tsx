@@ -135,7 +135,7 @@ export function RecentChatList() {
                     <SidebarMenuButton isActive={isActive} asChild>
                       <div>
                         <Link
-                          className="text-muted-foreground block w-full min-w-0 truncate pr-10"
+                          className="text-muted-foreground block w-full min-w-0 truncate"
                           href={pathOfThread(thread.thread_id)}
                         >
                           {titleOfThread(thread)}

@@ -36,7 +36,7 @@ export function Welcome({
         className,
       )}
     >
-      <div className="text-2xl font-bold">
+      <div className="text-4xl font-bold">
         {searchParams.get("mode") === "skill" ? (
           `✨ ${t.welcome.createYourOwnSkill} ✨`
         ) : (
