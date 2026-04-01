@@ -20,6 +20,7 @@ from src.agents.middlewares.uploads_middleware import UploadsMiddleware
 from src.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from src.agents.thread_state import ThreadState
 from src.config.agents_config import load_agent_config
+from src.config.paths import resolve_tenant_agents_dir
 from src.config.app_config import get_app_config
 from src.config.summarization_config import get_summarization_config
 from src.models import create_chat_model
@@ -273,6 +274,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
         resolved_fingerprints = config.get("configurable", {}).get("resolved_fingerprints") or set()
         intervention_cache = config.get("configurable", {}).get("intervention_cache")
         intervention_thread_id = config.get("configurable", {}).get("thread_id") or ""
+        intervention_tenant_id = config.get("configurable", {}).get("tenant_id")
         middlewares.append(
             InterventionMiddleware(
                 intervention_policies=intervention_policies,
@@ -283,6 +285,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
                 thread_id=intervention_thread_id,
                 resolved_fingerprints=resolved_fingerprints,
                 intervention_cache=intervention_cache,
+                tenant_id=intervention_tenant_id,
             )
         )
         middlewares.append(HelpRequestMiddleware())
@@ -307,8 +310,10 @@ def make_lead_agent(config: RunnableConfig):
     max_concurrent_subagents = cfg.get("max_concurrent_subagents", 3)
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_name = cfg.get("agent_name")
+    tenant_id = cfg.get("tenant_id", "default")
+    agents_dir = resolve_tenant_agents_dir(tenant_id)
 
-    agent_config = load_agent_config(agent_name) if not is_bootstrap else None
+    agent_config = load_agent_config(agent_name, agents_dir=agents_dir) if not is_bootstrap else None
     engine_builder = get_engine_builder(agent_config.engine_type if agent_config else None)
     engine_prompt_kwargs = engine_builder.build_prompt_kwargs()
 
@@ -427,6 +432,8 @@ def make_lead_agent(config: RunnableConfig):
             available_skills=available_skills,
             is_domain_agent=bool(cfg.get("is_domain_agent", False)),
             engine_mode=engine_prompt_kwargs.engine_mode,
+            tenant_id=tenant_id,
+            agents_dir=agents_dir,
         ),
         state_schema=ThreadState,
     )

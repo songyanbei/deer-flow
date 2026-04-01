@@ -41,6 +41,7 @@ from src.agents.workflow_resume import (
 )
 from src.agents.scheduler import get_blocked_by_failed_dependency, select_execution_batch
 from src.config.agents_config import list_domain_agents
+from src.config.paths import resolve_tenant_agents_dir
 from src.models import create_chat_model
 from src.observability import record_decision
 
@@ -264,8 +265,8 @@ def _append_candidate_hints(task_description: str, hinted_agents: list[str]) -> 
     return f"{task_description}\nPreferred helper candidates (hint only): {hinted}"
 
 
-def _get_helper_candidates(help_request: HelpRequestPayload, requester: str | None) -> tuple[list, list[str], list[str]]:
-    domain_agents = list_domain_agents()
+def _get_helper_candidates(help_request: HelpRequestPayload, requester: str | None, *, agents_dir=None) -> tuple[list, list[str], list[str]]:
+    domain_agents = list_domain_agents(agents_dir=agents_dir)
     candidate_names = [agent.name for agent in domain_agents if agent.name != requester]
     hinted = [name for name in (help_request.get("candidate_agents") or []) if name in candidate_names]
     filtered_agents = [agent for agent in domain_agents if agent.name in candidate_names]
@@ -1114,7 +1115,9 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
         )
 
     requester = parent_task.get("requested_by_agent")
-    domain_agents, candidate_names, hinted = _get_helper_candidates(help_request, requester)
+    _tenant_id = config.get("configurable", {}).get("tenant_id", "default")
+    _agents_dir = resolve_tenant_agents_dir(_tenant_id)
+    domain_agents, candidate_names, hinted = _get_helper_candidates(help_request, requester, agents_dir=_agents_dir)
     direct_candidate = _pick_direct_helper_candidate(candidate_names, hinted)
     helper_retry_count = int(parent_task.get("helper_retry_count") or 0)
 
@@ -1242,6 +1245,8 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
 
 
 async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
+    tenant_id = config.get("configurable", {}).get("tenant_id", "default")
+    agents_dir = resolve_tenant_agents_dir(tenant_id)
     route_count = (state.get("route_count") or 0) + 1
 
     if route_count >= MAX_ROUTE_COUNT:
@@ -1480,7 +1485,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                 help_request = waiting_task.get("request_help")
                 if help_request:
                     requester = waiting_task.get("requested_by_agent")
-                    _, candidate_names, hinted = _get_helper_candidates(help_request, requester)
+                    _, candidate_names, hinted = _get_helper_candidates(help_request, requester, agents_dir=agents_dir)
                     direct_candidate = _pick_direct_helper_candidate(candidate_names, hinted)
                     helper_retry_count = int(waiting_task.get("helper_retry_count") or 0)
                     if direct_candidate and _can_retry_helper(waiting_task):
@@ -1599,7 +1604,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Router] No runnable tasks and no active tasks, signaling planner.")
         return {"execution_state": "PLANNING_NEEDED", "route_count": route_count}
 
-    domain_agents = list_domain_agents()
+    domain_agents = list_domain_agents(agents_dir=agents_dir)
     valid_names = [a.name for a in domain_agents]
     agent_profiles = _build_agent_profiles(domain_agents)
     updated_tasks: list[TaskStatus] = []

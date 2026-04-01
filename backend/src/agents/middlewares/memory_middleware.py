@@ -123,16 +123,21 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         if not config.enabled:
             return None
 
-        # Get thread ID from runtime context (LangGraph Server) or config fallback
+        # Get thread ID and tenant_id from runtime context (LangGraph Server) or config fallback
         thread_id = None
+        tenant_id = None
         if runtime.context is not None:
             thread_id = runtime.context.get("thread_id")
-        if not thread_id:
+            tenant_id = runtime.context.get("tenant_id")
+        if not thread_id or not tenant_id:
             try:
                 from langgraph.config import get_config
-                thread_id = get_config().get("configurable", {}).get("thread_id")
+                cfg = get_config().get("configurable", {})
+                thread_id = thread_id or cfg.get("thread_id")
+                tenant_id = tenant_id or cfg.get("tenant_id", "default")
             except Exception:
                 pass
+        tenant_id = tenant_id or "default"
         if not thread_id:
             print("MemoryMiddleware: No thread_id in context, skipping memory update")
             return None
@@ -160,7 +165,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
             thread_id=thread_id,
             messages=filtered_messages,
             agent_name=self._agent_name,
-            dedupe_key=f"conversation:{self._agent_name or 'global'}:{thread_id}",
+            tenant_id=tenant_id,
+            dedupe_key=f"conversation:{tenant_id}:{self._agent_name or 'global'}:{thread_id}",
         )
 
         return None

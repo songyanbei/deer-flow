@@ -218,12 +218,12 @@ register_hint_extractor(MeetingHintExtractor())
 # Platform dispatch — resolves domain from agent config
 # ---------------------------------------------------------------------------
 
-def _resolve_agent_domain(agent_name: str | None) -> str | None:
+def _resolve_agent_domain(agent_name: str | None, *, agents_dir=None) -> str | None:
     """Return the ``domain`` for an agent, or ``None``."""
     if not agent_name:
         return None
     try:
-        cfg = load_agent_config(agent_name)
+        cfg = load_agent_config(agent_name, agents_dir=agents_dir)
         return cfg.domain if cfg else None
     except Exception:
         return None
@@ -233,31 +233,33 @@ def _extract_persistent_memory_hints(
     agent_name: str | None,
     task: TaskStatus,
     verified_fact: Mapping[str, Any],
+    *,
+    agents_dir=None,
 ) -> list[tuple[str, str]]:
     """Platform entry point: dispatch to the registered domain extractor."""
-    domain = _resolve_agent_domain(agent_name)
+    domain = _resolve_agent_domain(agent_name, agents_dir=agents_dir)
     extractor = get_hint_extractor(domain)
     if extractor is None:
         return []
     return extractor.extract(task, verified_fact)
 
 
-def is_persistent_domain_memory_enabled(agent_name: str | None) -> bool:
+def is_persistent_domain_memory_enabled(agent_name: str | None, *, agents_dir=None) -> bool:
     if not agent_name:
         return False
     try:
-        agent_cfg = load_agent_config(agent_name)
+        agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir)
     except Exception:
         return False
     return bool(agent_cfg and agent_cfg.persistent_memory_enabled)
 
 
-def get_persistent_domain_memory_context(agent_name: str | None, *, max_tokens: int = 1200) -> str:
-    if not is_persistent_domain_memory_enabled(agent_name):
+def get_persistent_domain_memory_context(agent_name: str | None, *, max_tokens: int = 1200, tenant_id: str | None = None, agents_dir=None) -> str:
+    if not is_persistent_domain_memory_enabled(agent_name, agents_dir=agents_dir):
         return ""
 
     try:
-        memory_data = get_memory_data(agent_name)
+        memory_data = get_memory_data(agent_name, tenant_id=tenant_id)
     except Exception as exc:
         logger.warning(
             "[PersistentDomainMemory] Failed to load memory context for agent '%s': %s",
@@ -280,7 +282,7 @@ def get_persistent_domain_memory_context(agent_name: str | None, *, max_tokens: 
     return formatted
 
 
-def get_persistent_domain_runbook(agent_name: str | None) -> str:
+def get_persistent_domain_runbook(agent_name: str | None, *, agents_dir=None) -> str:
     """Return the runbook content for an agent.
 
     Delegates entirely to :func:`load_agent_runbook`, which loads the
@@ -293,17 +295,17 @@ def get_persistent_domain_runbook(agent_name: str | None) -> str:
     This allows ``domain_runbook_support`` to work independently of
     the ``persistent_domain_memory`` profile.
     """
-    return load_agent_runbook(agent_name) or ""
-
-    return ""
+    return load_agent_runbook(agent_name, agents_dir=agents_dir) or ""
 
 
 def _build_verified_task_memory_messages(
     agent_name: str | None,
     task: TaskStatus,
     verified_fact: Mapping[str, Any],
+    *,
+    agents_dir=None,
 ) -> list[Any]:
-    hint_items = _extract_persistent_memory_hints(agent_name, task, verified_fact)
+    hint_items = _extract_persistent_memory_hints(agent_name, task, verified_fact, agents_dir=agents_dir)
     if not hint_items:
         return []
 
@@ -327,13 +329,15 @@ def queue_persistent_domain_memory_update(
     task: TaskStatus,
     verified_fact: Mapping[str, Any] | None,
     thread_id: str | None,
+    tenant_id: str | None = None,
+    agents_dir=None,
 ) -> bool:
-    if not is_persistent_domain_memory_enabled(agent_name):
+    if not is_persistent_domain_memory_enabled(agent_name, agents_dir=agents_dir):
         return False
     if not isinstance(verified_fact, Mapping):
         return False
 
-    messages = _build_verified_task_memory_messages(agent_name, task, verified_fact)
+    messages = _build_verified_task_memory_messages(agent_name, task, verified_fact, agents_dir=agents_dir)
     if not messages:
         return False
 
@@ -347,7 +351,8 @@ def queue_persistent_domain_memory_update(
             thread_id=effective_thread_id,
             messages=messages,
             agent_name=agent_name,
-            dedupe_key=f"persistent-domain:{agent_name}:{effective_thread_id}:{task_key}",
+            tenant_id=tenant_id,
+            dedupe_key=f"persistent-domain:{tenant_id or 'default'}:{agent_name}:{effective_thread_id}:{task_key}",
         )
         return True
     except Exception as exc:

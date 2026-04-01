@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config.app_config import get_app_config
 from src.gateway.config import get_gateway_config
+from src.gateway.middleware.oidc import OIDCAuthMiddleware
+from src.gateway.middleware.oidc_config import load_oidc_config
 from src.gateway.routers import agents, artifacts, governance, interventions, mcp, memory, models, skills, uploads
 from src.observability import WorkflowMetrics, init_observability
 
@@ -124,6 +126,16 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # OIDC authentication middleware (Resource Server role).
+    # Only mounted when OIDC_ENABLED=true. When disabled, all endpoints
+    # remain open — matching the existing development workflow.
+    oidc_config = load_oidc_config()
+    if oidc_config.enabled:
+        app.add_middleware(OIDCAuthMiddleware, config=oidc_config)
+        logger.info("OIDC authentication enabled (issuer=%s, audience=%s)", oidc_config.issuer, oidc_config.audience)
+    else:
+        logger.info("OIDC authentication disabled (set OIDC_ENABLED=true to enable)")
 
     # Include routers
     # Models API is mounted at /api/models

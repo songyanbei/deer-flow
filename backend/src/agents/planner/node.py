@@ -19,6 +19,7 @@ from src.agents.workflow_resume import (
     latest_user_message_is_clarification_answer,
 )
 from src.config.agents_config import list_domain_agents
+from src.config.paths import resolve_tenant_agents_dir
 from src.models import create_chat_model
 from src.observability import record_decision
 
@@ -483,7 +484,9 @@ def _content_to_text(content) -> str:
 
 
 async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
-    domain_agents = list_domain_agents()
+    tenant_id = config.get("configurable", {}).get("tenant_id", "default")
+    agents_dir = resolve_tenant_agents_dir(tenant_id)
+    domain_agents = list_domain_agents(agents_dir=agents_dir)
     agent_descriptions = _build_agent_descriptions(domain_agents)
 
     task_pool: list[TaskStatus] = state.get("task_pool") or []

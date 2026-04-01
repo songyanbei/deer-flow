@@ -7,6 +7,7 @@ from langgraph.runtime import Runtime
 
 from src.agents.thread_state import ThreadDataState
 from src.config.paths import Paths, get_paths
+from src.gateway.thread_registry import get_thread_registry
 
 
 class ThreadDataMiddlewareState(AgentState):
@@ -51,6 +52,20 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
                 pass
         if thread_id is None:
             raise ValueError("Thread ID is required in the context")
+
+        # Register thread → tenant mapping for access control
+        tenant_id = None
+        if runtime.context is not None:
+            tenant_id = runtime.context.get("tenant_id")
+        if not tenant_id:
+            try:
+                tenant_id = get_config().get("configurable", {}).get("tenant_id", "default")
+            except Exception:
+                tenant_id = "default"
+        try:
+            get_thread_registry().register(thread_id, tenant_id)
+        except Exception:
+            pass  # best-effort; don't block thread execution
 
         if self._lazy_init:
             paths = self._get_thread_paths(thread_id)

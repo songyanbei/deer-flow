@@ -88,6 +88,7 @@ class GovernanceEngine:
         thread_id: str,
         category: str = "tool_execution",
         request_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> GovernanceEvaluation:
         """Evaluate governance policy for a tool call (before execution).
 
@@ -131,6 +132,7 @@ class GovernanceEngine:
                 action_summary=f"Tool call: {tool_name}",
                 reason=match.reason,
                 metadata={"tool_name": tool_name, "tool_args_keys": list(tool_args.keys())},
+                tenant_id=tenant_id,
             )
             governance_id = entry["governance_id"]
 
@@ -162,6 +164,7 @@ class GovernanceEngine:
         action_summary: str | None = None,
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
     ) -> str:
         """Record an interrupt emission in the governance ledger.
 
@@ -183,6 +186,7 @@ class GovernanceEngine:
             action_summary=action_summary or f"Interrupt: {interrupt_type}",
             reason=reason,
             metadata={**(metadata or {}), "interrupt_type": interrupt_type},
+            tenant_id=tenant_id,
         )
         return entry["governance_id"]
 
@@ -199,6 +203,7 @@ class GovernanceEngine:
         resolution_behavior: str = "",
         resolved_by: str = "inline",
         metadata: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
     ) -> str | None:
         """Record an interrupt resolution in the governance ledger.
 
@@ -235,6 +240,7 @@ class GovernanceEngine:
                 "action_key": action_key,
                 "resolution_behavior": resolution_behavior,
             },
+            tenant_id=tenant_id,
         )
         return entry["governance_id"]
 
@@ -247,6 +253,7 @@ class GovernanceEngine:
         commit_type: str,
         category: str = "state_commit",
         metadata: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
     ) -> str:
         """Record a state-commit governance audit entry.
 
@@ -265,6 +272,7 @@ class GovernanceEngine:
             decision=GovernanceDecision.ALLOW,
             action_summary=f"State commit: {commit_type}",
             metadata=metadata,
+            tenant_id=tenant_id,
         )
         return entry["governance_id"]
 

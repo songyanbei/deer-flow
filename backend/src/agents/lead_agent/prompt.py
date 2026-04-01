@@ -369,11 +369,12 @@ Rules:
 </sop_engine_system>"""
 
 
-def _get_memory_context(agent_name: str | None = None) -> str:
+def _get_memory_context(agent_name: str | None = None, *, tenant_id: str | None = None) -> str:
     """Get memory context for injection into system prompt.
 
     Args:
         agent_name: If provided, loads per-agent memory. If None, loads global memory.
+        tenant_id: If provided, resolves tenant-scoped memory path.
 
     Returns:
         Formatted memory context string wrapped in XML tags, or empty string if disabled.
@@ -386,7 +387,7 @@ def _get_memory_context(agent_name: str | None = None) -> str:
         if not config.enabled or not config.injection_enabled:
             return ""
 
-        memory_data = get_memory_data(agent_name)
+        memory_data = get_memory_data(agent_name, tenant_id=tenant_id)
         memory_content = format_memory_for_injection(memory_data, max_tokens=config.max_injection_tokens)
 
         if not memory_content.strip():
@@ -401,12 +402,12 @@ def _get_memory_context(agent_name: str | None = None) -> str:
         return ""
 
 
-def _get_runbook_context(agent_name: str | None = None, *, is_domain_agent: bool = False) -> str:
+def _get_runbook_context(agent_name: str | None = None, *, is_domain_agent: bool = False, agents_dir=None) -> str:
     if not is_domain_agent:
         return ""
 
     try:
-        runbook = get_persistent_domain_runbook(agent_name)
+        runbook = get_persistent_domain_runbook(agent_name, agents_dir=agents_dir)
     except Exception as e:
         print(f"Failed to load domain runbook: {e}")
         return ""
@@ -464,9 +465,9 @@ You have access to skills that provide optimized workflows for specific tasks. E
 </skill_system>"""
 
 
-def get_agent_soul(agent_name: str | None) -> str:
+def get_agent_soul(agent_name: str | None, *, agents_dir=None) -> str:
     # Append SOUL.md (agent personality) if present
-    soul = load_agent_soul(agent_name)
+    soul = load_agent_soul(agent_name, agents_dir=agents_dir)
     if soul:
         return f"<soul>\n{soul}\n</soul>\n" if soul else ""
     return ""
@@ -480,13 +481,15 @@ def apply_prompt_template(
     available_skills: set[str] | None = None,
     is_domain_agent: bool = False,
     engine_mode: str = "default",
+    tenant_id: str | None = None,
+    agents_dir=None,
 ) -> str:
     # Keep Stage 2 pilot domains on executor-level persistent memory injection
     # so current-task facts remain closer to the work item, while preserving the
     # prior prompt-level memory behavior for non-pilot domains.
-    use_executor_level_persistent_memory = is_domain_agent and is_persistent_domain_memory_enabled(agent_name)
-    memory_context = "" if use_executor_level_persistent_memory else _get_memory_context(agent_name)
-    runbook_context = _get_runbook_context(agent_name, is_domain_agent=is_domain_agent)
+    use_executor_level_persistent_memory = is_domain_agent and is_persistent_domain_memory_enabled(agent_name, agents_dir=agents_dir)
+    memory_context = "" if use_executor_level_persistent_memory else _get_memory_context(agent_name, tenant_id=tenant_id)
+    runbook_context = _get_runbook_context(agent_name, is_domain_agent=is_domain_agent, agents_dir=agents_dir)
 
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
@@ -574,7 +577,7 @@ def apply_prompt_template(
     # Format the prompt with dynamic skills and memory
     prompt = SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "DeerFlow 2.0",
-        soul=get_agent_soul(agent_name),
+        soul=get_agent_soul(agent_name, agents_dir=agents_dir),
         runbook=runbook_context,
         skills_section=skills_section,
         memory_context=memory_context,

@@ -116,7 +116,7 @@ def test_executor_before_interrupt_emit_hook_patches_return_value(monkeypatch):
     def _make_lead_agent(_config):
         return ClarifyingAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 

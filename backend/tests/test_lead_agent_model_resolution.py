@@ -141,6 +141,98 @@ def test_build_middlewares_uses_resolved_model_name_for_vision(monkeypatch):
     assert any(isinstance(m, lead_agent_module.ViewImageMiddleware) for m in middlewares)
 
 
+def test_build_middlewares_auto_composes_top_level_chain(monkeypatch):
+    app_config = _make_app_config(
+        [
+            ModelConfig(
+                name="vision-model",
+                display_name="vision-model",
+                description=None,
+                use="langchain_openai:ChatOpenAI",
+                model="vision-model",
+                supports_thinking=False,
+                supports_vision=True,
+            )
+        ]
+    )
+
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+
+    middlewares = lead_agent_module._build_middlewares(
+        {"configurable": {"is_plan_mode": False, "subagent_enabled": False, "is_domain_agent": False, "max_tool_calls": 20}},
+        model_name="vision-model",
+    )
+    names = [type(m).__name__ for m in middlewares]
+
+    assert names == [
+        "ThreadDataMiddleware",
+        "UploadsMiddleware",
+        "SandboxMiddleware",
+        "DanglingToolCallMiddleware",
+        "TitleMiddleware",
+        "MemoryMiddleware",
+        "ToolCallLimitMiddleware",
+        "ViewImageMiddleware",
+        "ClarificationMiddleware",
+    ]
+
+
+def test_build_middlewares_auto_composes_domain_chain(monkeypatch):
+    app_config = _make_app_config(
+        [
+            ModelConfig(
+                name="vision-model",
+                display_name="vision-model",
+                description=None,
+                use="langchain_openai:ChatOpenAI",
+                model="vision-model",
+                supports_thinking=False,
+                supports_vision=True,
+            )
+        ]
+    )
+
+    monkeypatch.setattr(lead_agent_module, "get_app_config", lambda: app_config)
+    monkeypatch.setattr(lead_agent_module, "_create_summarization_middleware", lambda: None)
+    monkeypatch.setattr(lead_agent_module, "_create_todo_list_middleware", lambda is_plan_mode: None)
+
+    middlewares = lead_agent_module._build_middlewares(
+        {
+            "configurable": {
+                "is_plan_mode": False,
+                "subagent_enabled": True,
+                "max_concurrent_subagents": 5,
+                "is_domain_agent": True,
+                "max_tool_calls": 20,
+                "intervention_policies": {"tool_x": "require_approval"},
+                "hitl_keywords": ["approve"],
+                "thread_id": "thread-1",
+                "run_id": "run-1",
+                "task_id": "task-1",
+                "agent_name": "meeting-agent",
+            }
+        },
+        model_name="vision-model",
+        agent_name="meeting-agent",
+    )
+    names = [type(m).__name__ for m in middlewares]
+
+    assert names == [
+        "ThreadDataMiddleware",
+        "UploadsMiddleware",
+        "SandboxMiddleware",
+        "DanglingToolCallMiddleware",
+        "ToolCallLimitMiddleware",
+        "ViewImageMiddleware",
+        "SubagentLimitMiddleware",
+        "InterventionMiddleware",
+        "HelpRequestMiddleware",
+        "ClarificationMiddleware",
+    ]
+
+
 def test_make_lead_agent_disables_global_mcp_for_domain_agents(monkeypatch):
     app_config = _make_app_config([_make_model("safe-model", supports_thinking=False)])
 
@@ -159,7 +251,7 @@ def test_make_lead_agent_disables_global_mcp_for_domain_agents(monkeypatch):
     monkeypatch.setattr(
         lead_agent_module,
         "load_agent_config",
-        lambda _name: SimpleNamespace(
+        lambda _name, **_kw: SimpleNamespace(
             model=None,
             tool_groups=[],
             max_tool_calls=20,
@@ -202,7 +294,7 @@ def test_make_lead_agent_filters_write_like_tools_for_read_only_explorer(monkeyp
     monkeypatch.setattr(
         lead_agent_module,
         "load_agent_config",
-        lambda _name: SimpleNamespace(
+        lambda _name, **_kw: SimpleNamespace(
             model=None,
             tool_groups=[],
             max_tool_calls=20,
@@ -263,7 +355,7 @@ def test_make_lead_agent_resolves_engine_mode_from_config(monkeypatch, configure
     monkeypatch.setattr(
         lead_agent_module,
         "load_agent_config",
-        lambda _name: SimpleNamespace(
+        lambda _name, **_kw: SimpleNamespace(
             model=None,
             tool_groups=[],
             max_tool_calls=20,

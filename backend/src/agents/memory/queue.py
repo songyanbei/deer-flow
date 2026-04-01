@@ -17,6 +17,7 @@ class ConversationContext:
     messages: list[Any]
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_name: str | None = None
+    tenant_id: str | None = None
     dedupe_key: str = ""
 
 
@@ -40,6 +41,7 @@ class MemoryUpdateQueue:
         thread_id: str,
         messages: list[Any],
         agent_name: str | None = None,
+        tenant_id: str | None = None,
         *,
         dedupe_key: str | None = None,
     ) -> None:
@@ -49,19 +51,21 @@ class MemoryUpdateQueue:
             thread_id: The thread ID.
             messages: The conversation messages.
             agent_name: If provided, memory is stored per-agent. If None, uses global memory.
+            tenant_id: If provided, memory is tenant-scoped.
             dedupe_key: Optional logical key used to replace stale pending updates.
-                Defaults to a per-thread/per-agent key so global and per-agent
-                memory updates do not overwrite each other.
+                Defaults to a per-thread/per-agent/per-tenant key so different
+                scopes do not overwrite each other.
         """
         config = get_memory_config()
         if not config.enabled:
             return
 
-        effective_dedupe_key = dedupe_key or self._build_default_dedupe_key(thread_id, agent_name)
+        effective_dedupe_key = dedupe_key or self._build_default_dedupe_key(thread_id, agent_name, tenant_id)
         context = ConversationContext(
             thread_id=thread_id,
             messages=messages,
             agent_name=agent_name,
+            tenant_id=tenant_id,
             dedupe_key=effective_dedupe_key,
         )
 
@@ -76,9 +80,10 @@ class MemoryUpdateQueue:
         print(f"Memory update queued for thread {thread_id}, queue size: {len(self._queue)}")
 
     @staticmethod
-    def _build_default_dedupe_key(thread_id: str, agent_name: str | None) -> str:
+    def _build_default_dedupe_key(thread_id: str, agent_name: str | None, tenant_id: str | None = None) -> str:
+        tenant_scope = tenant_id or "default"
         memory_scope = agent_name or "global"
-        return f"memory:{memory_scope}:{thread_id}"
+        return f"memory:{tenant_scope}:{memory_scope}:{thread_id}"
 
     def _reset_timer(self) -> None:
         """Reset the debounce timer."""
@@ -129,6 +134,7 @@ class MemoryUpdateQueue:
                         messages=context.messages,
                         thread_id=context.thread_id,
                         agent_name=context.agent_name,
+                        tenant_id=context.tenant_id,
                     )
                     if success:
                         print(f"Memory updated successfully for thread {context.thread_id}")

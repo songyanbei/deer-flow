@@ -89,6 +89,34 @@ class Paths:
         """Per-agent memory file: `{base_dir}/agents/{name}/memory.json`."""
         return self.agent_dir(name) / "memory.json"
 
+    # ── Tenant-scoped paths ────────────────────────────────────────────
+
+    def tenant_dir(self, tenant_id: str) -> Path:
+        """Tenant data root: ``{base_dir}/tenants/{tenant_id}/``.
+
+        Raises:
+            ValueError: If *tenant_id* contains unsafe characters.
+        """
+        if not _SAFE_THREAD_ID_RE.match(tenant_id):
+            raise ValueError(f"Invalid tenant_id: {tenant_id!r}")
+        return self.base_dir / "tenants" / tenant_id
+
+    def tenant_memory_file(self, tenant_id: str) -> Path:
+        """Tenant-level memory: ``{base_dir}/tenants/{tenant_id}/memory.json``."""
+        return self.tenant_dir(tenant_id) / "memory.json"
+
+    def tenant_agents_dir(self, tenant_id: str) -> Path:
+        """Tenant's agents directory: ``{base_dir}/tenants/{tenant_id}/agents/``."""
+        return self.tenant_dir(tenant_id) / "agents"
+
+    def tenant_agent_dir(self, tenant_id: str, agent_name: str) -> Path:
+        """Tenant-scoped agent directory: ``tenants/{tid}/agents/{name}/``."""
+        return self.tenant_agents_dir(tenant_id) / agent_name.lower()
+
+    def tenant_agent_memory_file(self, tenant_id: str, agent_name: str) -> Path:
+        """Tenant + agent scoped memory: ``tenants/{tid}/agents/{name}/memory.json``."""
+        return self.tenant_agent_dir(tenant_id, agent_name) / "memory.json"
+
     def thread_dir(self, thread_id: str) -> Path:
         """
         Host path for a thread's data: `{base_dir}/threads/{thread_id}/`
@@ -189,3 +217,15 @@ def get_paths() -> Paths:
     if _paths is None:
         _paths = Paths()
     return _paths
+
+
+def resolve_tenant_agents_dir(tenant_id: str | None) -> Path | None:
+    """Resolve tenant-scoped agents directory.
+
+    Returns ``None`` for the default tenant so callers fall back to the
+    global agents directory.  For non-default tenants returns the
+    ``tenants/{tenant_id}/agents/`` path.
+    """
+    if not tenant_id or tenant_id == "default":
+        return None
+    return get_paths().tenant_agents_dir(tenant_id)

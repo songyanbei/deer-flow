@@ -144,7 +144,7 @@ def _patch_planner(monkeypatch, llm: PlannerLLMStub, verification_result: Verifi
     monkeypatch.setattr("src.agents.planner.node.create_chat_model", lambda **kwargs: llm)
     monkeypatch.setattr(
         "src.agents.planner.node.list_domain_agents",
-        lambda: [type("Agent", (), {"name": "meeting-agent", "description": "Books meetings"})()],
+        lambda **_kw: [type("Agent", (), {"name": "meeting-agent", "description": "Books meetings"})()],
     )
     monkeypatch.setattr(
         "src.verification.runtime.run_workflow_verification",
@@ -363,7 +363,7 @@ def test_planner_new_user_turn_clears_stale_verification_state(monkeypatch):
     monkeypatch.setattr("src.agents.planner.node.create_chat_model", lambda **kwargs: llm)
     monkeypatch.setattr(
         "src.agents.planner.node.list_domain_agents",
-        lambda: [type("Agent", (), {"name": "meeting-agent", "description": "Books meetings"})()],
+        lambda **_kw: [type("Agent", (), {"name": "meeting-agent", "description": "Books meetings"})()],
     )
 
     state = {

@@ -1,19 +1,25 @@
-"""CRUD API for custom agents."""
+"""CRUD API for custom agents.
+
+When OIDC is enabled, agent storage is scoped per-tenant under
+``tenants/{tenant_id}/agents/``.  When OIDC is disabled (``tenant_id ==
+"default"``), the global ``agents/`` directory is used for backward
+compatibility.
+"""
 
 import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Literal
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.agents.lead_agent.engine_registry import normalize_engine_type
 from src.config.agents_config import AgentConfig, McpBindingConfig, list_custom_agents, load_agent_config, load_agent_soul
 from src.config.paths import get_paths
+from src.gateway.dependencies import get_tenant_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["agents"])
@@ -92,6 +98,23 @@ class UserProfileUpdateRequest(BaseModel):
     """Request body for setting the global user profile."""
 
     content: str = Field(default="", description="USER.md content that describes the user's background and preferences")
+
+
+def _resolve_agents_dir(tenant_id: str) -> Path:
+    """Return the agents directory for the given tenant.
+
+    When *tenant_id* is ``"default"`` (i.e. OIDC is disabled), falls back to the
+    global ``agents/`` directory for backward compatibility.
+    """
+    paths = get_paths()
+    if tenant_id and tenant_id != "default":
+        return paths.tenant_agents_dir(tenant_id)
+    return paths.agents_dir
+
+
+def _resolve_agent_dir(tenant_id: str, name: str) -> Path:
+    """Return a specific agent's directory under the tenant scope."""
+    return _resolve_agents_dir(tenant_id) / name.lower()
 
 
 def _validate_agent_name(name: str) -> None:
@@ -178,10 +201,16 @@ def _migrate_prompt_file_if_needed(agent_dir: Path, old_name: str | None, new_na
     new_path.write_text(old_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False) -> AgentResponse:
+def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False, agent_dir: Path | None = None) -> AgentResponse:
     soul: str | None = None
     if include_soul:
-        soul = load_agent_soul(agent_cfg.name) or ""
+        if agent_dir is not None:
+            # Tenant-scoped: read soul directly from the agent_dir
+            prompt_file = agent_cfg.system_prompt_file or DEFAULT_PROMPT_FILE
+            soul_path = agent_dir / prompt_file
+            soul = soul_path.read_text(encoding="utf-8").strip() if soul_path.exists() else ""
+        else:
+            soul = load_agent_soul(agent_cfg.name, agents_dir=agents_dir) or ""
 
     return AgentResponse(
         name=agent_cfg.name,
@@ -206,9 +235,13 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
     summary="List Custom Agents",
     description="List all custom agents available in the agents directory.",
 )
-async def list_agents() -> AgentsListResponse:
+async def list_agents(
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> AgentsListResponse:
     try:
-        agents = list_custom_agents()
+        agents_dir = _resolve_agents_dir(tenant_id)
+        agents = list_custom_agents(agents_dir=agents_dir)
         return AgentsListResponse(agents=[_agent_config_to_response(a) for a in agents])
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
@@ -220,10 +253,14 @@ async def list_agents() -> AgentsListResponse:
     summary="Check Agent Name",
     description="Validate an agent name and check if it is available (case-insensitive).",
 )
-async def check_agent_name(name: str) -> dict:
+async def check_agent_name(
+    name: str,
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> dict:
     _validate_agent_name(name)
     normalized = _normalize_agent_name(name)
-    available = not get_paths().agent_dir(normalized).exists()
+    available = not _resolve_agent_dir(tenant_id, normalized).exists()
     return {"available": available, "name": normalized}
 
 
@@ -233,13 +270,18 @@ async def check_agent_name(name: str) -> dict:
     summary="Get Custom Agent",
     description="Retrieve details and prompt content for a specific custom agent.",
 )
-async def get_agent(name: str) -> AgentResponse:
+async def get_agent(
+    name: str,
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> AgentResponse:
     _validate_agent_name(name)
     name = _normalize_agent_name(name)
+    agents_dir = _resolve_agents_dir(tenant_id)
 
     try:
-        agent_cfg = load_agent_config(name)
-        return _agent_config_to_response(agent_cfg, include_soul=True)
+        agent_cfg = load_agent_config(name, agents_dir=agents_dir)
+        return _agent_config_to_response(agent_cfg, include_soul=True, agent_dir=agents_dir / name)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     except Exception as e:
@@ -254,11 +296,16 @@ async def get_agent(name: str) -> AgentResponse:
     summary="Create Custom Agent",
     description="Create a new custom agent with its config and system prompt file.",
 )
-async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
-    _validate_agent_name(request.name)
-    normalized_name = _normalize_agent_name(request.name)
+async def create_agent_endpoint(
+    body: AgentCreateRequest,
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> AgentResponse:
+    _validate_agent_name(body.name)
+    normalized_name = _normalize_agent_name(body.name)
+    agents_dir = _resolve_agents_dir(tenant_id)
 
-    agent_dir = get_paths().agent_dir(normalized_name)
+    agent_dir = agents_dir / normalized_name
     if agent_dir.exists():
         raise HTTPException(status_code=409, detail=f"Agent '{normalized_name}' already exists")
 
@@ -266,30 +313,30 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
         agent_dir.mkdir(parents=True, exist_ok=True)
         config_data = _build_config_data(
             name=normalized_name,
-            description=request.description,
-            model=request.model,
-            engine_type=request.engine_type,
-            tool_groups=request.tool_groups,
-            domain=request.domain,
-            system_prompt_file=request.system_prompt_file,
-            hitl_keywords=request.hitl_keywords,
-            max_tool_calls=request.max_tool_calls,
-            mcp_binding=request.mcp_binding,
-            available_skills=request.available_skills,
-            requested_orchestration_mode=request.requested_orchestration_mode,
+            description=body.description,
+            model=body.model,
+            engine_type=body.engine_type,
+            tool_groups=body.tool_groups,
+            domain=body.domain,
+            system_prompt_file=body.system_prompt_file,
+            hitl_keywords=body.hitl_keywords,
+            max_tool_calls=body.max_tool_calls,
+            mcp_binding=body.mcp_binding,
+            available_skills=body.available_skills,
+            requested_orchestration_mode=body.requested_orchestration_mode,
         )
         _write_config(agent_dir, config_data)
-        _write_prompt_file(agent_dir, request.system_prompt_file, request.soul)
+        _write_prompt_file(agent_dir, body.system_prompt_file, body.soul)
 
-        logger.info("Created agent '%s' at %s", normalized_name, agent_dir)
-        agent_cfg = load_agent_config(normalized_name)
-        return _agent_config_to_response(agent_cfg, include_soul=True)
+        logger.info("Created agent '%s' at %s (tenant=%s)", normalized_name, agent_dir, tenant_id)
+        agent_cfg = load_agent_config(normalized_name, agents_dir=agents_dir)
+        return _agent_config_to_response(agent_cfg, include_soul=True, agent_dir=agent_dir)
     except HTTPException:
         raise
     except Exception as e:
         if agent_dir.exists():
             shutil.rmtree(agent_dir)
-        logger.error(f"Failed to create agent '{request.name}': {e}", exc_info=True)
+        logger.error(f"Failed to create agent '{body.name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
 
 
@@ -299,60 +346,66 @@ async def create_agent_endpoint(request: AgentCreateRequest) -> AgentResponse:
     summary="Update Custom Agent",
     description="Update an existing custom agent's config and/or prompt file.",
 )
-async def update_agent(name: str, request: AgentUpdateRequest) -> AgentResponse:
+async def update_agent(
+    name: str,
+    body: AgentUpdateRequest,
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> AgentResponse:
     _validate_agent_name(name)
     name = _normalize_agent_name(name)
+    agents_dir = _resolve_agents_dir(tenant_id)
 
     try:
-        agent_cfg = load_agent_config(name)
+        agent_cfg = load_agent_config(name, agents_dir=agents_dir)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
 
-    agent_dir = get_paths().agent_dir(name)
-    requested_mode_provided = "requested_orchestration_mode" in request.model_fields_set
+    agent_dir = agents_dir / name
+    requested_mode_provided = "requested_orchestration_mode" in body.model_fields_set
 
     try:
-        next_prompt_file = request.system_prompt_file if request.system_prompt_file is not None else agent_cfg.system_prompt_file
-        engine_type_provided = "engine_type" in request.model_fields_set
+        next_prompt_file = body.system_prompt_file if body.system_prompt_file is not None else agent_cfg.system_prompt_file
+        engine_type_provided = "engine_type" in body.model_fields_set
         config_changed = any(
             value is not None
             for value in [
-                request.description,
-                request.model,
-                request.tool_groups,
-                request.domain,
-                request.system_prompt_file,
-                request.hitl_keywords,
-                request.max_tool_calls,
-                request.mcp_binding,
-                request.available_skills,
+                body.description,
+                body.model,
+                body.tool_groups,
+                body.domain,
+                body.system_prompt_file,
+                body.hitl_keywords,
+                body.max_tool_calls,
+                body.mcp_binding,
+                body.available_skills,
             ]
         ) or requested_mode_provided or engine_type_provided
 
         if config_changed:
             updated = _build_config_data(
                 name=agent_cfg.name,
-                description=request.description if request.description is not None else agent_cfg.description,
-                model=request.model if request.model is not None else agent_cfg.model,
-                engine_type=request.engine_type if engine_type_provided else agent_cfg.engine_type,
-                tool_groups=request.tool_groups if request.tool_groups is not None else agent_cfg.tool_groups,
-                domain=request.domain if request.domain is not None else agent_cfg.domain,
+                description=body.description if body.description is not None else agent_cfg.description,
+                model=body.model if body.model is not None else agent_cfg.model,
+                engine_type=body.engine_type if engine_type_provided else agent_cfg.engine_type,
+                tool_groups=body.tool_groups if body.tool_groups is not None else agent_cfg.tool_groups,
+                domain=body.domain if body.domain is not None else agent_cfg.domain,
                 system_prompt_file=next_prompt_file,
-                hitl_keywords=request.hitl_keywords if request.hitl_keywords is not None else agent_cfg.hitl_keywords,
-                max_tool_calls=request.max_tool_calls if request.max_tool_calls is not None else agent_cfg.max_tool_calls,
-                mcp_binding=request.mcp_binding if request.mcp_binding is not None else agent_cfg.mcp_binding,
-                available_skills=request.available_skills if request.available_skills is not None else agent_cfg.available_skills,
-                requested_orchestration_mode=request.requested_orchestration_mode if requested_mode_provided else agent_cfg.requested_orchestration_mode,
+                hitl_keywords=body.hitl_keywords if body.hitl_keywords is not None else agent_cfg.hitl_keywords,
+                max_tool_calls=body.max_tool_calls if body.max_tool_calls is not None else agent_cfg.max_tool_calls,
+                mcp_binding=body.mcp_binding if body.mcp_binding is not None else agent_cfg.mcp_binding,
+                available_skills=body.available_skills if body.available_skills is not None else agent_cfg.available_skills,
+                requested_orchestration_mode=body.requested_orchestration_mode if requested_mode_provided else agent_cfg.requested_orchestration_mode,
             )
             _write_config(agent_dir, updated)
             _migrate_prompt_file_if_needed(agent_dir, agent_cfg.system_prompt_file, next_prompt_file)
 
-        if request.soul is not None:
-            _write_prompt_file(agent_dir, next_prompt_file, request.soul)
+        if body.soul is not None:
+            _write_prompt_file(agent_dir, next_prompt_file, body.soul)
 
-        logger.info("Updated agent '%s'", name)
-        refreshed_cfg = load_agent_config(name)
-        return _agent_config_to_response(refreshed_cfg, include_soul=True)
+        logger.info("Updated agent '%s' (tenant=%s)", name, tenant_id)
+        refreshed_cfg = load_agent_config(name, agents_dir=agents_dir)
+        return _agent_config_to_response(refreshed_cfg, include_soul=True, agent_dir=agent_dir)
     except HTTPException:
         raise
     except Exception as e:
@@ -402,17 +455,21 @@ async def update_user_profile(request: UserProfileUpdateRequest) -> UserProfileR
     summary="Delete Custom Agent",
     description="Delete a custom agent and all its files (config, prompt file, memory).",
 )
-async def delete_agent(name: str) -> None:
+async def delete_agent(
+    name: str,
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> None:
     _validate_agent_name(name)
     name = _normalize_agent_name(name)
 
-    agent_dir = get_paths().agent_dir(name)
+    agent_dir = _resolve_agent_dir(tenant_id, name)
     if not agent_dir.exists():
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
 
     try:
         shutil.rmtree(agent_dir)
-        logger.info(f"Deleted agent '{name}' from {agent_dir}")
+        logger.info(f"Deleted agent '{name}' from {agent_dir} (tenant={tenant_id})")
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")

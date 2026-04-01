@@ -291,7 +291,7 @@ class TestMakeLeadAgentHooksIntegration:
         monkeypatch.setattr(
             lead_agent_module,
             "load_agent_config",
-            lambda _name: SimpleNamespace(
+            lambda _name, **_kw: SimpleNamespace(
                 model=None,
                 tool_groups=[],
                 max_tool_calls=20,
@@ -347,7 +347,7 @@ class TestMakeLeadAgentHooksIntegration:
         monkeypatch.setattr(
             lead_agent_module,
             "load_agent_config",
-            lambda _name: SimpleNamespace(
+            lambda _name, **_kw: SimpleNamespace(
                 model=None,
                 tool_groups=[],
                 max_tool_calls=20,
@@ -384,7 +384,7 @@ class TestMakeLeadAgentHooksIntegration:
         monkeypatch.setattr(
             lead_agent_module,
             "load_agent_config",
-            lambda _name: SimpleNamespace(
+            lambda _name, **_kw: SimpleNamespace(
                 model=None,
                 tool_groups=[],
                 max_tool_calls=20,
@@ -421,7 +421,7 @@ class TestMakeLeadAgentHooksIntegration:
         monkeypatch.setattr(
             lead_agent_module,
             "load_agent_config",
-            lambda _name: SimpleNamespace(
+            lambda _name, **_kw: SimpleNamespace(
                 model=None,
                 tool_groups=[],
                 max_tool_calls=20,

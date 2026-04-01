@@ -431,15 +431,18 @@ class DeerFlowClient:
             ]
         }
 
-    def get_memory(self) -> dict:
+    def get_memory(self, tenant_id: str | None = None) -> dict:
         """Get current memory data.
+
+        Args:
+            tenant_id: Optional tenant ID for multi-tenant deployments.
 
         Returns:
             Memory data dict (see src/agents/memory/updater.py for structure).
         """
         from src.agents.memory.updater import get_memory_data
 
-        return get_memory_data()
+        return get_memory_data(tenant_id=tenant_id)
 
     def get_model(self, name: str) -> dict | None:
         """Get a specific model's configuration by name.
@@ -658,15 +661,18 @@ class DeerFlowClient:
     # Public API — memory management
     # ------------------------------------------------------------------
 
-    def reload_memory(self) -> dict:
+    def reload_memory(self, tenant_id: str | None = None) -> dict:
         """Reload memory data from file, forcing cache invalidation.
+
+        Args:
+            tenant_id: Optional tenant ID for multi-tenant deployments.
 
         Returns:
             The reloaded memory data dict.
         """
         from src.agents.memory.updater import reload_memory_data
 
-        return reload_memory_data()
+        return reload_memory_data(tenant_id=tenant_id)
 
     def get_memory_config(self) -> dict:
         """Get memory system configuration.

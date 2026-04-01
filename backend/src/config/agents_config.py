@@ -87,14 +87,25 @@ class AgentConfig(BaseModel):
         return self.mcp_binding or McpBindingConfig()
 
 
-def load_agent_config(name: str | None) -> AgentConfig | None:
-    """Load the custom or default agent's config from its directory."""
+def load_agent_config(name: str | None, *, agents_dir: "Path | None" = None) -> AgentConfig | None:
+    """Load the custom or default agent's config from its directory.
+
+    Args:
+        name: Agent name.
+        agents_dir: Optional base directory to resolve the agent from.
+                    When provided, uses ``agents_dir/{name}/config.yaml``
+                    instead of the global agents directory.  This is used for
+                    tenant-scoped agent storage.
+    """
     if name is None:
         return None
 
     if not AGENT_NAME_PATTERN.match(name):
         raise ValueError(f"Invalid agent name '{name}'. Must match pattern: {AGENT_NAME_PATTERN.pattern}")
-    agent_dir = get_paths().agent_dir(name)
+    if agents_dir is not None:
+        agent_dir = agents_dir / name.lower()
+    else:
+        agent_dir = get_paths().agent_dir(name)
     config_file = agent_dir / "config.yaml"
 
     if not agent_dir.exists():
@@ -120,24 +131,27 @@ def load_agent_config(name: str | None) -> AgentConfig | None:
     return AgentConfig(**data)
 
 
-def _get_agent_prompt_path(agent_name: str | None):
+def _get_agent_prompt_path(agent_name: str | None, *, agents_dir=None):
     """Resolve the effective system prompt file path for an agent."""
-    agent_dir = get_paths().agent_dir(agent_name) if agent_name else get_paths().base_dir
-    agent_cfg = load_agent_config(agent_name) if agent_name else None
+    if agent_name and agents_dir is not None:
+        agent_dir = agents_dir / agent_name.lower()
+    else:
+        agent_dir = get_paths().agent_dir(agent_name) if agent_name else get_paths().base_dir
+    agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir) if agent_name else None
     prompt_filename = agent_cfg.system_prompt_file if agent_cfg and agent_cfg.system_prompt_file else SOUL_FILENAME
     return prompt_filename, agent_dir / prompt_filename
 
 
-def load_agent_soul(agent_name: str | None) -> str | None:
+def load_agent_soul(agent_name: str | None, *, agents_dir=None) -> str | None:
     """Read the configured prompt file for a custom agent, if it exists."""
-    _, soul_path = _get_agent_prompt_path(agent_name)
+    _, soul_path = _get_agent_prompt_path(agent_name, agents_dir=agents_dir)
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
     return content or None
 
 
-def load_agent_runbook(agent_name: str | None) -> str | None:
+def load_agent_runbook(agent_name: str | None, *, agents_dir=None) -> str | None:
     """Read the configured runbook file for a custom agent, if it exists.
 
     Returns the runbook content when the agent has a ``persistent_runbook_file``
@@ -148,8 +162,11 @@ def load_agent_runbook(agent_name: str | None) -> str | None:
     if agent_name is None:
         return None
 
-    agent_dir = get_paths().agent_dir(agent_name)
-    agent_cfg = load_agent_config(agent_name)
+    if agents_dir is not None:
+        agent_dir = agents_dir / agent_name.lower()
+    else:
+        agent_dir = get_paths().agent_dir(agent_name)
+    agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir)
     if not agent_cfg:
         return None
 
@@ -175,16 +192,22 @@ def load_agent_runbook(agent_name: str | None) -> str | None:
     return content or None
 
 
-def list_custom_agents() -> list[AgentConfig]:
-    """Scan the agents directory and return all valid custom agents."""
-    agents_dir = get_paths().agents_dir
+def list_custom_agents(*, agents_dir: "Path | None" = None) -> list[AgentConfig]:
+    """Scan the agents directory and return all valid custom agents.
 
-    if not agents_dir.exists():
+    Args:
+        agents_dir: Optional override for the base agents directory.
+                    When provided, scans this directory instead of the global
+                    ``agents/`` directory.  Used for tenant-scoped storage.
+    """
+    scan_dir = agents_dir or get_paths().agents_dir
+
+    if not scan_dir.exists():
         return []
 
     agents: list[AgentConfig] = []
 
-    for entry in sorted(agents_dir.iterdir()):
+    for entry in sorted(scan_dir.iterdir()):
         if not entry.is_dir():
             continue
 
@@ -194,7 +217,7 @@ def list_custom_agents() -> list[AgentConfig]:
             continue
 
         try:
-            agent_cfg = load_agent_config(entry.name)
+            agent_cfg = load_agent_config(entry.name, agents_dir=scan_dir)
             agents.append(agent_cfg)
         except Exception as e:
             logger.warning(f"Skipping agent '{entry.name}': {e}")
@@ -202,9 +225,13 @@ def list_custom_agents() -> list[AgentConfig]:
     return agents
 
 
-def list_domain_agents() -> list[AgentConfig]:
-    """Return all agents that have a `domain` field set."""
-    return [a for a in list_custom_agents() if a.domain]
+def list_domain_agents(*, agents_dir: "Path | None" = None) -> list[AgentConfig]:
+    """Return all agents that have a `domain` field set.
+
+    Args:
+        agents_dir: Optional override for the base agents directory (tenant scope).
+    """
+    return [a for a in list_custom_agents(agents_dir=agents_dir) if a.domain]
 
 
 def validate_agent_platform_readiness(config: AgentConfig) -> dict:

@@ -133,6 +133,7 @@ class GovernanceLedgerEntry(TypedDict):
     action_summary: NotRequired[str | None]
     reason: NotRequired[str | None]
     metadata: NotRequired[dict[str, Any] | None]
+    tenant_id: NotRequired[str]             # owning tenant ("default" when unset)
     created_at: str
     resolved_at: NotRequired[str | None]
     resolved_by: NotRequired[str | None]   # "operator" | "inline" | "system"

@@ -605,7 +605,7 @@ def test_executor_empty_output_marks_task_failed(monkeypatch):
     def _make_lead_agent(_config):
         return EmptyDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -650,7 +650,7 @@ def test_executor_prefers_final_ai_message_over_trailing_tool_output(monkeypatch
     def _make_lead_agent(_config):
         return DomainAgentWithTrailingTool()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -696,7 +696,7 @@ def test_executor_waiting_clarification_persists_task_and_emits_protocol_fields(
 
     events: list[dict] = []
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -756,7 +756,7 @@ def test_executor_request_help_moves_task_to_waiting_dependency(monkeypatch):
 
     events: list[dict] = []
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -818,7 +818,7 @@ def test_executor_request_help_honors_non_terminal_tool_signal(monkeypatch):
     def _make_lead_agent(_config):
         return HelpingDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -872,7 +872,7 @@ def test_executor_request_help_keeps_user_clarification_metadata(monkeypatch):
     def _make_lead_agent(_config):
         return HelpingDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -919,7 +919,7 @@ def test_executor_clarification_honors_non_terminal_tool_signal(monkeypatch):
     def _make_lead_agent(_config):
         return ClarifyingDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -965,7 +965,7 @@ def test_executor_interrupts_on_plain_text_city_selection(monkeypatch):
 
     events: list[dict] = []
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -1009,7 +1009,7 @@ def test_executor_plain_text_completion_still_finishes(monkeypatch):
     def _make_lead_agent(_config):
         return CompletingDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -1046,7 +1046,7 @@ def test_executor_json_result_is_not_misclassified_as_clarification(monkeypatch)
     def _make_lead_agent(_config):
         return JsonDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -1471,7 +1471,7 @@ def test_resumed_parent_interrupts_when_agent_returns_plain_text_choice(monkeypa
     def _make_lead_agent(_config):
         return ClarifyingDomainAgent()
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -1783,7 +1783,7 @@ def test_executor_generates_run_id_when_called_with_legacy_running_task(monkeypa
 
     events: list[dict] = []
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=[]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=[]))
     monkeypatch.setattr("src.agents.lead_agent.agent.make_lead_agent", _make_lead_agent)
     _mcp_initialized.clear()
 
@@ -1957,7 +1957,7 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
 
     monkeypatch.setattr(
         "src.agents.executor.executor.load_agent_config",
-        lambda _name: SimpleNamespace(
+        lambda _name, **_kw: SimpleNamespace(
             mcp_binding=dummy_binding,
             get_effective_mcp_binding=lambda: dummy_binding,
         ),
@@ -2022,10 +2022,10 @@ def test_router_accepts_content_blocks_from_model():
 def test_executor_mcp_init_failure_marks_task_failed(monkeypatch):
     events: list[dict] = []
 
-    async def _boom(_agent_name):
+    async def _boom(_agent_name, **_kw):
         raise RuntimeError("mcp init failed")
 
-    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name: SimpleNamespace(mcp_servers=["dummy"]))
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", lambda _name, **_kw: SimpleNamespace(mcp_servers=["dummy"]))
     _mcp_initialized.clear()
 
     async def _run():

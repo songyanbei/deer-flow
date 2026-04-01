@@ -14,11 +14,12 @@ Endpoints:
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from src.agents.governance.ledger import governance_ledger
 from src.agents.governance.types import GovernanceLedgerEntry
+from src.gateway.dependencies import get_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ class OperatorResolveResponse(BaseModel):
 
 @router.get("/queue", response_model=GovernanceListResponse)
 async def list_queue(
+    request: Request,
     thread_id: str | None = Query(None, description="Filter by thread ID"),
     run_id: str | None = Query(None, description="Filter by run ID"),
     risk_level: str | None = Query(None, description="Filter by risk level (medium/high/critical)"),
@@ -144,14 +146,16 @@ async def list_queue(
     created_to: str | None = Query(None, description="Filter by created_at <= ISO datetime"),
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> GovernanceListResponse:
     """List pending governance items (operator queue).
 
     Returns items with ``status=pending_intervention``, newest first.
-    Supports filtering by thread, run, risk level, agent, and creation time.
+    Scoped to the requesting tenant.
     """
     # Query all matching pending entries (no pagination yet) to get accurate total
     all_matching = governance_ledger.query(
+        tenant_id=tenant_id,
         thread_id=thread_id,
         run_id=run_id,
         status="pending_intervention",
@@ -174,6 +178,7 @@ async def list_queue(
 
 @router.get("/history", response_model=GovernanceListResponse)
 async def list_history(
+    request: Request,
     thread_id: str | None = Query(None, description="Filter by thread ID"),
     run_id: str | None = Query(None, description="Filter by run ID"),
     status: str | None = Query(None, description="Filter by status (resolved/rejected/failed/expired/decided)"),
@@ -185,6 +190,7 @@ async def list_history(
     resolved_to: str | None = Query(None, description="Filter by resolved_at <= ISO datetime"),
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    tenant_id: str = Depends(get_tenant_id),
 ) -> GovernanceListResponse:
     """List resolved governance items (history view).
 
@@ -204,6 +210,7 @@ async def list_history(
 
     # Query all matching entries to get accurate total, then paginate
     all_matching = governance_ledger.query(
+        tenant_id=tenant_id,
         thread_id=thread_id,
         run_id=run_id,
         status=status,

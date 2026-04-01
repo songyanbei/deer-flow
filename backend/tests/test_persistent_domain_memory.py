@@ -134,7 +134,7 @@ def test_queue_persistent_domain_memory_update_filters_transactional_fields():
     kwargs = queue.add.call_args.kwargs
     assert kwargs["thread_id"] == "thread-1"
     assert kwargs["agent_name"] == "meeting-agent"
-    assert kwargs["dedupe_key"] == "persistent-domain:meeting-agent:thread-1:task-1"
+    assert kwargs["dedupe_key"] == "persistent-domain:default:meeting-agent:thread-1:task-1"
     assert len(kwargs["messages"]) == 2
     assert "Preferred booking city: Shanghai" in kwargs["messages"][0].content
     assert "Organizer department hint: Platform" in kwargs["messages"][0].content

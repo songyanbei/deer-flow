@@ -117,6 +117,7 @@ class GovernanceLedger:
         action_summary: str | None = None,
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
+        tenant_id: str | None = None,
     ) -> GovernanceLedgerEntry:
         """Create and persist a new governance ledger entry.
 
@@ -148,6 +149,7 @@ class GovernanceLedger:
             "action_summary": action_summary,
             "reason": reason,
             "metadata": metadata,
+            "tenant_id": tenant_id or "default",
             "created_at": _utc_now_iso(),
         }
 
@@ -226,6 +228,7 @@ class GovernanceLedger:
     def query(
         self,
         *,
+        tenant_id: str | None = None,
         thread_id: str | None = None,
         run_id: str | None = None,
         status: GovernanceLedgerStatus | None = None,
@@ -249,6 +252,8 @@ class GovernanceLedger:
         with self._lock:
             results = list(self._entries)
 
+        if tenant_id:
+            results = [e for e in results if e.get("tenant_id", "default") == tenant_id]
         if thread_id:
             results = [e for e in results if e["thread_id"] == thread_id]
         if run_id:
@@ -276,10 +281,12 @@ class GovernanceLedger:
             return results[offset:]
         return results[offset:offset + limit]
 
-    def pending_count(self, thread_id: str | None = None) -> int:
+    def pending_count(self, thread_id: str | None = None, tenant_id: str | None = None) -> int:
         """Count entries with status=pending_intervention."""
         with self._lock:
             entries = self._entries
+            if tenant_id:
+                entries = [e for e in entries if e.get("tenant_id", "default") == tenant_id]
             if thread_id:
                 entries = [e for e in entries if e["thread_id"] == thread_id]
             return sum(1 for e in entries if e["status"] == "pending_intervention")

@@ -42,6 +42,7 @@ from src.agents.workflow_resume import (
     normalize_intervention_clarification_answer,
 )
 from src.config.agents_config import load_agent_config
+from src.config.paths import resolve_tenant_agents_dir
 from src.observability import record_decision
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,8 @@ def _build_context(
     clarification_answer: str = "",
     *,
     agent_name: str | None = None,
+    tenant_id: str | None = None,
+    agents_dir=None,
 ) -> str:
     # For helper tasks, use the full technical context instead of the short display description
     helper_context = task.get("helper_context")
@@ -109,7 +112,7 @@ def _build_context(
         )
         context += f"\n\nKnown facts (do not re-check):\n{facts_block}"
 
-    persistent_domain_memory = get_persistent_domain_memory_context(agent_name)
+    persistent_domain_memory = get_persistent_domain_memory_context(agent_name, tenant_id=tenant_id, agents_dir=agents_dir)
     if persistent_domain_memory:
         context += (
             "\n\nPersistent domain memory (advisory only; current thread inputs and verified facts take priority):\n"
@@ -126,10 +129,10 @@ def _build_context(
     return context
 
 
-async def _ensure_mcp_ready(agent_name: str) -> None:
+async def _ensure_mcp_ready(agent_name: str, *, agents_dir=None) -> None:
     if agent_name in _mcp_initialized:
         return
-    agent_cfg = load_agent_config(agent_name)
+    agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir)
     if agent_cfg and getattr(agent_cfg, "mcp_binding", None):
         try:
             from src.config.extensions_config import ExtensionsConfig
@@ -770,6 +773,8 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
     }
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
     continuation_mode = task.get("continuation_mode")
+    tenant_id = config.get("configurable", {}).get("tenant_id", "default")
+    agents_dir = resolve_tenant_agents_dir(tenant_id)
     logger.info(
         "[Executor] Executing task '%s' via agent '%s' continuation_mode=%s.",
         task["task_id"], agent_name, continuation_mode,
@@ -788,7 +793,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 "intervention_cache": intervention_cache,
             }
 
-        await _ensure_mcp_ready(agent_name)
+        await _ensure_mcp_ready(agent_name, agents_dir=agents_dir)
 
         # Collect resolved fingerprints for dedup in InterventionMiddleware
         task_pool: list[TaskStatus] = state.get("task_pool") or []
@@ -796,7 +801,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
 
         # Load agent config for intervention policies
         try:
-            agent_cfg = load_agent_config(agent_name)
+            agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir)
         except Exception:
             agent_cfg = None
         intervention_policies = {}
@@ -839,6 +844,8 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
             state.get("verified_facts") or {},
             clarification_answer,
             agent_name=agent_name,
+            tenant_id=tenant_id,
+            agents_dir=agents_dir,
         )
 
         # ---------------------------------------------------------------
@@ -949,7 +956,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 fingerprint=resolved_fingerprint or pending_fingerprint,
                 tool_name=stored_tool_call["tool_name"],
             )
-            await _ensure_mcp_ready(agent_name)
+            await _ensure_mcp_ready(agent_name, agents_dir=agents_dir)
             tool_result_message = await _execute_intercepted_tool_call(stored_tool_call, agent_config_override)
 
             # Mark intervention as consumed to prevent duplicate execution
@@ -1012,6 +1019,8 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                         state.get("verified_facts") or {},
                         "",
                         agent_name=agent_name,
+                        tenant_id=tenant_id,
+                        agents_dir=agents_dir,
                     )
                     input_messages = prior_messages + [
                         HumanMessage(content=context_without_answer),
@@ -1724,6 +1733,8 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 task=final_task,
                 verified_fact=verified_fact,
                 thread_id=config.get("configurable", {}).get("thread_id"),
+                tenant_id=tenant_id,
+                agents_dir=agents_dir,
             )
 
         if final_exec_state == "ERROR":

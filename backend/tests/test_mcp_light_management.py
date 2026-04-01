@@ -269,6 +269,57 @@ def test_runtime_manager_shutdown_disconnects_all_loaded_scopes(monkeypatch):
     assert manager.is_scope_loaded("domain:contacts-agent") is False
 
 
+def test_runtime_manager_retries_after_initial_connect_failure(monkeypatch):
+    manager = McpRuntimeManager()
+    attempts: dict[str, int] = {}
+
+    async def fake_connect(self):
+        attempts[self.scope_key] = attempts.get(self.scope_key, 0) + 1
+        if attempts[self.scope_key] == 1:
+            self._tools = None
+            self._last_error = "transient connect failure"
+            return False
+        self._tools = [SimpleNamespace(name=f"{self.scope_key}-tool")]
+        self._last_error = None
+        return True
+
+    monkeypatch.setattr("src.mcp.runtime_manager._ScopedMCPClient.connect", fake_connect)
+
+    first = asyncio.run(manager.load_scope("global", {"global-search": _server()}))
+    second = asyncio.run(manager.load_scope("global", {"global-search": _server()}))
+
+    assert first is False
+    assert second is True
+    assert attempts["global"] == 2
+    assert manager.get_scope_error("global") is None
+    assert [tool.name for tool in manager.get_tools_sync("global")] == ["global-tool"]
+
+
+def test_runtime_manager_failed_scope_does_not_block_other_scope(monkeypatch):
+    manager = McpRuntimeManager()
+
+    async def fake_connect(self):
+        if self.scope_key == "global":
+            self._tools = None
+            self._last_error = "global failed"
+            return False
+        self._tools = [SimpleNamespace(name=f"{self.scope_key}-tool")]
+        self._last_error = None
+        return True
+
+    monkeypatch.setattr("src.mcp.runtime_manager._ScopedMCPClient.connect", fake_connect)
+
+    global_ok = asyncio.run(manager.load_scope("global", {"global-search": _server()}))
+    domain_scope = manager.scope_key_for_agent("contacts-agent")
+    domain_ok = asyncio.run(manager.load_scope(domain_scope, {"contacts-domain": _server(category="domain")}))
+
+    assert global_ok is False
+    assert domain_ok is True
+    assert manager.get_scope_error("global") == "global failed"
+    assert manager.get_scope_error(domain_scope) is None
+    assert [tool.name for tool in manager.get_tools_sync(domain_scope)] == [f"{domain_scope}-tool"]
+
+
 def _make_mcp_app() -> FastAPI:
     from src.gateway.routers.mcp import router
 
