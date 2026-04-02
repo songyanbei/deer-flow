@@ -1,4 +1,11 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { TaskSource, TaskUpsert, TaskViewModel } from "./types";
 
@@ -7,8 +14,11 @@ interface TaskStoreState {
   orderedTaskIds: string[];
 }
 
-export interface SubtaskContextValue extends TaskStoreState {
-  tasks: Record<string, TaskViewModel>;
+type TaskStoreListener = () => void;
+
+interface TaskStore {
+  getState: () => TaskStoreState;
+  subscribe: (listener: TaskStoreListener) => () => void;
   hydrateTasks: (
     tasks: TaskViewModel[],
     options?: { source?: TaskSource; runId?: string | null },
@@ -19,9 +29,14 @@ export interface SubtaskContextValue extends TaskStoreState {
   clearAllTasks: () => void;
 }
 
-const noop = () => {
-  /* noop */
-};
+export interface SubtaskContextValue extends TaskStoreState {
+  tasks: Record<string, TaskViewModel>;
+  hydrateTasks: TaskStore["hydrateTasks"];
+  upsertTask: TaskStore["upsertTask"];
+  removeTasksByRunId: TaskStore["removeTasksByRunId"];
+  resetTasksBySource: TaskStore["resetTasksBySource"];
+  clearAllTasks: TaskStore["clearAllTasks"];
+}
 
 const TASK_STATUS_PRIORITY: Record<TaskViewModel["status"], number> = {
   pending: 0,
@@ -33,16 +48,14 @@ const TASK_STATUS_PRIORITY: Record<TaskViewModel["status"], number> = {
   failed: 6,
 };
 
-export const SubtaskContext = createContext<SubtaskContextValue>({
+const EMPTY_TASK_STORE_STATE: TaskStoreState = {
   tasksById: {},
   orderedTaskIds: [],
-  tasks: {},
-  hydrateTasks: noop,
-  upsertTask: noop,
-  removeTasksByRunId: noop,
-  resetTasksBySource: noop,
-  clearAllTasks: noop,
-});
+};
+
+const objectIs = Object.is;
+
+const SubtaskContext = createContext<TaskStore | null>(null);
 
 function matchesScope(
   task: TaskViewModel,
@@ -64,21 +77,99 @@ function matchesScope(
   return true;
 }
 
-function orderTaskIds(tasksById: Record<string, TaskViewModel>, ids: string[]) {
-  return [...ids].sort((leftId, rightId) => {
-    const left = tasksById[leftId];
-    const right = tasksById[rightId];
-    if (!left || !right) {
-      return 0;
-    }
+function compareTaskIds(
+  tasksById: Record<string, TaskViewModel>,
+  leftId: string,
+  rightId: string,
+) {
+  const left = tasksById[leftId];
+  const right = tasksById[rightId];
+  if (!left || !right) {
+    return 0;
+  }
 
-    const leftTime = left.updatedAt ?? left.createdAt ?? "";
-    const rightTime = right.updatedAt ?? right.createdAt ?? "";
-    if (leftTime && rightTime && leftTime !== rightTime) {
-      return leftTime.localeCompare(rightTime);
+  const leftTime = left.updatedAt ?? left.createdAt ?? "";
+  const rightTime = right.updatedAt ?? right.createdAt ?? "";
+  if (leftTime && rightTime && leftTime !== rightTime) {
+    return leftTime.localeCompare(rightTime);
+  }
+  return leftId.localeCompare(rightId);
+}
+
+function orderTaskIds(tasksById: Record<string, TaskViewModel>, ids: string[]) {
+  return [...ids].sort((leftId, rightId) =>
+    compareTaskIds(tasksById, leftId, rightId),
+  );
+}
+
+function insertTaskId(
+  ids: string[],
+  tasksById: Record<string, TaskViewModel>,
+  taskId: string,
+) {
+  const nextIds = ids.filter((id) => id !== taskId);
+  const insertAt = nextIds.findIndex(
+    (candidateId) => compareTaskIds(tasksById, taskId, candidateId) < 0,
+  );
+
+  if (insertAt === -1) {
+    nextIds.push(taskId);
+    return nextIds;
+  }
+
+  nextIds.splice(insertAt, 0, taskId);
+  return nextIds;
+}
+
+function haveSameTaskOrder(
+  previous: TaskViewModel | undefined,
+  next: TaskViewModel,
+) {
+  return (
+    (previous?.updatedAt ?? previous?.createdAt ?? "") ===
+    (next.updatedAt ?? next.createdAt ?? "")
+  );
+}
+
+function shallowEqualTask(
+  left: TaskViewModel | undefined,
+  right: TaskViewModel | undefined,
+) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+
+  const leftKeys = Object.keys(left) as Array<keyof TaskViewModel>;
+  const rightKeys = Object.keys(right) as Array<keyof TaskViewModel>;
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (!objectIs(left[key], right[key])) {
+      return false;
     }
-    return leftId.localeCompare(rightId);
-  });
+  }
+
+  return true;
+}
+
+function shallowEqualStringArray(left: string[], right: string[]) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function shouldUseHydratedField(
@@ -89,8 +180,6 @@ export function shouldUseHydratedField(
     return true;
   }
 
-  // Let authoritative thread hydration clear transient waiting states when the
-  // backend has already resumed the task.
   if (
     existing.status === "waiting_intervention" &&
     hydrated.status === "in_progress"
@@ -112,8 +201,12 @@ export function mergeHydratedTask(
   }
 
   const preferHydrated = shouldUseHydratedField(existing, hydrated);
-  const selectRichField = <T,>(existingValue: T | undefined, hydratedValue: T | undefined) =>
-    hydratedValue !== undefined && (preferHydrated || existingValue === undefined)
+  const selectRichField = <T,>(
+    existingValue: T | undefined,
+    hydratedValue: T | undefined,
+  ) =>
+    hydratedValue !== undefined &&
+    (preferHydrated || existingValue === undefined)
       ? hydratedValue
       : existingValue;
   const richFields = {
@@ -129,10 +222,7 @@ export function mergeHydratedTask(
       existing.resolvedInputs,
       hydrated.resolvedInputs,
     ),
-    blockedReason: selectRichField(
-      existing.blockedReason,
-      hydrated.blockedReason,
-    ),
+    blockedReason: selectRichField(existing.blockedReason, hydrated.blockedReason),
     resumeCount: selectRichField(existing.resumeCount, hydrated.resumeCount),
     clarificationPrompt: selectRichField(
       existing.clarificationPrompt,
@@ -165,67 +255,107 @@ export function mergeHydratedTask(
   };
 }
 
+function createTaskStore(): TaskStore {
+  let state = EMPTY_TASK_STORE_STATE;
+  const listeners = new Set<TaskStoreListener>();
 
-export function SubtasksProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<TaskStoreState>({
-    tasksById: {},
-    orderedTaskIds: [],
-  });
+  const getState = () => state;
 
-  const clearAllTasks = useCallback(() => {
-    setState({ tasksById: {}, orderedTaskIds: [] });
-  }, []);
+  const setState = (
+    updater: (current: TaskStoreState) => TaskStoreState,
+  ) => {
+    const nextState = updater(state);
+    if (nextState === state) {
+      return;
+    }
+    state = nextState;
+    listeners.forEach((listener) => {
+      listener();
+    });
+  };
 
-  const resetTasksBySource = useCallback(
-    (source: TaskSource, runId?: string | null) => {
-      setState((prev) => {
-        const tasksById = { ...prev.tasksById };
-        const orderedTaskIds = prev.orderedTaskIds.filter((taskId) => {
-          const task = tasksById[taskId];
-          if (!task) {
-            return false;
-          }
-          const shouldRemove =
-            task.source === source &&
-            (runId === undefined || runId === null || task.runId === runId);
-          if (shouldRemove) {
-            delete tasksById[taskId];
-            return false;
-          }
-          return true;
-        });
+  const subscribe = (listener: TaskStoreListener) => {
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  };
 
-        return { tasksById, orderedTaskIds };
-      });
-    },
-    [],
-  );
+  const clearAllTasks = () => {
+    setState((current) => {
+      if (
+        current.orderedTaskIds.length === 0 &&
+        Object.keys(current.tasksById).length === 0
+      ) {
+        return current;
+      }
+      return EMPTY_TASK_STORE_STATE;
+    });
+  };
 
-  const removeTasksByRunId = useCallback((runId: string, source?: TaskSource) => {
-    setState((prev) => {
-      const tasksById = { ...prev.tasksById };
-      const orderedTaskIds = prev.orderedTaskIds.filter((taskId) => {
+  const resetTasksBySource = (source: TaskSource, runId?: string | null) => {
+    setState((current) => {
+      let tasksById = current.tasksById;
+      const orderedTaskIds = current.orderedTaskIds.filter((taskId) => {
         const task = tasksById[taskId];
         if (!task) {
           return false;
         }
         const shouldRemove =
-          task.runId === runId && (source === undefined || task.source === source);
-        if (shouldRemove) {
-          delete tasksById[taskId];
-          return false;
+          task.source === source &&
+          (runId === undefined || runId === null || task.runId === runId);
+        if (!shouldRemove) {
+          return true;
         }
-        return true;
+        if (tasksById === current.tasksById) {
+          tasksById = { ...current.tasksById };
+        }
+        delete tasksById[taskId];
+        return false;
       });
+
+      if (tasksById === current.tasksById) {
+        return current;
+      }
 
       return { tasksById, orderedTaskIds };
     });
-  }, []);
+  };
 
-  const upsertTask = useCallback((task: TaskUpsert) => {
-    setState((prev) => {
-      const existing = prev.tasksById[task.id];
-      const normalizedSource = task.source ?? existing?.source ?? "legacy_subagent";
+  const removeTasksByRunId = (runId: string, source?: TaskSource) => {
+    setState((current) => {
+      let tasksById = current.tasksById;
+      const orderedTaskIds = current.orderedTaskIds.filter((taskId) => {
+        const task = tasksById[taskId];
+        if (!task) {
+          return false;
+        }
+        const shouldRemove =
+          task.runId === runId &&
+          (source === undefined || task.source === source);
+        if (!shouldRemove) {
+          return true;
+        }
+        if (tasksById === current.tasksById) {
+          tasksById = { ...current.tasksById };
+        }
+        delete tasksById[taskId];
+        return false;
+      });
+
+      if (tasksById === current.tasksById) {
+        return current;
+      }
+
+      return { tasksById, orderedTaskIds };
+    });
+  };
+
+  const upsertTask = (task: TaskUpsert) => {
+    setState((current) => {
+      const existing = current.tasksById[task.id];
+      const normalizedSource =
+        task.source ?? existing?.source ?? "legacy_subagent";
       const nextTask: TaskViewModel = {
         ...existing,
         ...task,
@@ -235,107 +365,214 @@ export function SubtasksProvider({ children }: { children: React.ReactNode }) {
         source: normalizedSource,
       } as TaskViewModel;
 
+      if (shallowEqualTask(existing, nextTask)) {
+        return current;
+      }
+
       const tasksById = {
-        ...prev.tasksById,
+        ...current.tasksById,
         [task.id]: nextTask,
       };
-      const orderedTaskIds = prev.orderedTaskIds.includes(task.id)
-        ? orderTaskIds(tasksById, prev.orderedTaskIds)
-        : orderTaskIds(tasksById, [...prev.orderedTaskIds, task.id]);
+
+      let orderedTaskIds = current.orderedTaskIds;
+      if (!existing) {
+        orderedTaskIds = insertTaskId(current.orderedTaskIds, tasksById, task.id);
+      } else if (!haveSameTaskOrder(existing, nextTask)) {
+        const reorderedIds = insertTaskId(
+          current.orderedTaskIds,
+          tasksById,
+          task.id,
+        );
+        if (!shallowEqualStringArray(reorderedIds, current.orderedTaskIds)) {
+          orderedTaskIds = reorderedIds;
+        }
+      }
 
       return { tasksById, orderedTaskIds };
     });
-  }, []);
+  };
 
-  const hydrateTasks = useCallback(
-    (
-      tasks: TaskViewModel[],
-      options?: { source?: TaskSource; runId?: string | null },
-    ) => {
-      setState((prev) => {
-        const scopedTasks = tasks.filter((task) => matchesScope(task, options));
-        const scopedTaskIds = new Set(scopedTasks.map((task) => task.id));
-        const tasksById = { ...prev.tasksById };
-        let orderedTaskIds = prev.orderedTaskIds.filter((taskId) => {
-          const existing = tasksById[taskId];
-          if (!existing) {
-            return false;
-          }
-          const shouldRemove =
-            matchesScope(existing, options) && !scopedTaskIds.has(taskId);
-          if (shouldRemove) {
-            delete tasksById[taskId];
-            return false;
-          }
+  const hydrateTasks = (
+    tasks: TaskViewModel[],
+    options?: { source?: TaskSource; runId?: string | null },
+  ) => {
+    setState((current) => {
+      const scopedTasks = tasks.filter((task) => matchesScope(task, options));
+      const scopedTaskIds = new Set(scopedTasks.map((task) => task.id));
+      let tasksById = current.tasksById;
+      let orderedTaskIds = current.orderedTaskIds;
+      let didChange = false;
+      let shouldResort = false;
+
+      const filteredTaskIds = orderedTaskIds.filter((taskId) => {
+        const existing = tasksById[taskId];
+        if (!existing) {
+          didChange = true;
+          shouldResort = true;
+          return false;
+        }
+        const shouldRemove =
+          matchesScope(existing, options) && !scopedTaskIds.has(taskId);
+        if (!shouldRemove) {
           return true;
-        });
+        }
+        if (tasksById === current.tasksById) {
+          tasksById = { ...current.tasksById };
+        }
+        delete tasksById[taskId];
+        didChange = true;
+        shouldResort = true;
+        return false;
+      });
 
-        for (const task of scopedTasks) {
-          tasksById[task.id] = mergeHydratedTask(tasksById[task.id], task);
-          if (!orderedTaskIds.includes(task.id)) {
-            orderedTaskIds.push(task.id);
+      if (!shallowEqualStringArray(filteredTaskIds, orderedTaskIds)) {
+        orderedTaskIds = filteredTaskIds;
+      }
+
+      const knownTaskIds = new Set(orderedTaskIds);
+      for (const task of scopedTasks) {
+        const existing = tasksById[task.id];
+        const mergedTask = mergeHydratedTask(existing, task);
+
+        if (!shallowEqualTask(existing, mergedTask)) {
+          if (tasksById === current.tasksById) {
+            tasksById = { ...current.tasksById };
+          }
+          tasksById[task.id] = mergedTask;
+          didChange = true;
+          if (!existing || !haveSameTaskOrder(existing, mergedTask)) {
+            shouldResort = true;
           }
         }
 
-        orderedTaskIds = orderTaskIds(tasksById, orderedTaskIds);
-        return { tasksById, orderedTaskIds };
-      });
-    },
-    [],
-  );
+        if (!knownTaskIds.has(task.id)) {
+          if (orderedTaskIds === current.orderedTaskIds) {
+            orderedTaskIds = [...current.orderedTaskIds];
+          }
+          orderedTaskIds.push(task.id);
+          knownTaskIds.add(task.id);
+          didChange = true;
+          shouldResort = true;
+        }
+      }
 
-  const value = useMemo<SubtaskContextValue>(
-    () => ({
-      ...state,
-      tasks: state.tasksById,
-      hydrateTasks,
-      upsertTask,
-      removeTasksByRunId,
-      resetTasksBySource,
-      clearAllTasks,
-    }),
-    [state, hydrateTasks, upsertTask, removeTasksByRunId, resetTasksBySource, clearAllTasks],
-  );
+      if (!didChange) {
+        return current;
+      }
 
-  return (
-    <SubtaskContext.Provider value={value}>{children}</SubtaskContext.Provider>
-  );
-}
+      if (shouldResort) {
+        const reorderedIds = orderTaskIds(tasksById, orderedTaskIds);
+        if (!shallowEqualStringArray(reorderedIds, orderedTaskIds)) {
+          orderedTaskIds = reorderedIds;
+        }
+      }
 
-export function useSubtaskContext() {
-  const context = useContext(SubtaskContext);
-  if (context === undefined) {
-    throw new Error(
-      "useSubtaskContext must be used within a SubtaskContext.Provider",
-    );
-  }
-  return context;
-}
+      return { tasksById, orderedTaskIds };
+    });
+  };
 
-export function useSubtask(id: string) {
-  const { tasksById } = useSubtaskContext();
-  return tasksById[id];
-}
-
-export function useTaskActions() {
-  const {
-    hydrateTasks,
-    upsertTask,
-    removeTasksByRunId,
-    resetTasksBySource,
-    clearAllTasks,
-  } = useSubtaskContext();
-
-  return {
+  const store: TaskStore = {
+    getState,
+    subscribe,
     hydrateTasks,
     upsertTask,
     removeTasksByRunId,
     resetTasksBySource,
     clearAllTasks,
   };
+
+  return store;
+}
+
+export function SubtasksProvider({ children }: { children: React.ReactNode }) {
+  const [store] = useState(createTaskStore);
+  return (
+    <SubtaskContext.Provider value={store}>{children}</SubtaskContext.Provider>
+  );
+}
+
+function useTaskStore() {
+  const store = useContext(SubtaskContext);
+  if (!store) {
+    throw new Error(
+      "useSubtaskContext must be used within a SubtaskContext.Provider",
+    );
+  }
+  return store;
+}
+
+function useTaskStoreSelector<T>(
+  selector: (state: TaskStoreState) => T,
+  isEqual: (left: T, right: T) => boolean = objectIs,
+) {
+  const store = useTaskStore();
+  const [selected, setSelected] = useState(() => selector(store.getState()));
+  const selectorRef = useRef(selector);
+  const isEqualRef = useRef(isEqual);
+
+  useEffect(() => {
+    selectorRef.current = selector;
+    isEqualRef.current = isEqual;
+
+    const nextSelected = selector(store.getState());
+    setSelected((currentSelected) =>
+      isEqual(currentSelected, nextSelected)
+        ? currentSelected
+        : nextSelected,
+    );
+  }, [isEqual, selector, store]);
+
+  useEffect(() => {
+    return store.subscribe(() => {
+      const nextSelected = selectorRef.current(store.getState());
+      setSelected((currentSelected) =>
+        isEqualRef.current(currentSelected, nextSelected)
+          ? currentSelected
+          : nextSelected,
+      );
+    });
+  }, [store]);
+
+  return selected;
+}
+
+export function useSubtaskContext() {
+  const store = useTaskStore();
+  const state = useTaskStoreSelector((current) => current);
+
+  return useMemo<SubtaskContextValue>(
+    () => ({
+      ...state,
+      tasks: state.tasksById,
+      hydrateTasks: store.hydrateTasks,
+      upsertTask: store.upsertTask,
+      removeTasksByRunId: store.removeTasksByRunId,
+      resetTasksBySource: store.resetTasksBySource,
+      clearAllTasks: store.clearAllTasks,
+    }),
+    [state, store],
+  );
+}
+
+export function useSubtask(id: string) {
+  return useTaskStoreSelector((state) => state.tasksById[id]);
+}
+
+export function useTaskActions() {
+  const store = useTaskStore();
+
+  return useMemo(
+    () => ({
+      hydrateTasks: store.hydrateTasks,
+      upsertTask: store.upsertTask,
+      removeTasksByRunId: store.removeTasksByRunId,
+      resetTasksBySource: store.resetTasksBySource,
+      clearAllTasks: store.clearAllTasks,
+    }),
+    [store],
+  );
 }
 
 export function useUpdateSubtask() {
-  const { upsertTask } = useTaskActions();
-  return upsertTask;
+  return useTaskActions().upsertTask;
 }

@@ -78,6 +78,8 @@ export function MessageList({
   onSubmitClarification?: (payload: ClarificationSubmitPayload) => void;
 }) {
   const { t } = useI18n();
+  const shouldShowSkeleton =
+    thread.isThreadLoading && thread.messages.length === 0;
   const animatedRehypePlugins = useRehypeSplitWordsIntoSpans(true);
   const staticRehypePlugins = useRehypeSplitWordsIntoSpans(false);
   const updateSubtask = useUpdateSubtask();
@@ -190,10 +192,6 @@ export function MessageList({
       }
     }
   }, [legacySubagentGroups, updateSubtask]);
-
-  if (thread.isThreadLoading && messages.length === 0) {
-    return <MessageListSkeleton />;
-  }
   const renderItems = useMemo(() => {
     const items: VirtualizedRenderItem[] = [];
 
@@ -461,6 +459,10 @@ export function MessageList({
     threadId,
     workflowProgress,
   ]);
+
+  if (shouldShowSkeleton) {
+    return <MessageListSkeleton />;
+  }
 
   return (
     <Conversation
