@@ -10,7 +10,7 @@ from src.config.app_config import get_app_config
 from src.gateway.config import get_gateway_config
 from src.gateway.middleware.oidc import OIDCAuthMiddleware
 from src.gateway.middleware.oidc_config import load_oidc_config
-from src.gateway.routers import agents, artifacts, governance, interventions, mcp, memory, models, skills, uploads
+from src.gateway.routers import agents, artifacts, governance, interventions, mcp, memory, models, runtime, skills, uploads
 from src.observability import WorkflowMetrics, init_observability
 
 # Configure logging
@@ -112,6 +112,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
                 "description": "Create and manage custom agents with per-agent config and prompts",
             },
             {
+                "name": "runtime",
+                "description": "Platform runtime adapter for thread creation, state query, and message streaming",
+            },
+            {
                 "name": "health",
                 "description": "Health check and system status endpoints",
             },
@@ -164,6 +168,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Governance API is mounted at /api/governance
     app.include_router(governance.router)
+
+    # Runtime API is mounted at /api/runtime
+    app.include_router(runtime.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:
