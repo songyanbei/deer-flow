@@ -3,6 +3,20 @@ import { useMemo } from "react";
 import { visit } from "unist-util-visit";
 import type { BuildVisitor } from "unist-util-visit";
 
+const wordSegmenter =
+  typeof Intl !== "undefined" && "Segmenter" in Intl
+    ? new Intl.Segmenter("zh", { granularity: "word" })
+    : null;
+
+function splitTextIntoAnimatedWords(value: string) {
+  if (wordSegmenter) {
+    return Array.from(wordSegmenter.segment(value))
+      .map((segment) => segment.segment)
+      .filter(Boolean);
+  }
+  return Array.from(value).filter(Boolean);
+}
+
 export function rehypeSplitWordsIntoSpans() {
   return (tree: Root) => {
     visit(tree, "element", ((node: Element) => {
@@ -15,11 +29,7 @@ export function rehypeSplitWordsIntoSpans() {
         const newChildren: Array<ElementContent> = [];
         node.children.forEach((child) => {
           if (child.type === "text") {
-            const segmenter = new Intl.Segmenter("zh", { granularity: "word" });
-            const segments = segmenter.segment(child.value);
-            const words = Array.from(segments)
-              .map((segment) => segment.segment)
-              .filter(Boolean);
+            const words = splitTextIntoAnimatedWords(child.value);
             words.forEach((word: string) => {
               newChildren.push({
                 type: "element",

@@ -25,8 +25,8 @@ import { CodeBlock } from "@/components/ai-elements/code-block";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/core/i18n/hooks";
 import {
+  buildToolCallResultMap,
   extractReasoningContentFromMessage,
-  findToolCallResult,
 } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
 import { extractTitleFromMarkdown } from "@/core/utils/markdown";
@@ -55,7 +55,14 @@ export function MessageGroup({
   const [showLastThinking, setShowLastThinking] = useState(
     env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true",
   );
-  const steps = useMemo(() => convertToSteps(messages), [messages]);
+  const toolCallResults = useMemo(
+    () => buildToolCallResultMap(messages),
+    [messages],
+  );
+  const steps = useMemo(
+    () => convertToSteps(messages, toolCallResults),
+    [messages, toolCallResults],
+  );
   const lastToolCallStep = useMemo(() => {
     const filteredSteps = steps.filter((step) => step.type === "toolCall");
     return filteredSteps[filteredSteps.length - 1];
@@ -440,7 +447,10 @@ interface CoTToolCallStep extends GenericCoTStep<"toolCall"> {
 
 type CoTStep = CoTReasoningStep | CoTToolCallStep;
 
-function convertToSteps(messages: Message[]): CoTStep[] {
+function convertToSteps(
+  messages: Message[],
+  toolCallResults: Map<string, string>,
+): CoTStep[] {
   const steps: CoTStep[] = [];
   for (const message of messages) {
     if (message.type === "ai") {
@@ -467,7 +477,7 @@ function convertToSteps(messages: Message[]): CoTStep[] {
         };
         const toolCallId = tool_call.id;
         if (toolCallId) {
-          const toolCallResult = findToolCallResult(toolCallId, messages);
+          const toolCallResult = toolCallResults.get(toolCallId);
           if (toolCallResult) {
             try {
               const json = JSON.parse(toolCallResult);

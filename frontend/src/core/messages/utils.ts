@@ -250,16 +250,22 @@ export function hasSubagent(message: AIMessage) {
   return false;
 }
 
-export function findToolCallResult(toolCallId: string, messages: Message[]) {
+export function buildToolCallResultMap(messages: Message[]) {
+  const toolCallResults = new Map<string, string>();
   for (const message of messages) {
-    if (message.type === "tool" && message.tool_call_id === toolCallId) {
-      const content = extractTextFromMessage(message);
-      if (content) {
-        return content;
-      }
+    if (message.type !== "tool" || !message.tool_call_id) {
+      continue;
+    }
+    const content = extractTextFromMessage(message);
+    if (content) {
+      toolCallResults.set(message.tool_call_id, content);
     }
   }
-  return undefined;
+  return toolCallResults;
+}
+
+export function findToolCallResult(toolCallId: string, messages: Message[]) {
+  return buildToolCallResultMap(messages).get(toolCallId);
 }
 
 /**
