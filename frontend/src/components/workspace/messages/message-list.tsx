@@ -44,6 +44,14 @@ import {
   splitClarificationQuestions,
 } from "./clarification-card";
 
+const ANIMATABLE_ASSISTANT_GROUP_TYPES = new Set([
+  "assistant",
+  "assistant:processing",
+  "assistant:clarification",
+  "assistant:present-files",
+  "assistant:subagent",
+]);
+
 export function MessageList({
   className,
   threadId,
@@ -60,7 +68,8 @@ export function MessageList({
   onSubmitClarification?: (payload: ClarificationSubmitPayload) => void;
 }) {
   const { t } = useI18n();
-  const rehypePlugins = useRehypeSplitWordsIntoSpans(thread.isLoading);
+  const animatedRehypePlugins = useRehypeSplitWordsIntoSpans(true);
+  const staticRehypePlugins = useRehypeSplitWordsIntoSpans(false);
   const updateSubtask = useUpdateSubtask();
   const { orderedTaskIds, tasksById } = useSubtaskContext();
   const messages = thread.messages;
@@ -85,6 +94,21 @@ export function MessageList({
     () => groupMessages(visibleMessages, (group) => group),
     [visibleMessages],
   );
+  const lastAnimatedGroupIndex = useMemo(() => {
+    if (!thread.isLoading) {
+      return -1;
+    }
+    for (let index = groupedMessages.length - 1; index >= 0; index--) {
+      const group = groupedMessages[index];
+      if (!group) {
+        continue;
+      }
+      if (ANIMATABLE_ASSISTANT_GROUP_TYPES.has(group.type)) {
+        return index;
+      }
+    }
+    return -1;
+  }, [groupedMessages, thread.isLoading]);
   const hasVisibleAssistantContent = groupedMessages.some(
     (group) =>
       group.type === "assistant" ||
@@ -166,12 +190,17 @@ export function MessageList({
     >
       <ConversationContent className="mx-auto w-full max-w-(--container-width-md) gap-8 pt-12">
         {groupedMessages.map((group, groupIndex) => {
+          const shouldAnimateGroup =
+            thread.isLoading && groupIndex === lastAnimatedGroupIndex;
+          const groupRehypePlugins = shouldAnimateGroup
+            ? animatedRehypePlugins
+            : staticRehypePlugins;
           if (group.type === "human" || group.type === "assistant") {
             return (
               <MessageListItem
                 key={group.id}
                 message={group.messages[0]!}
-                isLoading={thread.isLoading}
+                isLoading={group.type === "assistant" && shouldAnimateGroup}
               />
             );
           } else if (group.type === "assistant:clarification") {
@@ -181,8 +210,8 @@ export function MessageList({
                 <MarkdownContent
                   key={group.id}
                   content={extractContentFromMessage(message)}
-                  isLoading={thread.isLoading}
-                  rehypePlugins={rehypePlugins}
+                  isLoading={shouldAnimateGroup}
+                  rehypePlugins={groupRehypePlugins}
                 />
               );
             }
@@ -200,8 +229,8 @@ export function MessageList({
                 {group.messages[0] && hasContent(group.messages[0]) && (
                   <MarkdownContent
                     content={extractContentFromMessage(group.messages[0])}
-                    isLoading={thread.isLoading}
-                    rehypePlugins={rehypePlugins}
+                    isLoading={shouldAnimateGroup}
+                    rehypePlugins={groupRehypePlugins}
                     className="mb-4"
                   />
                 )}
@@ -222,7 +251,7 @@ export function MessageList({
                   <MessageGroup
                     key={"thinking-group-" + message.id}
                     messages={[message]}
-                    isLoading={thread.isLoading}
+                    isLoading={shouldAnimateGroup}
                   />,
                 );
               }
@@ -242,7 +271,7 @@ export function MessageList({
                   <SubtaskCard
                     key={"task-group-" + taskId}
                     taskId={taskId}
-                    isLoading={thread.isLoading}
+                    isLoading={false}
                   />,
                 );
               }
@@ -260,7 +289,7 @@ export function MessageList({
             <MessageGroup
               key={"group-" + group.id}
               messages={group.messages}
-              isLoading={thread.isLoading}
+              isLoading={shouldAnimateGroup}
             />
           );
         })}

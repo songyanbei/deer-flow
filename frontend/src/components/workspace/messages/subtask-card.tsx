@@ -20,7 +20,7 @@ import { useI18n } from "@/core/i18n/hooks";
 import { getInterventionDisplaySummary } from "@/core/interventions/view";
 import { hasToolCalls } from "@/core/messages/utils";
 import { useRehypeSplitWordsIntoSpans } from "@/core/rehype";
-import { streamdownPluginsWithWordAnimation } from "@/core/streamdown";
+import { streamdownPlugins } from "@/core/streamdown";
 import { useSubtask } from "@/core/tasks/context";
 import { localizeStatusDetail } from "@/core/tasks/status-detail";
 import { explainLastToolCall } from "@/core/tools/utils";
@@ -135,7 +135,7 @@ function getCollapsedStatusLabel(
 export function SubtaskCard({
   className,
   taskId,
-  isLoading,
+  isLoading: _isLoading,
 }: {
   className?: string;
   taskId: string;
@@ -143,7 +143,7 @@ export function SubtaskCard({
 }) {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
-  const rehypePlugins = useRehypeSplitWordsIntoSpans(isLoading);
+  const rehypePlugins = useRehypeSplitWordsIntoSpans(false);
   const task = useSubtask(taskId);
   useEffect(() => {
     if (task?.status === "waiting_intervention") {
@@ -249,7 +249,7 @@ export function SubtaskCard({
             <ChainOfThoughtStep
               label={
                 <Streamdown
-                  {...streamdownPluginsWithWordAnimation}
+                  {...streamdownPlugins}
                   components={{ a: CitationLink }}
                 >
                   {task.prompt}
