@@ -275,6 +275,121 @@ class TestUserProfileTenantIsolation:
         assert resp.json()["content"] is None
 
 
+# ── P1 fix: empty tenant_id normalisation ──────────────────────────────
+
+
+class TestEmptyTenantIdNormalisation:
+    """get_tenant_id must normalise empty/whitespace to 'default'."""
+
+    def test_empty_string_normalised(self):
+        """tenant_id='' must become 'default', not bypass filters."""
+        app = _make_app(tenant_id="default")
+        # Override to simulate empty string from OIDC middleware
+        from src.gateway.dependencies import get_tenant_id
+
+        app.dependency_overrides[get_tenant_id] = lambda: ""
+
+        # get_tenant_id is overridden at dependency level, so we test the
+        # function directly to confirm normalisation behaviour.
+        from starlette.datastructures import State
+        from fastapi import Request
+
+        class FakeRequest:
+            state = State()
+        fake = FakeRequest()
+        fake.state.tenant_id = ""
+
+        result = get_tenant_id.__wrapped__(fake) if hasattr(get_tenant_id, "__wrapped__") else get_tenant_id(fake)
+        assert result == "default"
+
+    def test_whitespace_normalised(self):
+        from starlette.datastructures import State
+
+        class FakeRequest:
+            state = State()
+        fake = FakeRequest()
+        fake.state.tenant_id = "   "
+
+        from src.gateway.dependencies import get_tenant_id
+        result = get_tenant_id(fake)
+        assert result == "default"
+
+    def test_none_normalised(self):
+        from starlette.datastructures import State
+
+        class FakeRequest:
+            state = State()
+        fake = FakeRequest()
+        # No tenant_id attr at all
+
+        from src.gateway.dependencies import get_tenant_id
+        result = get_tenant_id(fake)
+        assert result == "default"
+
+
+# ── P2 fix: invalid tenant_id returns 400 ──────────────────────────────
+
+
+class TestInvalidTenantIdReturns400:
+    """Path traversal or illegal tenant IDs must return 400, not 500."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_tmp(self, tmp_path: Path):
+        self.base_dir = tmp_path / ".deer-flow"
+        self.base_dir.mkdir()
+
+        from src.config.paths import Paths
+
+        mock_paths = Paths(str(self.base_dir))
+        self._patcher = patch("src.gateway.routers.agents.get_paths", return_value=mock_paths)
+        self._patcher.start()
+        yield
+        self._patcher.stop()
+
+    def test_path_traversal_get_returns_400(self):
+        app = _make_app(tenant_id="../evil")
+        client = TestClient(app)
+        resp = client.get("/api/user-profile")
+        assert resp.status_code == 400
+        assert "Invalid tenant_id" in resp.json()["detail"]
+
+    def test_path_traversal_put_returns_400(self):
+        app = _make_app(tenant_id="../evil")
+        client = TestClient(app)
+        resp = client.put("/api/user-profile", json={"content": "hack"})
+        assert resp.status_code == 400
+        assert "Invalid tenant_id" in resp.json()["detail"]
+
+    def test_special_chars_returns_400(self):
+        app = _make_app(tenant_id="tenant/../../etc")
+        client = TestClient(app)
+        resp = client.get("/api/user-profile")
+        assert resp.status_code == 400
+
+    def test_agents_list_returns_400(self):
+        app = _make_app(tenant_id="../evil")
+        client = TestClient(app)
+        resp = client.get("/api/agents")
+        assert resp.status_code == 400
+        assert "Invalid tenant_id" in resp.json()["detail"]
+
+    def test_agents_check_returns_400(self):
+        app = _make_app(tenant_id="../evil")
+        client = TestClient(app)
+        resp = client.get("/api/agents/check?name=test-agent")
+        assert resp.status_code == 400
+
+    def test_agents_create_returns_400(self):
+        app = _make_app(tenant_id="../evil")
+        client = TestClient(app)
+        resp = client.post("/api/agents", json={
+            "name": "test-agent",
+            "description": "test",
+            "system_prompt": "test",
+        })
+        assert resp.status_code == 400
+
+
 # ── Paths: tenant_user_md_file ───────────────────────────────────────────
 
 

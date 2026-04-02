@@ -105,10 +105,16 @@ def _resolve_agents_dir(tenant_id: str) -> Path:
 
     When *tenant_id* is ``"default"`` (i.e. OIDC is disabled), falls back to the
     global ``agents/`` directory for backward compatibility.
+
+    Raises ``HTTPException(400)`` if *tenant_id* contains illegal characters
+    (e.g. path-traversal sequences).
     """
     paths = get_paths()
     if tenant_id and tenant_id != "default":
-        return paths.tenant_agents_dir(tenant_id)
+        try:
+            return paths.tenant_agents_dir(tenant_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     return paths.agents_dir
 
 
@@ -243,6 +249,8 @@ async def list_agents(
         agents_dir = _resolve_agents_dir(tenant_id)
         agents = list_custom_agents(agents_dir=agents_dir)
         return AgentsListResponse(agents=[_agent_config_to_response(a) for a in agents])
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to list agents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list agents: {str(e)}")
@@ -436,6 +444,8 @@ async def get_user_profile(
             return UserProfileResponse(content=None)
         raw = user_md_path.read_text(encoding="utf-8").strip()
         return UserProfileResponse(content=raw or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to read user profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to read user profile: {str(e)}")
@@ -457,6 +467,8 @@ async def update_user_profile(
         user_md_path.write_text(request.content, encoding="utf-8")
         logger.info(f"Updated USER.md at {user_md_path}")
         return UserProfileResponse(content=request.content or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to update user profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to update user profile: {str(e)}")

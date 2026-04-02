@@ -18,8 +18,14 @@ def get_tenant_id(request: Request) -> str:
 
     Falls back to ``"default"`` when OIDC is disabled, preserving backward
     compatibility for single-tenant deployments.
+
+    Empty / whitespace-only values are normalised to ``"default"`` to prevent
+    bypassing tenant-scoped filters that treat falsy strings as "no filter".
     """
-    return getattr(request.state, "tenant_id", "default")
+    raw = getattr(request.state, "tenant_id", "default")
+    if not raw or not raw.strip():
+        return "default"
+    return raw
 
 
 def get_user_id(request: Request) -> str:
