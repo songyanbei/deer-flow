@@ -204,12 +204,33 @@ class ThreadRegistry:
             self._save(data)
         return dict(binding)
 
+    # Fields that callers are allowed to update via ``update_binding``.
+    # Identity fields (tenant_id, user_id, portal_session_id) are set at
+    # creation time and must NOT be overwritable through this method.
+    _UPDATABLE_FIELDS = frozenset({
+        "group_key",
+        "allowed_agents",
+        "entry_agent",
+        "requested_orchestration_mode",
+        "metadata",
+    })
+
     def update_binding(self, thread_id: str, **fields: Any) -> dict[str, Any] | None:
         """Merge *fields* into existing thread metadata.
+
+        Only fields listed in ``_UPDATABLE_FIELDS`` are accepted.  Attempting to
+        update identity fields (``tenant_id``, ``user_id``, ``portal_session_id``)
+        raises ``ValueError``.
 
         Automatically sets ``updated_at``.  Returns the updated metadata dict,
         or ``None`` if the thread is not registered.
         """
+        rejected = set(fields) - self._UPDATABLE_FIELDS
+        if rejected:
+            raise ValueError(
+                f"Cannot update protected binding field(s): {', '.join(sorted(rejected))}. "
+                f"Allowed: {', '.join(sorted(self._UPDATABLE_FIELDS))}"
+            )
         with self._lock:
             data = dict(self._load())
             entry = data.get(thread_id)

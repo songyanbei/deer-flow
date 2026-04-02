@@ -605,18 +605,28 @@ async def sync_agents(
         else:
             errors.append(result)
 
-    # In replace mode, remove agents not in the incoming list
+    # In replace mode, remove agents not in the incoming list — but ONLY if
+    # the upsert phase completed without errors.  If any incoming agent failed
+    # to sync, deleting existing agents would cause data loss: the caller
+    # intended those existing agents to be *replaced* by the incoming set, but
+    # if part of that set failed the replacement is incomplete.
     if body.mode == "replace":
-        for name in sorted(existing_names - incoming_names):
-            agent_dir = agents_dir / name
-            try:
-                if agent_dir.exists():
-                    shutil.rmtree(agent_dir)
-                    deleted.append(name)
-                    logger.info("Sync-deleted agent '%s' (tenant=%s)", name, tenant_id)
-            except Exception as e:
-                logger.warning("Sync-delete failed for agent '%s': %s", name, e, exc_info=True)
-                errors.append(AgentSyncItemResult(name=name, action="failed", error=str(e)))
+        if errors:
+            logger.warning(
+                "Skipping replace-mode deletions because %d upsert error(s) occurred (tenant=%s)",
+                len(errors), tenant_id,
+            )
+        else:
+            for name in sorted(existing_names - incoming_names):
+                agent_dir = agents_dir / name
+                try:
+                    if agent_dir.exists():
+                        shutil.rmtree(agent_dir)
+                        deleted.append(name)
+                        logger.info("Sync-deleted agent '%s' (tenant=%s)", name, tenant_id)
+                except Exception as e:
+                    logger.warning("Sync-delete failed for agent '%s': %s", name, e, exc_info=True)
+                    errors.append(AgentSyncItemResult(name=name, action="failed", error=str(e)))
 
     logger.info(
         "Agent sync completed (tenant=%s, mode=%s): created=%d, updated=%d, deleted=%d, errors=%d",

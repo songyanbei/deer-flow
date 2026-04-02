@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, AsyncIterator, Callable
 
 from langgraph_sdk import get_client
 
 logger = logging.getLogger(__name__)
 
-LANGGRAPH_URL = "http://127.0.0.1:2024"
+LANGGRAPH_URL = os.getenv("LANGGRAPH_URL", "http://127.0.0.1:2024")
 ENTRY_GRAPH_ASSISTANT_ID = "entry_graph"
 
 # ── Stable SSE event names exposed to the external platform ───────────
@@ -36,9 +37,19 @@ SSE_RUN_FAILED = "run_failed"
 # ── Helpers ───────────────────────────────────────────────────────────
 
 
+_cached_client = None
+
+
 def _get_client():
-    """Return a LangGraph SDK client pointing at the local server."""
-    return get_client(url=LANGGRAPH_URL)
+    """Return a cached LangGraph SDK client pointing at the local server.
+
+    The client is created once and reused across requests to avoid creating
+    a new HTTP connection for every call.
+    """
+    global _cached_client
+    if _cached_client is None:
+        _cached_client = get_client(url=LANGGRAPH_URL)
+    return _cached_client
 
 
 class RuntimeServiceError(Exception):
@@ -213,7 +224,7 @@ async def stream_message(
     # Track state for deduplication across multiple `values` snapshots
     _last_ai_content: str | None = None
     _last_artifacts_count: int = 0
-    _intervention_emitted: bool = False
+    _emitted_intervention_ids: set[str] = set()
     _submit_callback_fired: bool = False
 
     # Yield initial ack
@@ -239,7 +250,7 @@ async def stream_message(
                 chunk, thread_id, run_id,
                 _last_ai_content=_last_ai_content,
                 _last_artifacts_count=_last_artifacts_count,
-                _intervention_emitted=_intervention_emitted,
+                _emitted_intervention_ids=_emitted_intervention_ids,
             )
             for event_name, event_data in events:
                 if event_data and event_data.get("run_id"):
@@ -250,8 +261,8 @@ async def stream_message(
                 if event_name == SSE_ARTIFACT_CREATED:
                     _last_artifacts_count = event_data.get("_artifacts_count", _last_artifacts_count)
                     event_data.pop("_artifacts_count", None)
-                if event_name == SSE_INTERVENTION_REQUESTED:
-                    _intervention_emitted = True
+                # intervention IDs are tracked inside _emitted_intervention_ids
+                # (mutated in-place by _handle_values_event) — no action needed here
                 yield _format_sse(event_name, event_data)
 
         # Final run_completed after stream ends normally
@@ -273,7 +284,7 @@ def _normalize_stream_event(
     *,
     _last_ai_content: str | None = None,
     _last_artifacts_count: int = 0,
-    _intervention_emitted: bool = False,
+    _emitted_intervention_ids: set[str] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Map a raw LangGraph stream chunk to a list of stable (event_name, payload) pairs.
 
@@ -289,7 +300,7 @@ def _normalize_stream_event(
     base = {"thread_id": thread_id, "run_id": current_run_id}
 
     if event == "values":
-        return _handle_values_event(data, base, _last_ai_content, _last_artifacts_count, _intervention_emitted)
+        return _handle_values_event(data, base, _last_ai_content, _last_artifacts_count, _emitted_intervention_ids)
 
     # langgraph_sdk stream_mode="messages" yields events like:
     #   "messages/partial" (streaming chunks) and "messages/complete" (finished messages)
@@ -305,7 +316,7 @@ def _handle_values_event(
     base: dict[str, Any],
     last_ai_content: str | None,
     last_artifacts_count: int,
-    intervention_emitted: bool,
+    emitted_intervention_ids: set[str] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Extract stable events from a full state snapshot."""
     if not isinstance(data, dict):
@@ -323,48 +334,48 @@ def _handle_values_event(
             if msg_type == "ai" and content and content != last_ai_content:
                 results.append((SSE_MESSAGE_COMPLETED, {**base, "content": content}))
 
-    # Check for new artifacts (only emit if count increased)
+    # Check for new artifacts — emit each newly added artifact individually.
+    # The caller tracks ``_last_artifacts_count`` so we can detect which
+    # artifacts are new by slicing from that offset.
     artifacts = data.get("artifacts") or []
     current_count = len(artifacts) if isinstance(artifacts, list) else 0
     if current_count > last_artifacts_count and artifacts:
-        last_artifact = artifacts[-1]
-        if isinstance(last_artifact, dict):
-            artifact_payload = {
-                **base,
-                "artifact": last_artifact,
-                "_artifacts_count": current_count,
-            }
-            artifact_url = _extract_artifact_url(last_artifact)
-            if artifact_url:
-                artifact_payload["artifact_url"] = artifact_url
-            results.append((SSE_ARTIFACT_CREATED, artifact_payload))
+        for new_artifact in artifacts[last_artifacts_count:]:
+            if isinstance(new_artifact, dict):
+                artifact_payload = {
+                    **base,
+                    "artifact": new_artifact,
+                    "_artifacts_count": current_count,
+                }
+                artifact_url = _extract_artifact_url(new_artifact)
+                if artifact_url:
+                    artifact_payload["artifact_url"] = artifact_url
+                results.append((SSE_ARTIFACT_CREATED, artifact_payload))
 
-    # Check for pending intervention (state-based, not string-matching)
+    # Check for pending interventions — emit each *new* pending intervention
+    # exactly once, tracked by ``request_id`` rather than a boolean flag so
+    # that multiple sequential interventions within one run are all notified.
+    _seen_ids = emitted_intervention_ids if emitted_intervention_ids is not None else set()
     task_pool = data.get("task_pool") or []
-    has_pending_intervention = any(
-        isinstance(t, dict)
-        and t.get("status") == "WAITING_INTERVENTION"
-        and t.get("intervention_status") == "pending"
-        for t in task_pool
-    )
-    if has_pending_intervention and not intervention_emitted:
-        # Find the pending task to include details
-        pending_task = next(
-            (t for t in reversed(task_pool)
-             if isinstance(t, dict)
-             and t.get("status") == "WAITING_INTERVENTION"
-             and t.get("intervention_status") == "pending"),
-            None,
-        )
+    for task in task_pool:
+        if not isinstance(task, dict):
+            continue
+        if task.get("status") != "WAITING_INTERVENTION" or task.get("intervention_status") != "pending":
+            continue
+        intv_req = task.get("intervention_request")
+        req_id = intv_req.get("request_id") if isinstance(intv_req, dict) else None
+        dedup_key = req_id or id(task)  # fallback for missing request_id
+        if dedup_key in _seen_ids:
+            continue
+        _seen_ids.add(dedup_key)
+
         intervention_payload = {**base}
-        if pending_task:
-            intv_req = pending_task.get("intervention_request")
-            if isinstance(intv_req, dict):
-                intervention_payload["request_id"] = intv_req.get("request_id")
-                intervention_payload["intervention_type"] = intv_req.get("type")
-                fingerprint = intv_req.get("fingerprint")
-                if isinstance(fingerprint, str) and fingerprint.strip():
-                    intervention_payload["fingerprint"] = fingerprint
+        if isinstance(intv_req, dict):
+            intervention_payload["request_id"] = req_id
+            intervention_payload["intervention_type"] = intv_req.get("type")
+            fingerprint = intv_req.get("fingerprint")
+            if isinstance(fingerprint, str) and fingerprint.strip():
+                intervention_payload["fingerprint"] = fingerprint
         results.append((SSE_INTERVENTION_REQUESTED, intervention_payload))
 
     # Check for governance entries

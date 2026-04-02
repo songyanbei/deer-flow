@@ -74,10 +74,16 @@ class ThreadBindingResponse(BaseModel):
     state: ThreadBindingState | None = None
 
 
+# ── Safety limits ────────────────────────────────────────────────────
+MAX_MESSAGE_LENGTH = 100_000  # 100 KB — generous for multi-page user prompts
+MAX_ALLOWED_AGENTS = 100  # no realistic workflow needs more than 100 agents
+MAX_GROUP_KEY_LENGTH = 128  # same limit as portal_session_id
+
+
 class MessageStreamRequest(BaseModel):
-    message: str = Field(..., description="User message text")
-    group_key: str = Field(..., description="Agent group key")
-    allowed_agents: list[str] = Field(..., description="Allowed agent names for this request")
+    message: str = Field(..., max_length=MAX_MESSAGE_LENGTH, description="User message text")
+    group_key: str = Field(..., max_length=MAX_GROUP_KEY_LENGTH, description="Agent group key")
+    allowed_agents: list[str] = Field(..., max_length=MAX_ALLOWED_AGENTS, description="Allowed agent names for this request")
     entry_agent: str | None = Field(default=None, description="Optional entry agent name")
     requested_orchestration_mode: RequestedOrchestrationMode | None = Field(
         default=None, description="Orchestration mode hint"
@@ -130,7 +136,12 @@ def _validate_group_key(value: str) -> str:
 
 
 def _validate_allowed_agents(agents: list[str], tenant_id: str) -> list[str]:
-    """Validate and deduplicate allowed_agents against tenant-scoped agent storage."""
+    """Validate and deduplicate allowed_agents against tenant-scoped agent storage.
+
+    An agent is considered valid only if its directory exists **and** contains a
+    loadable ``config.yaml``.  A bare directory without configuration is rejected
+    — it would pass the planner/router lookup but produce no usable agent.
+    """
     if not agents:
         raise HTTPException(status_code=422, detail="allowed_agents must be a non-empty array")
 
@@ -147,9 +158,9 @@ def _validate_allowed_agents(agents: list[str], tenant_id: str) -> list[str]:
             continue
         seen.add(lower)
 
-        # Verify agent exists in tenant-scoped storage
+        # Verify agent exists AND has a loadable config in tenant-scoped storage
         agent_dir = agents_dir / lower
-        if not agent_dir.is_dir():
+        if not agent_dir.is_dir() or not (agent_dir / "config.yaml").is_file():
             raise HTTPException(
                 status_code=422,
                 detail=f"Unknown agent '{trimmed}' in allowed_agents",
@@ -305,6 +316,7 @@ async def stream_runtime_message(
             allowed_agents=allowed_agents,
             entry_agent=entry_agent,
             requested_orchestration_mode=body.requested_orchestration_mode,
+            metadata=body.metadata,
         )
 
     return StreamingResponse(

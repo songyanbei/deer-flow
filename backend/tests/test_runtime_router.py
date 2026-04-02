@@ -369,8 +369,10 @@ class TestRuntimeMessageStream:
     def _setup(self, tmp_path):
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "research-agent").mkdir()
-        (agents_dir / "data-analyst").mkdir()
+        for name in ("research-agent", "data-analyst"):
+            d = agents_dir / name
+            d.mkdir()
+            (d / "config.yaml").write_text(f"name: {name}\ndescription: test {name}", encoding="utf-8")
 
         app, registry, ctx = _create_test_app(tmp_path, agents_dir=agents_dir)
         registry.register_binding(
