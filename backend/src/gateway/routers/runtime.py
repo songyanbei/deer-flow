@@ -20,12 +20,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.config.agents_config import load_agent_config
 from src.config.paths import get_paths
 from src.gateway.dependencies import get_tenant_id, get_user_id, get_username
 from src.gateway.runtime_service import (
     RuntimeServiceError,
     create_thread,
     get_thread_state_summary,
+    iter_events,
+    start_stream,
     stream_message,
 )
 from src.gateway.thread_registry import get_thread_registry
@@ -138,9 +141,9 @@ def _validate_group_key(value: str) -> str:
 def _validate_allowed_agents(agents: list[str], tenant_id: str) -> list[str]:
     """Validate and deduplicate allowed_agents against tenant-scoped agent storage.
 
-    An agent is considered valid only if its directory exists **and** contains a
-    loadable ``config.yaml``.  A bare directory without configuration is rejected
-    — it would pass the planner/router lookup but produce no usable agent.
+    An agent is considered valid only if it can actually be loaded via
+    ``load_agent_config`` — the same code path the planner/router uses.
+    This catches bare directories, missing ``config.yaml``, and malformed YAML.
     """
     if not agents:
         raise HTTPException(status_code=422, detail="allowed_agents must be a non-empty array")
@@ -158,12 +161,13 @@ def _validate_allowed_agents(agents: list[str], tenant_id: str) -> list[str]:
             continue
         seen.add(lower)
 
-        # Verify agent exists AND has a loadable config in tenant-scoped storage
-        agent_dir = agents_dir / lower
-        if not agent_dir.is_dir() or not (agent_dir / "config.yaml").is_file():
+        # Verify the agent is fully loadable — same path as planner/router
+        try:
+            load_agent_config(lower, agents_dir=agents_dir)
+        except Exception:
             raise HTTPException(
                 status_code=422,
-                detail=f"Unknown agent '{trimmed}' in allowed_agents",
+                detail=f"Unknown or invalid agent '{trimmed}' in allowed_agents",
             )
         normalized.append(lower)
 
@@ -309,22 +313,34 @@ async def stream_runtime_message(
     if entry_agent:
         context["agent_name"] = entry_agent
 
-    def _persist_binding_on_submit_success() -> None:
-        registry.update_binding(
-            thread_id,
-            group_key=group_key,
-            allowed_agents=allowed_agents,
-            entry_agent=entry_agent,
-            requested_orchestration_mode=body.requested_orchestration_mode,
-            metadata=body.metadata,
-        )
-
-    return StreamingResponse(
-        stream_message(
+    # Two-phase submission: initiate the upstream run BEFORE committing the
+    # HTTP response.  If the upstream rejects (connection refused, 404, 409)
+    # this raises RuntimeServiceError which becomes HTTP 503/404/409 — not a
+    # 200 SSE stream with an in-band run_failed event.
+    try:
+        first_chunk, upstream_iter = await start_stream(
             thread_id=thread_id,
             message=message,
             context=context,
-            on_submit_success=_persist_binding_on_submit_success,
+        )
+    except RuntimeServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    # Upstream accepted — persist binding metadata
+    registry.update_binding(
+        thread_id,
+        group_key=group_key,
+        allowed_agents=allowed_agents,
+        entry_agent=entry_agent,
+        requested_orchestration_mode=body.requested_orchestration_mode,
+        metadata=body.metadata,
+    )
+
+    return StreamingResponse(
+        iter_events(
+            thread_id=thread_id,
+            first_chunk=first_chunk,
+            upstream_iter=upstream_iter,
         ),
         media_type="text/event-stream",
         headers={

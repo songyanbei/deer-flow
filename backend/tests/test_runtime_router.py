@@ -383,14 +383,16 @@ class TestRuntimeMessageStream:
         )
         return app, registry, ctx
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_stream_success(self, mock_stream, tmp_path):
-        async def fake_stream(**kwargs):
-            kwargs["on_submit_success"]()
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    @patch("src.gateway.routers.runtime.iter_events")
+    def test_stream_success(self, mock_iter, mock_start, tmp_path):
+        mock_start.return_value = ("fake_chunk", None)
+
+        async def fake_events(**kwargs):
             yield 'event: ack\ndata: {"thread_id": "thread-1"}\n\n'
             yield 'event: run_completed\ndata: {"thread_id": "thread-1"}\n\n'
 
-        mock_stream.side_effect = lambda **kwargs: fake_stream(**kwargs)
+        mock_iter.side_effect = lambda **kwargs: fake_events(**kwargs)
 
         app, registry, ctx = self._setup(tmp_path)
         try:
@@ -512,13 +514,15 @@ class TestRuntimeMessageStream:
         finally:
             ctx.cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_stream_entry_agent_in_allowed(self, mock_stream, tmp_path):
-        async def fake_stream(**kwargs):
-            kwargs["on_submit_success"]()
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    @patch("src.gateway.routers.runtime.iter_events")
+    def test_stream_entry_agent_in_allowed(self, mock_iter, mock_start, tmp_path):
+        mock_start.return_value = ("fake_chunk", None)
+
+        async def fake_events(**kwargs):
             yield 'event: ack\ndata: {}\n\n'
 
-        mock_stream.side_effect = lambda **kwargs: fake_stream(**kwargs)
+        mock_iter.side_effect = lambda **kwargs: fake_events(**kwargs)
 
         app, registry, ctx = self._setup(tmp_path)
         try:
@@ -573,13 +577,15 @@ class TestRuntimeMessageStream:
         finally:
             ctx.cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_stream_metadata_primitive_accepted(self, mock_stream, tmp_path):
-        async def fake_stream(**kwargs):
-            kwargs["on_submit_success"]()
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    @patch("src.gateway.routers.runtime.iter_events")
+    def test_stream_metadata_primitive_accepted(self, mock_iter, mock_start, tmp_path):
+        mock_start.return_value = ("fake_chunk", None)
+
+        async def fake_events(**kwargs):
             yield 'event: ack\ndata: {}\n\n'
 
-        mock_stream.side_effect = lambda **kwargs: fake_stream(**kwargs)
+        mock_iter.side_effect = lambda **kwargs: fake_events(**kwargs)
 
         app, registry, ctx = self._setup(tmp_path)
         try:
@@ -597,13 +603,15 @@ class TestRuntimeMessageStream:
         finally:
             ctx.cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_stream_deduplicates_allowed_agents(self, mock_stream, tmp_path):
-        async def fake_stream(**kwargs):
-            kwargs["on_submit_success"]()
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    @patch("src.gateway.routers.runtime.iter_events")
+    def test_stream_deduplicates_allowed_agents(self, mock_iter, mock_start, tmp_path):
+        mock_start.return_value = ("fake_chunk", None)
+
+        async def fake_events(**kwargs):
             yield 'event: ack\ndata: {}\n\n'
 
-        mock_stream.side_effect = lambda **kwargs: fake_stream(**kwargs)
+        mock_iter.side_effect = lambda **kwargs: fake_events(**kwargs)
 
         app, registry, ctx = self._setup(tmp_path)
         try:
@@ -675,13 +683,11 @@ class TestRuntimeMessageStream:
         finally:
             ctx.cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_stream_failed_submission_does_not_persist_binding_metadata(self, mock_stream, tmp_path):
-        async def fake_stream(**kwargs):
-            yield 'event: ack\ndata: {"thread_id": "thread-1"}\n\n'
-            yield 'event: run_failed\ndata: {"thread_id": "thread-1", "error": "Upstream runtime unavailable"}\n\n'
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_stream_failed_submission_does_not_persist_binding_metadata(self, mock_start, tmp_path):
+        from src.gateway.runtime_service import RuntimeServiceError
 
-        mock_stream.return_value = fake_stream()
+        mock_start.side_effect = RuntimeServiceError("LangGraph submission failed: Upstream runtime unavailable", status_code=503)
 
         app, registry, ctx = self._setup(tmp_path)
         try:
@@ -697,7 +703,7 @@ class TestRuntimeMessageStream:
                     "requested_orchestration_mode": "workflow",
                 },
             )
-            assert resp.status_code == 200
+            assert resp.status_code == 503
 
             binding = registry.get_binding("thread-1")
             assert binding.get("group_key") is None
@@ -886,8 +892,9 @@ class TestRuntimeServiceSSE:
         assert payload["content"] == "Final answer"
 
     @patch("src.gateway.runtime_service._get_client")
-    def test_stream_message_emits_stable_run_failed_error_text(self, mock_get_client):
-        from src.gateway.runtime_service import stream_message
+    def test_start_stream_raises_sanitized_error_on_connection_failure(self, mock_get_client):
+        """start_stream raises RuntimeServiceError with sanitized message (no internal addresses)."""
+        from src.gateway.runtime_service import RuntimeServiceError, start_stream
 
         class _FailingRuns:
             async def stream(self, *args, **kwargs):
@@ -898,18 +905,262 @@ class TestRuntimeServiceSSE:
         client.runs = _FailingRuns()
         mock_get_client.return_value = client
 
-        async def _collect():
-            return [
-                chunk
-                async for chunk in stream_message(
-                    thread_id="t1",
-                    message="hello",
-                    context={"thread_id": "t1"},
-                )
-            ]
+        async def _call():
+            return await start_stream(
+                thread_id="t1",
+                message="hello",
+                context={"thread_id": "t1"},
+            )
 
-        frames = asyncio.run(_collect())
-        assert any("event: run_failed" in frame for frame in frames)
-        failed_frame = next(frame for frame in frames if "event: run_failed" in frame)
-        assert "Upstream runtime unavailable" in failed_frame
-        assert "127.0.0.1:2024" not in failed_frame
+        with pytest.raises(RuntimeServiceError) as exc_info:
+            asyncio.run(_call())
+        assert exc_info.value.status_code == 503
+        assert "Upstream runtime unavailable" in str(exc_info.value)
+        assert "127.0.0.1:2024" not in str(exc_info.value)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# P1 Regression: Two-phase stream — upstream failures return HTTP errors
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestP1TwoPhaseStreamRegression:
+    """Verify that immediate upstream failures return proper HTTP status codes,
+    not 200 SSE streams with in-band run_failed events."""
+
+    def _setup(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        agent_dir = agents_dir / "research-agent"
+        agent_dir.mkdir()
+        (agent_dir / "config.yaml").write_text(
+            "name: research-agent\ndescription: test agent", encoding="utf-8"
+        )
+        app, registry, ctx = _create_test_app(tmp_path, agents_dir=agents_dir)
+        registry.register_binding(
+            "thread-1",
+            tenant_id="default",
+            user_id="user-1",
+            portal_session_id="sess-1",
+        )
+        return app, registry, ctx
+
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_connection_error_returns_503(self, mock_start, tmp_path):
+        """ConnectionError from upstream should return HTTP 503, not 200 SSE."""
+        from src.gateway.runtime_service import RuntimeServiceError
+
+        mock_start.side_effect = RuntimeServiceError(
+            "LangGraph submission failed: Upstream runtime unavailable", status_code=503
+        )
+
+        app, _, ctx = self._setup(tmp_path)
+        try:
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "team",
+                    "allowed_agents": ["research-agent"],
+                },
+            )
+            assert resp.status_code == 503
+            assert "unavailable" in resp.json()["detail"].lower()
+        finally:
+            ctx.cleanup()
+
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_thread_not_found_upstream_returns_404(self, mock_start, tmp_path):
+        """404 from upstream should return HTTP 404."""
+        from src.gateway.runtime_service import RuntimeServiceError
+
+        mock_start.side_effect = RuntimeServiceError(
+            "Runtime thread not found: thread-1", status_code=404
+        )
+
+        app, _, ctx = self._setup(tmp_path)
+        try:
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "team",
+                    "allowed_agents": ["research-agent"],
+                },
+            )
+            assert resp.status_code == 404
+        finally:
+            ctx.cleanup()
+
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_conflict_returns_409(self, mock_start, tmp_path):
+        """409 (already running) from upstream should return HTTP 409."""
+        from src.gateway.runtime_service import RuntimeServiceError
+
+        mock_start.side_effect = RuntimeServiceError(
+            "Runtime rejected the submission (already running)", status_code=409
+        )
+
+        app, _, ctx = self._setup(tmp_path)
+        try:
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "team",
+                    "allowed_agents": ["research-agent"],
+                },
+            )
+            assert resp.status_code == 409
+        finally:
+            ctx.cleanup()
+
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_start_stream_503_does_not_persist_binding(self, mock_start, tmp_path):
+        """When start_stream fails, update_binding must NOT be called."""
+        from src.gateway.runtime_service import RuntimeServiceError
+
+        mock_start.side_effect = RuntimeServiceError("Upstream down", status_code=503)
+
+        app, registry, ctx = self._setup(tmp_path)
+        try:
+            original = registry.get_binding("thread-1")
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "new-group",
+                    "allowed_agents": ["research-agent"],
+                },
+            )
+            assert resp.status_code == 503
+            binding = registry.get_binding("thread-1")
+            assert binding.get("group_key") is None
+            assert binding["updated_at"] == original["updated_at"]
+        finally:
+            ctx.cleanup()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# P2 Regression: allowed_agents rejects malformed/unloadable agent configs
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestP2AllowedAgentsValidationRegression:
+    """Verify that _validate_allowed_agents rejects agents that can't be loaded."""
+
+    def test_bare_directory_without_config_yaml_rejected(self, tmp_path):
+        """Agent directory without config.yaml should be rejected."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "bare-agent").mkdir()  # no config.yaml
+
+        app, registry, ctx = _create_test_app(tmp_path, agents_dir=agents_dir)
+        try:
+            registry.register_binding(
+                "thread-1", tenant_id="default", user_id="user-1", portal_session_id="s"
+            )
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "team",
+                    "allowed_agents": ["bare-agent"],
+                },
+            )
+            assert resp.status_code == 422
+            assert "bare-agent" in resp.json()["detail"]
+        finally:
+            ctx.cleanup()
+
+    def test_malformed_yaml_config_rejected(self, tmp_path):
+        """Agent with malformed/unparseable config.yaml should be rejected."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        agent_dir = agents_dir / "bad-yaml-agent"
+        agent_dir.mkdir()
+        (agent_dir / "config.yaml").write_text("{{invalid yaml: !!!", encoding="utf-8")
+
+        app, registry, ctx = _create_test_app(tmp_path, agents_dir=agents_dir)
+        try:
+            registry.register_binding(
+                "thread-1", tenant_id="default", user_id="user-1", portal_session_id="s"
+            )
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "team",
+                    "allowed_agents": ["bad-yaml-agent"],
+                },
+            )
+            assert resp.status_code == 422
+            assert "bad-yaml-agent" in resp.json()["detail"]
+        finally:
+            ctx.cleanup()
+
+    def test_nonexistent_agent_rejected(self, tmp_path):
+        """Agent name that has no directory at all should be rejected."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        app, registry, ctx = _create_test_app(tmp_path, agents_dir=agents_dir)
+        try:
+            registry.register_binding(
+                "thread-1", tenant_id="default", user_id="user-1", portal_session_id="s"
+            )
+            client = TestClient(app)
+            resp = client.post(
+                "/api/runtime/threads/thread-1/messages:stream",
+                json={
+                    "message": "hello",
+                    "group_key": "team",
+                    "allowed_agents": ["ghost-agent"],
+                },
+            )
+            assert resp.status_code == 422
+            assert "ghost-agent" in resp.json()["detail"]
+        finally:
+            ctx.cleanup()
+
+    def test_valid_agent_with_proper_config_accepted(self, tmp_path):
+        """Agent with valid config.yaml should pass validation."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        agent_dir = agents_dir / "good-agent"
+        agent_dir.mkdir()
+        (agent_dir / "config.yaml").write_text(
+            "name: good-agent\ndescription: A valid agent", encoding="utf-8"
+        )
+
+        app, registry, ctx = _create_test_app(tmp_path, agents_dir=agents_dir)
+        try:
+            registry.register_binding(
+                "thread-1", tenant_id="default", user_id="user-1", portal_session_id="s"
+            )
+            with patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock) as mock_start, \
+                 patch("src.gateway.routers.runtime.iter_events") as mock_iter:
+                mock_start.return_value = (None, None)
+
+                async def fake_iter(**kw):
+                    yield 'event: ack\ndata: {}\n\n'
+                mock_iter.side_effect = lambda **kw: fake_iter(**kw)
+
+                client = TestClient(app)
+                resp = client.post(
+                    "/api/runtime/threads/thread-1/messages:stream",
+                    json={
+                        "message": "hello",
+                        "group_key": "team",
+                        "allowed_agents": ["good-agent"],
+                    },
+                )
+                assert resp.status_code == 200
+        finally:
+            ctx.cleanup()

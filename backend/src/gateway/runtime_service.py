@@ -195,7 +195,7 @@ def _sanitize_error(exc: Exception) -> str:
     return "Runtime execution failed"
 
 
-async def stream_message(
+async def submit_and_stream(
     *,
     thread_id: str,
     message: str,
@@ -204,10 +204,56 @@ async def stream_message(
 ) -> AsyncIterator[str]:
     """Submit a message to the LangGraph runtime and yield normalized SSE frames.
 
+    **Two-phase design** — the caller must ``await`` the coroutine returned by
+    :func:`start_stream` first.  That coroutine initiates the upstream
+    ``runs.stream`` call and waits for the first chunk.  If the upstream
+    rejects the submission (connection refused, 404, 409, …) it raises
+    ``RuntimeServiceError`` **before** any HTTP response is sent, so the
+    router can return a proper HTTP 503/404/409 instead of a 200 SSE stream
+    that immediately contains ``run_failed``.
+
+    After ``start_stream`` succeeds the caller wraps :func:`iter_events` in a
+    ``StreamingResponse``.
+
     *context* is injected as the ``context`` parameter on ``runs.stream``.
-    *on_submit_success* is invoked exactly once after the upstream run is
-    successfully created (i.e. the first chunk is received from ``runs.stream``).
-    This allows callers to persist metadata only after a successful submission.
+    *on_submit_success* is invoked exactly once after the first upstream chunk
+    is received, allowing the caller to persist metadata only after successful
+    submission.
+    """
+    # This is a convenience wrapper kept for backward-compat with tests that
+    # call ``stream_message`` directly.  Production code should use the
+    # two-phase ``start_stream`` / ``iter_events`` pair via the router.
+    first_chunk, upstream_iter = await start_stream(
+        thread_id=thread_id,
+        message=message,
+        context=context,
+    )
+    if on_submit_success is not None:
+        on_submit_success()
+    async for frame in iter_events(
+        thread_id=thread_id,
+        first_chunk=first_chunk,
+        upstream_iter=upstream_iter,
+    ):
+        yield frame
+
+
+# Keep the old name as an alias so existing callers / tests don't break.
+stream_message = submit_and_stream
+
+
+async def start_stream(
+    *,
+    thread_id: str,
+    message: str,
+    context: dict[str, Any],
+) -> tuple[Any, Any]:
+    """Initiate the upstream LangGraph run and return the first chunk + iterator.
+
+    Raises ``RuntimeServiceError`` if the upstream rejects immediately
+    (connection refused → 503, thread not found → 404, already running → 409).
+    This must be awaited **before** the HTTP response is committed so the
+    router can map the error to an appropriate HTTP status code.
     """
     client = _get_client()
 
@@ -220,18 +266,8 @@ async def stream_message(
         ],
     }
 
-    run_id: str | None = None
-    # Track state for deduplication across multiple `values` snapshots
-    _last_ai_content: str | None = None
-    _last_artifacts_count: int = 0
-    _emitted_intervention_ids: set[str] = set()
-    _submit_callback_fired: bool = False
-
-    # Yield initial ack
-    yield _format_sse(SSE_ACK, {"thread_id": thread_id})
-
     try:
-        async for chunk in client.runs.stream(
+        upstream_iter = client.runs.stream(
             thread_id,
             ENTRY_GRAPH_ASSISTANT_ID,
             input=input_payload,
@@ -239,33 +275,75 @@ async def stream_message(
             context=context,
             stream_mode=["values", "messages"],
             multitask_strategy="reject",
-        ):
-            # Fire the submit-success callback once after the first upstream chunk
-            if not _submit_callback_fired:
-                _submit_callback_fired = True
-                if on_submit_success is not None:
-                    on_submit_success()
+        )
+        # Await the first chunk — this is where connection/auth/404 errors
+        # surface.  ``__aiter__`` + ``__anext__`` is the standard way to pull
+        # one item from an async iterator.
+        upstream_aiter = upstream_iter.__aiter__()
+        first_chunk = await upstream_aiter.__anext__()
+        return first_chunk, upstream_aiter
+    except StopAsyncIteration:
+        # Empty stream — unusual but not an error
+        return None, None
+    except Exception as exc:
+        exc_text = str(exc).lower()
+        if "404" in exc_text or "not found" in exc_text:
+            raise RuntimeServiceError(f"Runtime thread not found: {thread_id}", status_code=404) from exc
+        if any(tok in exc_text for tok in ("reject", "multitask", "already running", "409")):
+            raise RuntimeServiceError("Runtime rejected the submission (already running)", status_code=409) from exc
+        raise RuntimeServiceError(f"LangGraph submission failed: {_sanitize_error(exc)}", status_code=503) from exc
 
-            events = _normalize_stream_event(
-                chunk, thread_id, run_id,
-                _last_ai_content=_last_ai_content,
-                _last_artifacts_count=_last_artifacts_count,
-                _emitted_intervention_ids=_emitted_intervention_ids,
-            )
-            for event_name, event_data in events:
-                if event_data and event_data.get("run_id"):
-                    run_id = event_data["run_id"]
-                # Update dedup trackers
-                if event_name == SSE_MESSAGE_COMPLETED:
-                    _last_ai_content = event_data.get("content")
-                if event_name == SSE_ARTIFACT_CREATED:
-                    _last_artifacts_count = event_data.get("_artifacts_count", _last_artifacts_count)
-                    event_data.pop("_artifacts_count", None)
-                # intervention IDs are tracked inside _emitted_intervention_ids
-                # (mutated in-place by _handle_values_event) — no action needed here
-                yield _format_sse(event_name, event_data)
 
-        # Final run_completed after stream ends normally
+async def iter_events(
+    *,
+    thread_id: str,
+    first_chunk: Any,
+    upstream_iter: Any,
+) -> AsyncIterator[str]:
+    """Yield normalized SSE frames from an already-started upstream stream.
+
+    *first_chunk* is the chunk obtained by ``start_stream``.
+    *upstream_iter* is the remaining async iterator.
+    """
+    run_id: str | None = None
+    _last_ai_content: str | None = None
+    _last_artifacts_count: int = 0
+    _emitted_intervention_ids: set[str] = set()
+
+    yield _format_sse(SSE_ACK, {"thread_id": thread_id})
+
+    def _process_chunk(chunk: Any) -> list[str]:
+        nonlocal run_id, _last_ai_content, _last_artifacts_count
+        frames: list[str] = []
+        events = _normalize_stream_event(
+            chunk, thread_id, run_id,
+            _last_ai_content=_last_ai_content,
+            _last_artifacts_count=_last_artifacts_count,
+            _emitted_intervention_ids=_emitted_intervention_ids,
+        )
+        for event_name, event_data in events:
+            if event_data and event_data.get("run_id"):
+                run_id = event_data["run_id"]
+            if event_name == SSE_MESSAGE_COMPLETED:
+                _last_ai_content = event_data.get("content")
+            if event_name == SSE_ARTIFACT_CREATED:
+                _last_artifacts_count = event_data.get("_artifacts_count", _last_artifacts_count)
+                event_data.pop("_artifacts_count", None)
+            frames.append(_format_sse(event_name, event_data))
+        return frames
+
+    try:
+        # Process the first chunk (already fetched by start_stream)
+        if first_chunk is not None:
+            for frame in _process_chunk(first_chunk):
+                yield frame
+
+        # Continue with the rest of the stream
+        if upstream_iter is not None:
+            async for chunk in upstream_iter:
+                for frame in _process_chunk(chunk):
+                    yield frame
+
         yield _format_sse(SSE_RUN_COMPLETED, {"thread_id": thread_id, "run_id": run_id})
 
     except Exception as exc:

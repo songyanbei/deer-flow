@@ -258,13 +258,14 @@ class TestRuntimeRouterBoundaryValidation:
         finally:
             cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_message_very_long_accepted(self, mock_stream, tmp_path):
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_message_very_long_accepted(self, mock_start, mock_iter, tmp_path):
         """No max length on message — verify it doesn't crash with large input."""
-        async def fake(**kw):
-            kw["on_submit_success"]()
+        mock_start.return_value = (None, None)
+        async def fake_iter(**kw):
             yield 'event: ack\ndata: {}\n\n'
-        mock_stream.side_effect = lambda **kw: fake(**kw)
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         agents_dir = self._setup_agents(tmp_path)
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
@@ -303,11 +304,12 @@ class TestRuntimeRouterBoundaryValidation:
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
         try:
             reg.register_binding("thread-1", tenant_id="default", user_id="user-1", portal_session_id="s")
-            with patch("src.gateway.routers.runtime.stream_message") as mock:
-                async def fake(**kw):
-                    kw["on_submit_success"]()
+            with patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock) as mock_start, \
+                 patch("src.gateway.routers.runtime.iter_events") as mock_iter:
+                mock_start.return_value = (None, None)
+                async def fake_iter(**kw):
                     yield 'event: ack\ndata: {}\n\n'
-                mock.side_effect = lambda **kw: fake(**kw)
+                mock_iter.side_effect = lambda **kw: fake_iter(**kw)
                 client = TestClient(app)
                 resp = client.post(
                     "/api/runtime/threads/thread-1/messages:stream",
@@ -363,11 +365,12 @@ class TestRuntimeRouterBoundaryValidation:
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
         try:
             reg.register_binding("thread-1", tenant_id="default", user_id="user-1", portal_session_id="s")
-            with patch("src.gateway.routers.runtime.stream_message") as mock:
-                async def fake(**kw):
-                    kw["on_submit_success"]()
+            with patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock) as mock_start, \
+                 patch("src.gateway.routers.runtime.iter_events") as mock_iter:
+                mock_start.return_value = (None, None)
+                async def fake_iter(**kw):
                     yield 'event: ack\ndata: {}\n\n'
-                mock.side_effect = lambda **kw: fake(**kw)
+                mock_iter.side_effect = lambda **kw: fake_iter(**kw)
                 client = TestClient(app)
                 resp = client.post(
                     "/api/runtime/threads/thread-1/messages:stream",
@@ -408,18 +411,20 @@ class TestRuntimeRouterBoundaryValidation:
 
     # ── Context verification ──
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_context_includes_all_required_fields(self, mock_stream, tmp_path):
-        """Verify the context dict passed to stream_message has all expected keys."""
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_context_includes_all_required_fields(self, mock_start, mock_iter, tmp_path):
+        """Verify the context dict passed to start_stream has all expected keys."""
         captured_context = {}
 
-        async def fake(*, thread_id, message, context, on_submit_success=None):
+        async def fake_start(*, thread_id, message, context):
             captured_context.update(context)
-            if on_submit_success:
-                on_submit_success()
-            yield 'event: ack\ndata: {}\n\n'
+            return (None, None)
 
-        mock_stream.side_effect = fake
+        mock_start.side_effect = fake_start
+        async def fake_iter(**kw):
+            yield 'event: ack\ndata: {}\n\n'
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         agents_dir = self._setup_agents(tmp_path)
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
@@ -448,18 +453,20 @@ class TestRuntimeRouterBoundaryValidation:
         finally:
             cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_context_omits_agent_name_when_no_entry_agent(self, mock_stream, tmp_path):
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_context_omits_agent_name_when_no_entry_agent(self, mock_start, mock_iter, tmp_path):
         """When entry_agent is not provided, agent_name should NOT be in context."""
         captured_context = {}
 
-        async def fake(*, thread_id, message, context, on_submit_success=None):
+        async def fake_start(*, thread_id, message, context):
             captured_context.update(context)
-            if on_submit_success:
-                on_submit_success()
-            yield 'event: ack\ndata: {}\n\n'
+            return (None, None)
 
-        mock_stream.side_effect = fake
+        mock_start.side_effect = fake_start
+        async def fake_iter(**kw):
+            yield 'event: ack\ndata: {}\n\n'
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         agents_dir = self._setup_agents(tmp_path)
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
@@ -475,17 +482,19 @@ class TestRuntimeRouterBoundaryValidation:
         finally:
             cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_context_omits_orchestration_mode_when_not_provided(self, mock_stream, tmp_path):
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_context_omits_orchestration_mode_when_not_provided(self, mock_start, mock_iter, tmp_path):
         captured_context = {}
 
-        async def fake(*, thread_id, message, context, on_submit_success=None):
+        async def fake_start(*, thread_id, message, context):
             captured_context.update(context)
-            if on_submit_success:
-                on_submit_success()
-            yield 'event: ack\ndata: {}\n\n'
+            return (None, None)
 
-        mock_stream.side_effect = fake
+        mock_start.side_effect = fake_start
+        async def fake_iter(**kw):
+            yield 'event: ack\ndata: {}\n\n'
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         agents_dir = self._setup_agents(tmp_path)
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
@@ -503,18 +512,20 @@ class TestRuntimeRouterBoundaryValidation:
 
     # ── metadata NOT passed to context ──
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_metadata_not_passed_to_runtime_context(self, mock_stream, tmp_path):
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_metadata_not_passed_to_runtime_context(self, mock_start, mock_iter, tmp_path):
         """metadata is validated but not injected into the LangGraph runtime context."""
         captured_context = {}
 
-        async def fake(*, thread_id, message, context, on_submit_success=None):
+        async def fake_start(*, thread_id, message, context):
             captured_context.update(context)
-            if on_submit_success:
-                on_submit_success()
-            yield 'event: ack\ndata: {}\n\n'
+            return (None, None)
 
-        mock_stream.side_effect = fake
+        mock_start.side_effect = fake_start
+        async def fake_iter(**kw):
+            yield 'event: ack\ndata: {}\n\n'
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         agents_dir = self._setup_agents(tmp_path)
         app, reg, cleanup = _make_runtime_app(tmp_path, agents_dir)
@@ -822,14 +833,13 @@ class TestRuntimeServiceErrorSanitization:
 
 
 class TestRuntimeServiceStreamMessage:
-    """Tests for stream_message behavior."""
+    """Tests for start_stream / iter_events two-phase behavior."""
 
     @patch("src.gateway.runtime_service._get_client")
-    def test_ack_emitted_before_upstream_connect(self, mock_get_client):
-        """The initial ack event should be yielded before any upstream interaction."""
-        from src.gateway.runtime_service import stream_message
+    def test_upstream_connection_error_raises_runtime_service_error(self, mock_get_client):
+        """Upstream connection failures raise RuntimeServiceError (not in-band SSE)."""
+        from src.gateway.runtime_service import RuntimeServiceError, start_stream
 
-        # Make upstream raise immediately
         class _FailingRuns:
             async def stream(self, *args, **kwargs):
                 raise ConnectionError("connection refused")
@@ -839,20 +849,19 @@ class TestRuntimeServiceStreamMessage:
         client.runs = _FailingRuns()
         mock_get_client.return_value = client
 
-        async def _collect():
-            return [chunk async for chunk in stream_message(
+        async def _call():
+            return await start_stream(
                 thread_id="t1", message="hello", context={"thread_id": "t1"},
-            )]
+            )
 
-        frames = asyncio.run(_collect())
-        assert len(frames) >= 2  # ack + run_failed
-        assert "event: ack" in frames[0]
-        assert "event: run_failed" in frames[-1]
+        with pytest.raises(RuntimeServiceError) as exc_info:
+            asyncio.run(_call())
+        assert exc_info.value.status_code == 503
 
     @patch("src.gateway.runtime_service._get_client")
     def test_on_submit_success_not_called_on_error(self, mock_get_client):
         """on_submit_success should NOT be called if upstream fails before first chunk."""
-        from src.gateway.runtime_service import stream_message
+        from src.gateway.runtime_service import RuntimeServiceError, stream_message
 
         class _FailingRuns:
             async def stream(self, *args, **kwargs):
@@ -874,7 +883,8 @@ class TestRuntimeServiceStreamMessage:
                 on_submit_success=callback,
             )]
 
-        asyncio.run(_collect())
+        with pytest.raises(RuntimeServiceError):
+            asyncio.run(_collect())
         assert not callback_called
 
 
@@ -1273,11 +1283,12 @@ class TestThreadCreateEndToEnd:
             assert resp.status_code == 200
 
             # Stream
-            with patch("src.gateway.routers.runtime.stream_message") as mock_stream:
-                async def fake(**kw):
-                    kw["on_submit_success"]()
+            with patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock) as mock_start, \
+                 patch("src.gateway.routers.runtime.iter_events") as mock_iter:
+                mock_start.return_value = (None, None)
+                async def fake_iter(**kw):
                     yield 'event: ack\ndata: {}\n\n'
-                mock_stream.side_effect = lambda **kw: fake(**kw)
+                mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
                 resp = client.post(
                     "/api/runtime/threads/thread-full/messages:stream",
@@ -1375,12 +1386,13 @@ class TestMetadataPersistence:
         reg.register_binding("thread-1", tenant_id="default", user_id="user-1", portal_session_id="s")
         return app, reg, cleanup
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_metadata_persisted_on_success(self, mock_stream, tmp_path):
-        async def fake(**kw):
-            kw["on_submit_success"]()
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_metadata_persisted_on_success(self, mock_start, mock_iter, tmp_path):
+        mock_start.return_value = (None, None)
+        async def fake_iter(**kw):
             yield 'event: ack\ndata: {}\n\n'
-        mock_stream.side_effect = lambda **kw: fake(**kw)
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         app, reg, cleanup = self._setup(tmp_path)
         try:
@@ -1399,12 +1411,13 @@ class TestMetadataPersistence:
         finally:
             cleanup()
 
-    @patch("src.gateway.routers.runtime.stream_message")
-    def test_null_metadata_persisted_as_none(self, mock_stream, tmp_path):
-        async def fake(**kw):
-            kw["on_submit_success"]()
+    @patch("src.gateway.routers.runtime.iter_events")
+    @patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock)
+    def test_null_metadata_persisted_as_none(self, mock_start, mock_iter, tmp_path):
+        mock_start.return_value = (None, None)
+        async def fake_iter(**kw):
             yield 'event: ack\ndata: {}\n\n'
-        mock_stream.side_effect = lambda **kw: fake(**kw)
+        mock_iter.side_effect = lambda **kw: fake_iter(**kw)
 
         app, reg, cleanup = self._setup(tmp_path)
         try:
