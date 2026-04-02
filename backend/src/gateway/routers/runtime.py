@@ -204,7 +204,7 @@ def _validate_metadata(meta: dict[str, Any] | None) -> dict[str, Any] | None:
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 
-@router.post("/threads", response_model=ThreadCreateResponse)
+@router.post("/threads", response_model=ThreadCreateResponse, status_code=201)
 async def create_runtime_thread(
     body: ThreadCreateRequest,
     tenant_id: str = Depends(get_tenant_id),

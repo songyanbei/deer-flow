@@ -227,7 +227,7 @@ class TestRuntimeThreadCreation:
                 "/api/runtime/threads",
                 json={"portal_session_id": "sess_123"},
             )
-            assert resp.status_code == 200
+            assert resp.status_code == 201
             data = resp.json()
             assert data["thread_id"] == "thread-abc"
             assert data["portal_session_id"] == "sess_123"
@@ -807,7 +807,7 @@ class TestRuntimeServiceSSE:
                     "intervention_status": "pending",
                     "intervention_request": {
                         "request_id": "req-1",
-                        "type": "clarification",
+                        "intervention_type": "before_tool",
                     },
                 }
             ],
@@ -816,6 +816,7 @@ class TestRuntimeServiceSSE:
         intv_events = [(n, p) for n, p in results if n == SSE_INTERVENTION_REQUESTED]
         assert len(intv_events) == 1
         assert intv_events[0][1]["request_id"] == "req-1"
+        assert intv_events[0][1]["intervention_type"] == "before_tool"
 
     def test_normalize_values_intervention_includes_fingerprint(self):
         from src.gateway.runtime_service import SSE_INTERVENTION_REQUESTED, _normalize_stream_event
@@ -829,7 +830,7 @@ class TestRuntimeServiceSSE:
                     "intervention_status": "pending",
                     "intervention_request": {
                         "request_id": "req-1",
-                        "type": "clarification",
+                        "intervention_type": "before_tool",
                         "fingerprint": "fp-123",
                     },
                 }
@@ -840,6 +841,53 @@ class TestRuntimeServiceSSE:
         intv_events = [(n, p) for n, p in results if n == SSE_INTERVENTION_REQUESTED]
         assert len(intv_events) == 1
         assert intv_events[0][1]["fingerprint"] == "fp-123"
+
+    def test_normalize_values_intervention_includes_display_fields(self):
+        """SSE intervention_requested event must include fields for rendering UI."""
+        from src.gateway.runtime_service import SSE_INTERVENTION_REQUESTED, _normalize_stream_event
+
+        action_schema = {"actions": [{"key": "approve", "label": "OK", "kind": "confirm", "resolution_behavior": "resume_current_task"}]}
+        display = {"title": "Confirm bash", "summary": "Run command?"}
+        chunk = MagicMock()
+        chunk.event = "values"
+        chunk.data = {
+            "task_pool": [
+                {
+                    "status": "WAITING_INTERVENTION",
+                    "intervention_status": "pending",
+                    "intervention_request": {
+                        "request_id": "req-2",
+                        "intervention_type": "before_tool",
+                        "fingerprint": "fp-456",
+                        "title": "工具 bash 需要确认",
+                        "reason": "Agent尝试执行bash",
+                        "source_agent": "data-analyst",
+                        "tool_name": "bash",
+                        "risk_level": "medium",
+                        "category": "tool_execution",
+                        "action_summary": "执行 bash",
+                        "action_schema": action_schema,
+                        "display": display,
+                        "questions": None,
+                    },
+                }
+            ],
+        }
+
+        results = _normalize_stream_event(chunk, "t1", "run-1")
+        intv_events = [(n, p) for n, p in results if n == SSE_INTERVENTION_REQUESTED]
+        assert len(intv_events) == 1
+        payload = intv_events[0][1]
+        assert payload["request_id"] == "req-2"
+        assert payload["title"] == "工具 bash 需要确认"
+        assert payload["reason"] == "Agent尝试执行bash"
+        assert payload["source_agent"] == "data-analyst"
+        assert payload["tool_name"] == "bash"
+        assert payload["risk_level"] == "medium"
+        assert payload["action_schema"] == action_schema
+        assert payload["display"] == display
+        # questions=None should NOT be included
+        assert "questions" not in payload
 
     def test_normalize_values_artifact_includes_top_level_artifact_url(self):
         from src.gateway.runtime_service import SSE_ARTIFACT_CREATED, _normalize_stream_event

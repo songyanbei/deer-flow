@@ -450,10 +450,17 @@ def _handle_values_event(
         intervention_payload = {**base}
         if isinstance(intv_req, dict):
             intervention_payload["request_id"] = req_id
-            intervention_payload["intervention_type"] = intv_req.get("type")
+            intervention_payload["intervention_type"] = intv_req.get("intervention_type")
             fingerprint = intv_req.get("fingerprint")
             if isinstance(fingerprint, str) and fingerprint.strip():
                 intervention_payload["fingerprint"] = fingerprint
+            # Include fields required by the platform to render an intervention card
+            for key in ("title", "reason", "source_agent", "tool_name",
+                        "risk_level", "category", "action_summary",
+                        "action_schema", "questions", "display"):
+                val = intv_req.get(key)
+                if val is not None:
+                    intervention_payload[key] = val
         results.append((SSE_INTERVENTION_REQUESTED, intervention_payload))
 
     # Check for governance entries
