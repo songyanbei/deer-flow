@@ -165,7 +165,7 @@ Configuration priority:
 The platform classifies all runtime capabilities into three tiers and provides validators for agent onboarding and capability profile admission.
 
 **Modules**:
-- `platform_capabilities.py` — Canonical inventory of 18 capabilities classified as `Platform Core` (12), `Capability Profile` (4), or `Pilot / Experimental` (2). Immutable `CapabilityDescriptor` with `get_capability()`, `list_capabilities()`, `get_capability_matrix()`.
+- `platform_capabilities.py` — Canonical inventory of 20 capabilities classified as `Platform Core` (14), `Capability Profile` (4), or `Pilot / Experimental` (2). Immutable `CapabilityDescriptor` with `get_capability()`, `list_capabilities()`, `get_capability_matrix()`.
 - `onboarding.py` — Agent minimum onboarding contract. Classifies all 18 `AgentConfig` fields into `Required` (name, domain), `Business Optional`, or `Platform Internal`. `validate_onboarding()` checks configs against the contract.
 - `capability_profiles.py` — Admission contracts for 4 capability profiles + platform core wiring validation. `validate_profile_admission()` runs profile admission checks; `validate_all_active_profiles()` auto-detects activated profiles; `validate_platform_core_wiring()` checks guardrail/MCP/tool-call config integrity.
 - `agents_config.py` — `validate_agent_platform_readiness()` combines onboarding + platform core wiring + profile admission in one call.
@@ -178,7 +178,7 @@ The platform classifies all runtime capabilities into three tiers and provides v
 - `MeetingHintExtractor` — pilot extractor (auto-registered, marked Pilot/Experimental)
 - `collect_allowed_hints()`, `dedupe_hint_items()` — shared platform utilities for extractors
 
-**Tests**: `test_platform_capabilities.py` (16), `test_onboarding.py` (13), `test_capability_profiles.py` (35), `test_hint_extractor_registry.py` (8), `test_platform_readiness.py` (4)
+**Tests**: `test_platform_capabilities.py` (19), `test_onboarding.py` (13), `test_capability_profiles.py` (30), `test_hint_extractor_registry.py` (8), `test_platform_readiness.py` (4), `test_build_time_hooks.py` (22), `test_sandbox_workspace_runtime.py` (8)
 
 ### Gateway API (`src/gateway/`)
 
