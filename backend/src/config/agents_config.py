@@ -225,13 +225,25 @@ def list_custom_agents(*, agents_dir: "Path | None" = None) -> list[AgentConfig]
     return agents
 
 
-def list_domain_agents(*, agents_dir: "Path | None" = None) -> list[AgentConfig]:
-    """Return all agents that have a `domain` field set.
+def list_domain_agents(
+    *,
+    agents_dir: "Path | None" = None,
+    allowed_agents: list[str] | None = None,
+) -> list[AgentConfig]:
+    """Return all agents that have a ``domain`` field set.
 
     Args:
         agents_dir: Optional override for the base agents directory (tenant scope).
+        allowed_agents: When provided, only agents whose *name* (case-insensitive)
+            appears in this list are returned.  This implements the runtime
+            allowlist contract: the platform declares which agents may participate
+            in a given execution, and planner/router honour that constraint.
     """
-    return [a for a in list_custom_agents(agents_dir=agents_dir) if a.domain]
+    candidates = [a for a in list_custom_agents(agents_dir=agents_dir) if a.domain]
+    if allowed_agents is not None:
+        allowed_set = {name.lower() for name in allowed_agents}
+        candidates = [a for a in candidates if a.name.lower() in allowed_set]
+    return candidates
 
 
 def validate_agent_platform_readiness(config: AgentConfig) -> dict:

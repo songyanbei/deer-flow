@@ -473,3 +473,153 @@ async def delete_agent(
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete agent: {str(e)}")
+
+
+# ── Batch sync ──────────────────────────────────────────────────────────
+
+
+class AgentSyncItem(BaseModel):
+    """A single agent definition inside a batch sync request."""
+
+    name: str = Field(..., description="Agent name (must match ^[A-Za-z0-9-]+$, stored as lowercase)")
+    description: str = Field(default="", description="Agent description")
+    model: str | None = Field(default=None, description="Optional model override")
+    engine_type: str | None = Field(default=None, description="Engine type")
+    tool_groups: list[str] | None = Field(default=None, description="Tool group whitelist")
+    domain: str | None = Field(default=None, description="Domain handled by this agent")
+    system_prompt_file: str | None = Field(default=None, description="Prompt file name")
+    hitl_keywords: list[str] | None = Field(default=None, description="HITL keywords")
+    max_tool_calls: int | None = Field(default=None, description="Maximum tool calls")
+    mcp_binding: McpBindingConfig | None = Field(default=None, description="MCP binding")
+    available_skills: list[str] | None = Field(default=None, description="Skill allowlist")
+    requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Orchestration mode")
+    soul: str = Field(default="", description="System prompt content")
+
+
+class AgentSyncRequest(BaseModel):
+    """Batch sync request: push a set of agent definitions at once."""
+
+    agents: list[AgentSyncItem] = Field(..., description="Agent definitions to sync")
+    mode: Literal["upsert", "replace"] = Field(
+        default="upsert",
+        description="upsert: create/update listed agents only. replace: additionally delete agents not in the list.",
+    )
+
+
+class AgentSyncItemResult(BaseModel):
+    """Outcome for a single agent inside a sync operation."""
+
+    name: str
+    action: Literal["created", "updated", "deleted", "failed"]
+    error: str | None = None
+
+
+class AgentSyncResponse(BaseModel):
+    """Summary of a batch sync operation."""
+
+    created: list[str] = Field(default_factory=list)
+    updated: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
+    errors: list[AgentSyncItemResult] = Field(default_factory=list)
+
+
+def _sync_upsert_agent(
+    agents_dir: Path,
+    name: str,
+    item: AgentSyncItem,
+    existing_names: set[str],
+) -> AgentSyncItemResult:
+    """Create or update a single agent on disk. Returns the outcome."""
+    agent_dir = agents_dir / name
+    try:
+        config_data = _build_config_data(
+            name=name,
+            description=item.description,
+            model=item.model,
+            engine_type=item.engine_type,
+            tool_groups=item.tool_groups,
+            domain=item.domain,
+            system_prompt_file=item.system_prompt_file,
+            hitl_keywords=item.hitl_keywords,
+            max_tool_calls=item.max_tool_calls,
+            mcp_binding=item.mcp_binding,
+            available_skills=item.available_skills,
+            requested_orchestration_mode=item.requested_orchestration_mode,
+        )
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        _write_config(agent_dir, config_data)
+        _write_prompt_file(agent_dir, item.system_prompt_file, item.soul)
+
+        action: Literal["created", "updated"] = "updated" if name in existing_names else "created"
+        return AgentSyncItemResult(name=name, action=action)
+    except Exception as e:
+        logger.warning("Sync failed for agent '%s': %s", name, e, exc_info=True)
+        return AgentSyncItemResult(name=name, action="failed", error=str(e))
+
+
+@router.post(
+    "/agents/sync",
+    response_model=AgentSyncResponse,
+    summary="Batch Sync Agents",
+    description=(
+        "Batch-create/update agents in a single call. "
+        "In 'upsert' mode, existing agents are updated and new ones created. "
+        "In 'replace' mode, agents not in the list are also deleted."
+    ),
+)
+async def sync_agents(
+    body: AgentSyncRequest,
+    request: Request,
+    tenant_id: str = Depends(get_tenant_id),
+) -> AgentSyncResponse:
+    # --- Validate all names up-front so callers get immediate feedback ---
+    seen_names: set[str] = set()
+    for item in body.agents:
+        _validate_agent_name(item.name)
+        lower = _normalize_agent_name(item.name)
+        if lower in seen_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Duplicate agent name '{lower}' in sync request",
+            )
+        seen_names.add(lower)
+
+    agents_dir = _resolve_agents_dir(tenant_id)
+    existing_agents = list_custom_agents(agents_dir=agents_dir)
+    existing_names = {a.name.lower() for a in existing_agents}
+    incoming_names: set[str] = set()
+
+    created: list[str] = []
+    updated: list[str] = []
+    deleted: list[str] = []
+    errors: list[AgentSyncItemResult] = []
+
+    for item in body.agents:
+        name = _normalize_agent_name(item.name)
+        incoming_names.add(name)
+        result = _sync_upsert_agent(agents_dir, name, item, existing_names)
+        if result.action == "created":
+            created.append(name)
+        elif result.action == "updated":
+            updated.append(name)
+        else:
+            errors.append(result)
+
+    # In replace mode, remove agents not in the incoming list
+    if body.mode == "replace":
+        for name in sorted(existing_names - incoming_names):
+            agent_dir = agents_dir / name
+            try:
+                if agent_dir.exists():
+                    shutil.rmtree(agent_dir)
+                    deleted.append(name)
+                    logger.info("Sync-deleted agent '%s' (tenant=%s)", name, tenant_id)
+            except Exception as e:
+                logger.warning("Sync-delete failed for agent '%s': %s", name, e, exc_info=True)
+                errors.append(AgentSyncItemResult(name=name, action="failed", error=str(e)))
+
+    logger.info(
+        "Agent sync completed (tenant=%s, mode=%s): created=%d, updated=%d, deleted=%d, errors=%d",
+        tenant_id, body.mode, len(created), len(updated), len(deleted), len(errors),
+    )
+    return AgentSyncResponse(created=created, updated=updated, deleted=deleted, errors=errors)

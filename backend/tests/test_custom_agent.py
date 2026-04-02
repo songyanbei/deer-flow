@@ -815,3 +815,226 @@ class TestPhaseOneAgentsAPI:
             )
         )
         assert "requested_orchestration_mode" not in config_data
+
+
+# ===========================================================================
+# 9. list_domain_agents with allowed_agents filtering
+# ===========================================================================
+
+
+class TestListDomainAgentsAllowedFilter:
+    """Tests for the allowed_agents parameter on list_domain_agents."""
+
+    def test_no_filter_returns_all_domain_agents(self, tmp_path):
+        from src.config.agents_config import list_domain_agents
+
+        base = tmp_path / "agents"
+        _write_agent(tmp_path, "agent-a", {"domain": "hr"})
+        _write_agent(tmp_path, "agent-b", {"domain": "finance"})
+        _write_agent(tmp_path, "agent-c", {"description": "no domain"})
+
+        agents = list_domain_agents(agents_dir=base)
+        names = {a.name for a in agents}
+        assert "agent-a" in names
+        assert "agent-b" in names
+        assert "agent-c" not in names  # no domain
+
+    def test_allowed_agents_filters_by_name(self, tmp_path):
+        from src.config.agents_config import list_domain_agents
+
+        base = tmp_path / "agents"
+        _write_agent(tmp_path, "agent-a", {"domain": "hr"})
+        _write_agent(tmp_path, "agent-b", {"domain": "finance"})
+        _write_agent(tmp_path, "agent-c", {"domain": "legal"})
+
+        agents = list_domain_agents(agents_dir=base, allowed_agents=["agent-a", "agent-c"])
+        names = [a.name for a in agents]
+        assert names == ["agent-a", "agent-c"]
+
+    def test_allowed_agents_case_insensitive(self, tmp_path):
+        from src.config.agents_config import list_domain_agents
+
+        base = tmp_path / "agents"
+        _write_agent(tmp_path, "data-analyst", {"domain": "analytics"})
+
+        agents = list_domain_agents(agents_dir=base, allowed_agents=["Data-Analyst"])
+        assert len(agents) == 1
+        assert agents[0].name == "data-analyst"
+
+    def test_allowed_agents_empty_list_returns_empty(self, tmp_path):
+        from src.config.agents_config import list_domain_agents
+
+        _write_agent(tmp_path, "agent-a", {"domain": "hr"})
+        base = tmp_path / "agents"
+
+        agents = list_domain_agents(agents_dir=base, allowed_agents=[])
+        assert agents == []
+
+    def test_allowed_agents_unknown_names_ignored(self, tmp_path):
+        from src.config.agents_config import list_domain_agents
+
+        _write_agent(tmp_path, "agent-a", {"domain": "hr"})
+        base = tmp_path / "agents"
+
+        agents = list_domain_agents(agents_dir=base, allowed_agents=["agent-a", "nonexistent"])
+        assert len(agents) == 1
+        assert agents[0].name == "agent-a"
+
+    def test_allowed_agents_none_means_no_filter(self, tmp_path):
+        from src.config.agents_config import list_domain_agents
+
+        _write_agent(tmp_path, "agent-a", {"domain": "hr"})
+        _write_agent(tmp_path, "agent-b", {"domain": "finance"})
+        base = tmp_path / "agents"
+
+        agents = list_domain_agents(agents_dir=base, allowed_agents=None)
+        assert len(agents) == 2
+
+
+# ===========================================================================
+# 10. Batch Agent Sync API
+# ===========================================================================
+
+
+class TestAgentSyncAPI:
+    """Tests for POST /api/agents/sync."""
+
+    def test_sync_upsert_creates_new_agents(self, agent_client, tmp_path):
+        payload = {
+            "agents": [
+                {"name": "sync-a", "description": "Agent A", "domain": "hr", "soul": "You are A."},
+                {"name": "sync-b", "description": "Agent B", "domain": "finance", "soul": "You are B."},
+            ],
+            "mode": "upsert",
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert sorted(data["created"]) == ["sync-a", "sync-b"]
+        assert data["updated"] == []
+        assert data["deleted"] == []
+        assert data["errors"] == []
+
+        # Verify on disk
+        assert (tmp_path / "agents" / "sync-a" / "config.yaml").exists()
+        assert (tmp_path / "agents" / "sync-b" / "config.yaml").exists()
+
+    def test_sync_upsert_updates_existing_agents(self, agent_client, tmp_path):
+        # Pre-create an agent
+        agent_client.post("/api/agents", json={"name": "sync-a", "description": "Old", "soul": "Old soul."})
+
+        payload = {
+            "agents": [
+                {"name": "sync-a", "description": "New description", "soul": "New soul."},
+                {"name": "sync-b", "description": "Brand new", "soul": "B soul."},
+            ],
+            "mode": "upsert",
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == ["sync-b"]
+        assert data["updated"] == ["sync-a"]
+        assert data["deleted"] == []
+
+        # Verify update applied
+        config = yaml.safe_load((tmp_path / "agents" / "sync-a" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["description"] == "New description"
+
+    def test_sync_replace_deletes_unlisted_agents(self, agent_client, tmp_path):
+        # Pre-create agents
+        agent_client.post("/api/agents", json={"name": "keep-me", "description": "Keep", "soul": "Keep."})
+        agent_client.post("/api/agents", json={"name": "delete-me", "description": "Delete", "soul": "Delete."})
+
+        payload = {
+            "agents": [
+                {"name": "keep-me", "description": "Updated", "soul": "Updated soul."},
+            ],
+            "mode": "replace",
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["updated"] == ["keep-me"]
+        assert data["deleted"] == ["delete-me"]
+
+        assert (tmp_path / "agents" / "keep-me").exists()
+        assert not (tmp_path / "agents" / "delete-me").exists()
+
+    def test_sync_rejects_duplicate_names(self, agent_client):
+        payload = {
+            "agents": [
+                {"name": "dup-agent", "description": "First", "soul": "A."},
+                {"name": "dup-agent", "description": "Second", "soul": "B."},
+            ],
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 422
+        assert "Duplicate" in response.json()["detail"]
+
+    def test_sync_rejects_invalid_name(self, agent_client):
+        payload = {
+            "agents": [
+                {"name": "invalid name!", "soul": "X."},
+            ],
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 422
+
+    def test_sync_upsert_empty_list_is_noop(self, agent_client, tmp_path):
+        agent_client.post("/api/agents", json={"name": "existing", "soul": "X."})
+
+        response = agent_client.post("/api/agents/sync", json={"agents": [], "mode": "upsert"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == []
+        assert data["updated"] == []
+        assert data["deleted"] == []
+        # Existing agent is untouched in upsert mode
+        assert (tmp_path / "agents" / "existing").exists()
+
+    def test_sync_replace_empty_list_deletes_all(self, agent_client, tmp_path):
+        agent_client.post("/api/agents", json={"name": "agent-x", "soul": "X."})
+        agent_client.post("/api/agents", json={"name": "agent-y", "soul": "Y."})
+
+        response = agent_client.post("/api/agents/sync", json={"agents": [], "mode": "replace"})
+        assert response.status_code == 200
+        data = response.json()
+        assert sorted(data["deleted"]) == ["agent-x", "agent-y"]
+        assert not (tmp_path / "agents" / "agent-x").exists()
+        assert not (tmp_path / "agents" / "agent-y").exists()
+
+    def test_sync_preserves_orchestration_fields(self, agent_client, tmp_path):
+        payload = {
+            "agents": [
+                {
+                    "name": "rich-agent",
+                    "domain": "hr",
+                    "engine_type": "react",
+                    "requested_orchestration_mode": "workflow",
+                    "mcp_binding": {"domain": ["hr-server"]},
+                    "available_skills": ["policy-lookup"],
+                    "soul": "You are an HR expert.",
+                },
+            ],
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 200
+
+        config = yaml.safe_load((tmp_path / "agents" / "rich-agent" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["domain"] == "hr"
+        assert config["requested_orchestration_mode"] == "workflow"
+        assert config["mcp_binding"]["domain"] == ["hr-server"]
+        assert config["available_skills"] == ["policy-lookup"]
+
+    def test_sync_case_insensitive_name_normalization(self, agent_client, tmp_path):
+        payload = {
+            "agents": [
+                {"name": "MyAgent", "description": "Mixed case", "soul": "Prompt."},
+            ],
+        }
+        response = agent_client.post("/api/agents/sync", json=payload)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == ["myagent"]
+        assert (tmp_path / "agents" / "myagent" / "config.yaml").exists()
