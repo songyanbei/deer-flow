@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 from src.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
 
 logger = logging.getLogger(__name__)
+
+# NOTE: This router provides system-level MCP configuration shared across all tenants.
+# MCP server availability is NOT tenant-scoped by design. Tenant-level capability
+# control is achieved indirectly through allowed_agents filtering at the runtime
+# adapter layer. If per-tenant MCP ACL is needed in the future, it should be
+# managed by the platform control plane, not DeerFlow.
 router = APIRouter(prefix="/api", tags=["mcp"])
 
 

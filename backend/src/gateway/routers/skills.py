@@ -16,6 +16,12 @@ from src.skills import Skill, load_skills
 from src.skills.loader import get_skills_root_path
 
 logger = logging.getLogger(__name__)
+
+# NOTE: This router provides system-level skill configuration shared across all tenants.
+# Skill availability is NOT tenant-scoped by design. Tenant-level capability
+# control is achieved indirectly through allowed_agents filtering at the runtime
+# adapter layer. If per-tenant skill isolation is needed in the future, extend
+# with a tenant_skills_dir pattern similar to tenant_agents_dir.
 router = APIRouter(prefix="/api", tags=["skills"])
 
 

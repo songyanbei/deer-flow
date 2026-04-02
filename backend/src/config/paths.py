@@ -105,6 +105,10 @@ class Paths:
         """Tenant-level memory: ``{base_dir}/tenants/{tenant_id}/memory.json``."""
         return self.tenant_dir(tenant_id) / "memory.json"
 
+    def tenant_user_md_file(self, tenant_id: str) -> Path:
+        """Tenant-scoped user profile: ``tenants/{tenant_id}/USER.md``."""
+        return self.tenant_dir(tenant_id) / "USER.md"
+
     def tenant_agents_dir(self, tenant_id: str) -> Path:
         """Tenant's agents directory: ``{base_dir}/tenants/{tenant_id}/agents/``."""
         return self.tenant_dir(tenant_id) / "agents"

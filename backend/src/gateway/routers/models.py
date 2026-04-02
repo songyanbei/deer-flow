@@ -3,6 +3,11 @@ from pydantic import BaseModel, Field
 
 from src.config import get_app_config
 
+# NOTE: This router provides system-level configuration shared across all tenants.
+# Model availability is NOT tenant-scoped by design. Tenant-level capability
+# control is achieved indirectly through allowed_agents filtering at the runtime
+# adapter layer. If per-tenant model ACL is needed in the future, it should be
+# managed by the platform control plane, not DeerFlow.
 router = APIRouter(prefix="/api", tags=["models"])
 
 

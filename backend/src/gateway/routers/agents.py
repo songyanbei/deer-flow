@@ -413,15 +413,25 @@ async def update_agent(
         raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
 
 
+def _resolve_user_md_path(tenant_id: str) -> Path:
+    """Return tenant-scoped USER.md path, falling back to global for default tenant."""
+    paths = get_paths()
+    if tenant_id and tenant_id != "default":
+        return paths.tenant_user_md_file(tenant_id)
+    return paths.user_md_file
+
+
 @router.get(
     "/user-profile",
     response_model=UserProfileResponse,
     summary="Get User Profile",
-    description="Read the global USER.md file that is injected into all custom agents.",
+    description="Read the tenant-scoped USER.md file that is injected into all custom agents.",
 )
-async def get_user_profile() -> UserProfileResponse:
+async def get_user_profile(
+    tenant_id: str = Depends(get_tenant_id),
+) -> UserProfileResponse:
     try:
-        user_md_path = get_paths().user_md_file
+        user_md_path = _resolve_user_md_path(tenant_id)
         if not user_md_path.exists():
             return UserProfileResponse(content=None)
         raw = user_md_path.read_text(encoding="utf-8").strip()
@@ -435,14 +445,17 @@ async def get_user_profile() -> UserProfileResponse:
     "/user-profile",
     response_model=UserProfileResponse,
     summary="Update User Profile",
-    description="Write the global USER.md file that is injected into all custom agents.",
+    description="Write the tenant-scoped USER.md file that is injected into all custom agents.",
 )
-async def update_user_profile(request: UserProfileUpdateRequest) -> UserProfileResponse:
+async def update_user_profile(
+    request: UserProfileUpdateRequest,
+    tenant_id: str = Depends(get_tenant_id),
+) -> UserProfileResponse:
     try:
-        paths = get_paths()
-        paths.base_dir.mkdir(parents=True, exist_ok=True)
-        paths.user_md_file.write_text(request.content, encoding="utf-8")
-        logger.info(f"Updated USER.md at {paths.user_md_file}")
+        user_md_path = _resolve_user_md_path(tenant_id)
+        user_md_path.parent.mkdir(parents=True, exist_ok=True)
+        user_md_path.write_text(request.content, encoding="utf-8")
+        logger.info(f"Updated USER.md at {user_md_path}")
         return UserProfileResponse(content=request.content or None)
     except Exception as e:
         logger.error(f"Failed to update user profile: {e}", exc_info=True)

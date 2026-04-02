@@ -238,15 +238,21 @@ async def list_history(
 # ---------------------------------------------------------------------------
 
 @router.get("/{governance_id}", response_model=GovernanceItemResponse)
-async def get_detail(governance_id: str) -> GovernanceItemResponse:
+async def get_detail(
+    governance_id: str,
+    tenant_id: str = Depends(get_tenant_id),
+) -> GovernanceItemResponse:
     """Get full detail of a single governance item.
 
     Returns intervention display/action context as top-level fields for
     rendering in the operator console without additional API calls.
+    Scoped to the requesting tenant.
     """
     entry = governance_ledger.get_by_id(governance_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Governance item not found: {governance_id}")
+    if entry.get("tenant_id", "default") != tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied: governance item belongs to another tenant")
     return GovernanceItemResponse.from_entry(entry, include_detail=True)
 
 
@@ -258,6 +264,7 @@ async def get_detail(governance_id: str) -> GovernanceItemResponse:
 async def operator_resolve(
     governance_id: str,
     body: OperatorResolveRequest,
+    tenant_id: str = Depends(get_tenant_id),
 ) -> OperatorResolveResponse:
     """Resolve a pending governance item via operator action.
 
@@ -269,10 +276,12 @@ async def operator_resolve(
     The operator action MUST produce the same state transition as resolving via
     the thread card — no parallel approval protocol.
     """
-    # 1. Look up the governance item
+    # 1. Look up the governance item and verify tenant ownership
     entry = governance_ledger.get_by_id(governance_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Governance item not found: {governance_id}")
+    if entry.get("tenant_id", "default") != tenant_id:
+        raise HTTPException(status_code=403, detail="Access denied: governance item belongs to another tenant")
 
     if entry["status"] != "pending_intervention":
         raise HTTPException(
