@@ -89,7 +89,7 @@ class ThreadRegistry:
 
     # ── public API (original, backward-compatible) ─────────────────────
 
-    def register(self, thread_id: str, tenant_id: str) -> None:
+    def register(self, thread_id: str, tenant_id: str, user_id: str | None = None) -> None:
         """Register or update the owner of a thread.
 
         Preserves any existing metadata fields when called on a thread that
@@ -102,13 +102,21 @@ class ThreadRegistry:
             data = dict(self._load())  # shallow copy
             existing = data.get(thread_id)
             if isinstance(existing, dict):
-                if existing.get("tenant_id") == tenant_id:
-                    return  # already registered with the same tenant → skip write
+                changed = existing.get("tenant_id") != tenant_id
+                if user_id and existing.get("user_id") != user_id:
+                    changed = True
+                if not changed:
+                    return  # already registered with same identity → skip write
                 updated = dict(existing)  # copy inner dict to avoid mutating cache
                 updated["tenant_id"] = tenant_id
+                if user_id:
+                    updated["user_id"] = user_id
                 data[thread_id] = updated
             else:
-                data[thread_id] = {"tenant_id": tenant_id}
+                entry: dict[str, Any] = {"tenant_id": tenant_id}
+                if user_id:
+                    entry["user_id"] = user_id
+                data[thread_id] = entry
             self._save(data)
 
     def get_tenant(self, thread_id: str) -> str | None:

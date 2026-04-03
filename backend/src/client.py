@@ -184,13 +184,22 @@ class DeerFlowClient:
         )
 
     def _ensure_agent(self, config: RunnableConfig):
-        """Create (or recreate) the agent when config-dependent params change."""
+        """Create (or recreate) the agent when config-dependent params change.
+
+        The cache key includes ``tenant_id`` and ``user_id`` so that switching
+        identity forces a fresh agent build with the correct MCP tools, skills,
+        and system prompt for the new tenant/user scope.
+        """
         cfg = config.get("configurable", {})
+        tenant_id = cfg.get("tenant_id")
+        user_id = cfg.get("user_id")
         key = (
             cfg.get("model_name"),
             cfg.get("thinking_enabled"),
             cfg.get("is_plan_mode"),
             cfg.get("subagent_enabled"),
+            tenant_id,
+            user_id,
         )
 
         if self._agent is not None and self._agent_config_key == key:
@@ -203,11 +212,12 @@ class DeerFlowClient:
 
         kwargs: dict[str, Any] = {
             "model": create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-            "tools": self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled),
+            "tools": self._get_tools(model_name=model_name, subagent_enabled=subagent_enabled, tenant_id=tenant_id),
             "middleware": _build_middlewares(config, model_name=model_name),
             "system_prompt": apply_prompt_template(
                 subagent_enabled=subagent_enabled,
                 max_concurrent_subagents=max_concurrent_subagents,
+                tenant_id=tenant_id,
             ),
             "state_schema": ThreadState,
         }
@@ -216,14 +226,14 @@ class DeerFlowClient:
 
         self._agent = create_agent(**kwargs)
         self._agent_config_key = key
-        logger.info("Agent created: model=%s, thinking=%s", model_name, thinking_enabled)
+        logger.info("Agent created: model=%s, thinking=%s, tenant=%s", model_name, thinking_enabled, tenant_id)
 
     @staticmethod
-    def _get_tools(*, model_name: str | None, subagent_enabled: bool):
+    def _get_tools(*, model_name: str | None, subagent_enabled: bool, tenant_id: str | None = None):
         """Lazy import to avoid circular dependency at module level."""
         from src.tools import get_available_tools
 
-        return get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled)
+        return get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, tenant_id=tenant_id)
 
     @staticmethod
     def _serialize_message(msg) -> dict:

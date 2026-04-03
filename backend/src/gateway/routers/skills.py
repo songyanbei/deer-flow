@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from fastapi import Depends
 
 from src.config.extensions_config import ExtensionsConfig, SkillStateConfig, get_extensions_config, reload_extensions_config
-from src.gateway.dependencies import get_tenant_id, require_role
+from src.gateway.dependencies import get_tenant_id, get_user_id, require_role
 from src.gateway.path_utils import resolve_thread_virtual_path
 from src.skills import Skill, load_skills
 from src.skills.loader import get_skills_root_path
@@ -253,33 +253,49 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest, tenant_id: 
         if skill is None:
             raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
 
-        # Get or create config path
-        config_path = ExtensionsConfig.resolve_config_path()
-        if config_path is None:
-            # Create new config file in parent directory (project root)
-            config_path = Path.cwd().parent / "extensions_config.json"
-            logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
+        # Determine write target: tenant overlay or platform-level
+        if tenant_id and tenant_id != "default":
+            from src.config.paths import get_paths
+            tenant_dir = get_paths().tenant_dir(tenant_id)
+            tenant_dir.mkdir(parents=True, exist_ok=True)
+            config_path = tenant_dir / "extensions_config.json"
 
-        # Load current configuration
-        extensions_config = get_extensions_config()
+            # Load existing tenant overlay (or empty) to preserve MCP config
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    existing_data = json.load(f)
+            else:
+                existing_data = {}
 
-        # Update the skill's enabled status
-        extensions_config.skills[skill_name] = SkillStateConfig(enabled=request.enabled)
+            # Update only the skill entry in the tenant overlay
+            skills_section = existing_data.get("skills", {})
+            skills_section[skill_name] = {"enabled": request.enabled}
+            existing_data["skills"] = skills_section
 
-        # Convert to JSON format (preserve MCP servers config)
-        config_data = {
-            "mcpServers": {name: server.model_dump() for name, server in extensions_config.mcp_servers.items()},
-            "skills": {name: {"enabled": skill_config.enabled} for name, skill_config in extensions_config.skills.items()},
-        }
+            with open(config_path, "w") as f:
+                json.dump(existing_data, f, indent=2)
+        else:
+            config_path = ExtensionsConfig.resolve_config_path()
+            if config_path is None:
+                config_path = Path.cwd().parent / "extensions_config.json"
+                logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
 
-        # Write the configuration to file
-        with open(config_path, "w") as f:
-            json.dump(config_data, f, indent=2)
+            # Load current platform configuration
+            extensions_config = get_extensions_config()
+            extensions_config.skills[skill_name] = SkillStateConfig(enabled=request.enabled)
+
+            config_data = {
+                "mcpServers": {name: server.model_dump() for name, server in extensions_config.mcp_servers.items()},
+                "skills": {name: {"enabled": skill_config.enabled} for name, skill_config in extensions_config.skills.items()},
+            }
+
+            with open(config_path, "w") as f:
+                json.dump(config_data, f, indent=2)
+
+            # Reload platform-level cache
+            reload_extensions_config()
 
         logger.info(f"Skills configuration updated and saved to: {config_path}")
-
-        # Reload the extensions config to update the global cache
-        reload_extensions_config()
 
         # Reload the skills to get the updated status (for API response)
         skills = load_skills(enabled_only=False, tenant_id=tenant_id)
@@ -305,7 +321,7 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest, tenant_id: 
     description="Install a skill from a .skill file (ZIP archive) located in the thread's user-data directory.",
     dependencies=[require_role("admin", "owner")],
 )
-async def install_skill(request: SkillInstallRequest, tenant_id: str = Depends(get_tenant_id)) -> SkillInstallResponse:
+async def install_skill(request: SkillInstallRequest, tenant_id: str = Depends(get_tenant_id), user_id: str = Depends(get_user_id)) -> SkillInstallResponse:
     """Install a skill from a .skill file.
 
     The .skill file is a ZIP archive containing a skill directory with SKILL.md
@@ -343,6 +359,11 @@ async def install_skill(request: SkillInstallRequest, tenant_id: str = Depends(g
         ```
     """
     try:
+        # Verify thread ownership before accessing thread files
+        from src.gateway.thread_registry import get_thread_registry
+        if not get_thread_registry().check_access(request.thread_id, tenant_id, user_id=user_id):
+            raise HTTPException(status_code=403, detail="Access denied: thread does not belong to this tenant/user")
+
         # Resolve the virtual path to actual file path
         skill_file_path = resolve_thread_virtual_path(request.thread_id, request.path)
 

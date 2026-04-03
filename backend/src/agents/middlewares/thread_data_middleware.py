@@ -69,7 +69,7 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
             except Exception:
                 tenant_id = "default"
         try:
-            get_thread_registry().register(thread_id, tenant_id)
+            get_thread_registry().register(thread_id, tenant_id, user_id=user_id)
         except Exception:
             pass  # best-effort; don't block thread execution
 

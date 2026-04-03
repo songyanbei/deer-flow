@@ -279,7 +279,7 @@ class TestThreadDataMiddlewareRegistration:
                 mock_registry = MagicMock()
                 mock_reg.return_value = mock_registry
                 mw.before_agent({}, mock_runtime)
-                mock_registry.register.assert_called_once_with("th-42", "org-7")
+                mock_registry.register.assert_called_once_with("th-42", "org-7", user_id=None)
 
     def test_registers_default_when_no_tenant(self):
         from src.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
@@ -296,7 +296,7 @@ class TestThreadDataMiddlewareRegistration:
                 mock_registry = MagicMock()
                 mock_reg.return_value = mock_registry
                 mw.before_agent({}, mock_runtime)
-                mock_registry.register.assert_called_once_with("th-99", "default")
+                mock_registry.register.assert_called_once_with("th-99", "default", user_id=None)
 
 
 # ── Audit hooks tenant metadata extraction ─────────────────────────────

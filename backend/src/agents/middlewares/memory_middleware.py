@@ -1,5 +1,7 @@
 """Middleware for memory mechanism."""
 
+import logging
+import os
 import re
 from typing import Any, override
 
@@ -9,6 +11,8 @@ from langgraph.runtime import Runtime
 
 from src.agents.memory.queue import get_memory_queue
 from src.config.memory_config import get_memory_config
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryMiddlewareState(AgentState):
@@ -144,6 +148,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         tenant_id = tenant_id or "default"
         if not thread_id:
             print("MemoryMiddleware: No thread_id in context, skipping memory update")
+            return None
+
+        # When OIDC is enabled, missing user_id is an identity break — skip
+        # memory write to prevent tenant-level data leakage.
+        if not user_id and os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes"):
+            logger.warning("MemoryMiddleware: OIDC enabled but user_id missing for thread %s, skipping memory write", thread_id)
             return None
 
         # Get messages from state
