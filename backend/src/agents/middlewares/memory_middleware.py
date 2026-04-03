@@ -143,7 +143,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
                 thread_id = thread_id or cfg.get("thread_id")
                 tenant_id = tenant_id or cfg.get("tenant_id", "default")
                 user_id = user_id or cfg.get("user_id")
-            except ImportError:
+            except Exception:
                 pass
         tenant_id = tenant_id or "default"
         if not thread_id:
