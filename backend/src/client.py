@@ -172,6 +172,12 @@ class DeerFlowClient:
             "is_plan_mode": overrides.get("plan_mode", self._plan_mode),
             "subagent_enabled": overrides.get("subagent_enabled", self._subagent_enabled),
         }
+        # Propagate identity when provided so that middlewares and agent build
+        # phase can read tenant/user from configurable.
+        for key in ("tenant_id", "user_id"):
+            value = overrides.get(key)
+            if value:
+                configurable[key] = value
         return RunnableConfig(
             configurable=configurable,
             recursion_limit=overrides.get("recursion_limit", 100),
@@ -265,6 +271,8 @@ class DeerFlowClient:
         message: str,
         *,
         thread_id: str | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
         **kwargs,
     ) -> Generator[StreamEvent, None, None]:
         """Stream a conversation turn, yielding events incrementally.
@@ -280,6 +288,8 @@ class DeerFlowClient:
         Args:
             message: User message text.
             thread_id: Thread ID for conversation context. Auto-generated if None.
+            tenant_id: Tenant ID for multi-tenant isolation.
+            user_id: User ID for user-level isolation within tenant.
             **kwargs: Override client defaults (model_name, thinking_enabled,
                 plan_mode, subagent_enabled, recursion_limit).
 
@@ -294,11 +304,21 @@ class DeerFlowClient:
         if thread_id is None:
             thread_id = str(uuid.uuid4())
 
+        # Pass identity through to configurable so make_lead_agent() can read it.
+        if tenant_id:
+            kwargs["tenant_id"] = tenant_id
+        if user_id:
+            kwargs["user_id"] = user_id
+
         config = self._get_runnable_config(thread_id, **kwargs)
         self._ensure_agent(config)
 
         state: dict[str, Any] = {"messages": [HumanMessage(content=message)]}
-        context = {"thread_id": thread_id}
+        context: dict[str, str] = {"thread_id": thread_id}
+        if tenant_id:
+            context["tenant_id"] = tenant_id
+        if user_id:
+            context["user_id"] = user_id
 
         seen_ids: set[str] = set()
 
@@ -358,7 +378,7 @@ class DeerFlowClient:
 
         yield StreamEvent(type="end", data={})
 
-    def chat(self, message: str, *, thread_id: str | None = None, **kwargs) -> str:
+    def chat(self, message: str, *, thread_id: str | None = None, tenant_id: str | None = None, user_id: str | None = None, **kwargs) -> str:
         """Send a message and return the final text response.
 
         Convenience wrapper around :meth:`stream` that returns only the
@@ -369,13 +389,15 @@ class DeerFlowClient:
         Args:
             message: User message text.
             thread_id: Thread ID for conversation context. Auto-generated if None.
+            tenant_id: Tenant ID for multi-tenant isolation.
+            user_id: User ID for user-level isolation within tenant.
             **kwargs: Override client defaults (same as stream()).
 
         Returns:
             The last AI message text, or empty string if no response.
         """
         last_text = ""
-        for event in self.stream(message, thread_id=thread_id, **kwargs):
+        for event in self.stream(message, thread_id=thread_id, tenant_id=tenant_id, user_id=user_id, **kwargs):
             if event.type == "messages-tuple" and event.data.get("type") == "ai":
                 content = event.data.get("content", "")
                 if content:

@@ -20,18 +20,20 @@ from src.gateway.routers import agents, governance
 # ── Test App Setup ───────────────────────────────────────────────────────
 
 
-def _make_app(*, tenant_id: str = "default") -> FastAPI:
+def _make_app(*, tenant_id: str = "default", role: str = "admin") -> FastAPI:
     """Create a minimal FastAPI app with governance + agents routers.
 
-    Overrides get_tenant_id to return the given tenant_id.
+    Overrides get_tenant_id and get_role to return the given values.
     """
     app = FastAPI()
     app.include_router(governance.router)
     app.include_router(agents.router)
 
-    from src.gateway.dependencies import get_tenant_id
+    from src.gateway.dependencies import get_role, get_tenant_id, get_user_id
 
     app.dependency_overrides[get_tenant_id] = lambda: tenant_id
+    app.dependency_overrides[get_user_id] = lambda: "test-user"
+    app.dependency_overrides[get_role] = lambda: role
     return app
 
 
@@ -89,7 +91,7 @@ class TestGovernanceDetailTenantCheck:
 
         resp = client.get(f"/api/governance/{gov_id}")
         assert resp.status_code == 403
-        assert "another tenant" in resp.json()["detail"]
+        assert "Access denied" in resp.json()["detail"]
 
     def test_nonexistent_returns_404(self):
         app = _make_app(tenant_id="tenant-a")
@@ -151,7 +153,7 @@ class TestGovernanceResolveTenantCheck:
             "payload": {},
         })
         assert resp.status_code == 403
-        assert "another tenant" in resp.json()["detail"]
+        assert "Access denied" in resp.json()["detail"]
 
     def test_own_tenant_resolve_passes_tenant_check(self):
         """Verify the tenant check passes — the resolve may still fail
@@ -228,8 +230,8 @@ class TestUserProfileTenantIsolation:
         resp = client.put("/api/user-profile", json={"content": "tenant-a profile"})
         assert resp.status_code == 200
 
-        # Should be at tenants/tenant-a/USER.md
-        expected_path = self.base_dir / "tenants" / "tenant-a" / "USER.md"
+        # Should be at tenants/tenant-a/users/test-user/USER.md
+        expected_path = self.base_dir / "tenants" / "tenant-a" / "users" / "test-user" / "USER.md"
         assert expected_path.exists()
         assert expected_path.read_text(encoding="utf-8") == "tenant-a profile"
 

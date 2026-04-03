@@ -3,18 +3,14 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from src.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
+from src.gateway.dependencies import get_tenant_id, require_role
 
 logger = logging.getLogger(__name__)
 
-# NOTE: This router provides system-level MCP configuration shared across all tenants.
-# MCP server availability is NOT tenant-scoped by design. Tenant-level capability
-# control is achieved indirectly through allowed_agents filtering at the runtime
-# adapter layer. If per-tenant MCP ACL is needed in the future, it should be
-# managed by the platform control plane, not DeerFlow.
 router = APIRouter(prefix="/api", tags=["mcp"])
 
 
@@ -85,28 +81,9 @@ class McpConfigUpdateRequest(BaseModel):
     summary="Get MCP Configuration",
     description="Retrieve the current Model Context Protocol (MCP) server configurations.",
 )
-async def get_mcp_configuration() -> McpConfigResponse:
-    """Get the current MCP configuration.
-
-    Returns:
-        The current MCP configuration with all servers.
-
-    Example:
-        ```json
-        {
-            "mcp_servers": {
-                "github": {
-                    "enabled": true,
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-github"],
-                    "env": {"GITHUB_TOKEN": "ghp_xxx"},
-                    "description": "GitHub MCP server for repository operations"
-                }
-            }
-        }
-        ```
-    """
-    config = get_extensions_config()
+async def get_mcp_configuration(tenant_id: str = Depends(get_tenant_id)) -> McpConfigResponse:
+    """Get the current MCP configuration (platform + tenant overlay)."""
+    config = ExtensionsConfig.from_tenant(tenant_id)
 
     return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in config.mcp_servers.items()})
 
@@ -116,8 +93,9 @@ async def get_mcp_configuration() -> McpConfigResponse:
     response_model=McpConfigResponse,
     summary="Update MCP Configuration",
     description="Update Model Context Protocol (MCP) server configurations and save to file.",
+    dependencies=[require_role("admin", "owner")],
 )
-async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfigResponse:
+async def update_mcp_configuration(request: McpConfigUpdateRequest, tenant_id: str = Depends(get_tenant_id)) -> McpConfigResponse:
     """Update the MCP configuration.
 
     This will:
@@ -150,16 +128,20 @@ async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfig
         ```
     """
     try:
-        # Get the current config path (or determine where to save it)
-        config_path = ExtensionsConfig.resolve_config_path()
-
-        # If no config file exists, create one in the parent directory (project root)
-        if config_path is None:
-            config_path = Path.cwd().parent / "extensions_config.json"
-            logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
+        # Determine write target: tenant overlay or platform-level
+        if tenant_id and tenant_id != "default":
+            from src.config.paths import get_paths
+            tenant_dir = get_paths().tenant_dir(tenant_id)
+            tenant_dir.mkdir(parents=True, exist_ok=True)
+            config_path = tenant_dir / "extensions_config.json"
+        else:
+            config_path = ExtensionsConfig.resolve_config_path()
+            if config_path is None:
+                config_path = Path.cwd().parent / "extensions_config.json"
+                logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
 
         # Load current config to preserve skills configuration
-        current_config = get_extensions_config()
+        current_config = ExtensionsConfig.from_tenant(tenant_id)
 
         # Convert request to dict format for JSON serialization
         config_data = {
@@ -173,11 +155,16 @@ async def update_mcp_configuration(request: McpConfigUpdateRequest) -> McpConfig
 
         logger.info(f"MCP configuration updated and saved to: {config_path}")
 
-        # NOTE: No need to reload/reset cache here - LangGraph Server (separate process)
-        # will detect config file changes via mtime and reinitialize MCP tools automatically
+        # Reset MCP tools cache so next tool load picks up new config
+        from src.mcp.cache import reset_mcp_tools_cache
+        reset_mcp_tools_cache(tenant_id=tenant_id)
 
-        # Reload the configuration and update the global cache
-        reloaded_config = reload_extensions_config()
+        # Reload platform-level config cache when updating default tenant
+        if not tenant_id or tenant_id == "default":
+            reload_extensions_config()
+
+        # Reload the merged config for the response
+        reloaded_config = ExtensionsConfig.from_tenant(tenant_id)
         return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in reloaded_config.mcp_servers.items()})
 
     except Exception as e:

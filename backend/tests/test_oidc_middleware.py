@@ -205,9 +205,9 @@ class TestTenantClaimExtraction:
         claims = {"org_id": "fallback-org"}
         assert _extract_tenant_id(claims, ["organization", "tenant_id", "org_id"]) == "fallback-org"
 
-    def test_default_when_no_claim(self):
+    def test_none_when_no_claim(self):
         claims = {"sub": "user-123"}
-        assert _extract_tenant_id(claims, ["organization", "tenant_id"]) == "default"
+        assert _extract_tenant_id(claims, ["organization", "tenant_id"]) is None
 
     def test_empty_string_skipped(self):
         claims = {"organization": "", "tenant_id": "real-tenant"}
@@ -456,7 +456,7 @@ class TestOIDCMiddlewareIntegration:
             client = TestClient(app, raise_server_exceptions=False)
             resp = client.get("/api/models", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
-        assert resp.json()["tenant_id"] == "default"
+        assert resp.json()["tenant_id"] is None
 
     def test_expired_token_returns_401(self):
         app = self._create_app()

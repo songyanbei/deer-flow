@@ -1941,7 +1941,7 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
     call_count = 0
 
     class DummyRuntime:
-        def scope_key_for_agent(self, name):
+        def scope_key_for_agent(self, name, tenant_id=None):
             return f"domain:{name}"
 
         async def load_scope(self, scope_key, servers):

@@ -8,6 +8,13 @@ from fastapi import UploadFile
 from src.gateway.routers import uploads
 
 
+def _mock_thread_registry():
+    """Create a mock thread registry that always allows access."""
+    registry = MagicMock()
+    registry.check_access.return_value = True
+    return registry
+
+
 def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_path):
     thread_uploads_dir = tmp_path / "uploads"
     thread_uploads_dir.mkdir(parents=True)
@@ -20,10 +27,11 @@ def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_pat
     with (
         patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
+        patch.object(uploads, "get_thread_registry", return_value=_mock_thread_registry()),
     ):
 
         file = UploadFile(filename="notes.txt", file=BytesIO(b"hello uploads"))
-        result = asyncio.run(uploads.upload_files("thread-local", files=[file]))
+        result = asyncio.run(uploads.upload_files("thread-local", files=[file], tenant_id="default", user_id="test"))
 
     assert result.success is True
     assert len(result.files) == 1
@@ -51,10 +59,11 @@ def test_upload_files_syncs_non_local_sandbox_and_marks_markdown_file(tmp_path):
         patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
         patch.object(uploads, "convert_file_to_markdown", AsyncMock(side_effect=fake_convert)),
+        patch.object(uploads, "get_thread_registry", return_value=_mock_thread_registry()),
     ):
 
         file = UploadFile(filename="report.pdf", file=BytesIO(b"pdf-bytes"))
-        result = asyncio.run(uploads.upload_files("thread-aio", files=[file]))
+        result = asyncio.run(uploads.upload_files("thread-aio", files=[file], tenant_id="default", user_id="test"))
 
     assert result.success is True
     assert len(result.files) == 1
@@ -81,11 +90,12 @@ def test_upload_files_rejects_dotdot_and_dot_filenames(tmp_path):
     with (
         patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
+        patch.object(uploads, "get_thread_registry", return_value=_mock_thread_registry()),
     ):
         # These filenames must be rejected outright
         for bad_name in ["..", "."]:
             file = UploadFile(filename=bad_name, file=BytesIO(b"data"))
-            result = asyncio.run(uploads.upload_files("thread-local", files=[file]))
+            result = asyncio.run(uploads.upload_files("thread-local", files=[file], tenant_id="default", user_id="test"))
             assert result.success is True
             assert result.files == [], f"Expected no files for unsafe filename {bad_name!r}"
 

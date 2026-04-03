@@ -8,8 +8,25 @@ from src.gateway.routers import interventions
 
 
 def _make_app():
+    from starlette.middleware.base import BaseHTTPMiddleware
+
     app = FastAPI()
+
+    class _MockIdentityMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            request.state.tenant_id = "default"
+            request.state.user_id = "test-user"
+            request.state.role = "admin"
+            return await call_next(request)
+
+    app.add_middleware(_MockIdentityMiddleware)
     app.include_router(interventions.router)
+
+    # Mock thread registry to allow access for test threads
+    _mock_registry = MagicMock()
+    _mock_registry.check_access.return_value = True
+    interventions.get_thread_registry = lambda: _mock_registry
+
     return app
 
 

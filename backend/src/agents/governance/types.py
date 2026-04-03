@@ -134,6 +134,7 @@ class GovernanceLedgerEntry(TypedDict):
     reason: NotRequired[str | None]
     metadata: NotRequired[dict[str, Any] | None]
     tenant_id: NotRequired[str]             # owning tenant ("default" when unset)
+    user_id: NotRequired[str | None]       # user who triggered this governance record
     created_at: str
     resolved_at: NotRequired[str | None]
     resolved_by: NotRequired[str | None]   # "operator" | "inline" | "system"

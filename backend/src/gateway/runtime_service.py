@@ -266,12 +266,23 @@ async def start_stream(
         ],
     }
 
+    # Inject identity into configurable so that make_lead_agent() can read
+    # tenant_id/user_id at Agent *build* time (before any middleware runs).
+    run_config: dict = {"recursion_limit": 1000}
+    configurable: dict = {}
+    for key in ("thread_id", "tenant_id", "user_id"):
+        value = context.get(key)
+        if value:
+            configurable[key] = value
+    if configurable:
+        run_config["configurable"] = configurable
+
     try:
         upstream_iter = client.runs.stream(
             thread_id,
             ENTRY_GRAPH_ASSISTANT_ID,
             input=input_payload,
-            config={"recursion_limit": 1000},
+            config=run_config,
             context=context,
             stream_mode=["values", "messages"],
             multitask_strategy="reject",

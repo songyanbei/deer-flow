@@ -53,13 +53,19 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         if thread_id is None:
             raise ValueError("Thread ID is required in the context")
 
-        # Register thread → tenant mapping for access control
+        # Register thread → tenant mapping for access control.
+        # Priority: runtime.context (set by Gateway) → configurable (set by
+        # runtime_service / embedded client) → "default" (single-tenant mode).
         tenant_id = None
+        user_id = None
         if runtime.context is not None:
             tenant_id = runtime.context.get("tenant_id")
+            user_id = runtime.context.get("user_id")
         if not tenant_id:
             try:
-                tenant_id = get_config().get("configurable", {}).get("tenant_id", "default")
+                cfg = get_config().get("configurable", {})
+                tenant_id = tenant_id or cfg.get("tenant_id", "default")
+                user_id = user_id or cfg.get("user_id")
             except Exception:
                 tenant_id = "default"
         try:

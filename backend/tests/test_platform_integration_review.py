@@ -217,6 +217,7 @@ def _make_runtime_app(
         request.state.tenant_id = tenant_id
         request.state.user_id = user_id
         request.state.username = username
+        request.state.role = "admin"
         return await call_next(request)
 
     runtime.get_thread_registry = lambda: registry
@@ -394,7 +395,7 @@ class TestRuntimeRouterBoundaryValidation:
         try:
             client = TestClient(app)
             resp = client.post("/api/runtime/threads", json={"portal_session_id": "x" * 128})
-            assert resp.status_code == 200
+            assert resp.status_code == 201
         finally:
             cleanup()
 
@@ -910,6 +911,7 @@ def _make_sync_app(tmp_path: Path, tenant_id: str = "default"):
     async def inject_identity(request, call_next):
         request.state.tenant_id = tenant_id
         request.state.user_id = "user-1"
+        request.state.role = "admin"
         return await call_next(request)
 
     def cleanup():
@@ -1249,7 +1251,7 @@ class TestThreadCreateEndToEnd:
 
             # Create
             resp = client.post("/api/runtime/threads", json={"portal_session_id": "sess-e2e"})
-            assert resp.status_code == 200
+            assert resp.status_code == 201
             thread_id = resp.json()["thread_id"]
             assert thread_id == "thread-lifecycle"
 
@@ -1280,7 +1282,7 @@ class TestThreadCreateEndToEnd:
 
             # Create
             resp = client.post("/api/runtime/threads", json={"portal_session_id": "sess-full"})
-            assert resp.status_code == 200
+            assert resp.status_code == 201
 
             # Stream
             with patch("src.gateway.routers.runtime.start_stream", new_callable=AsyncMock) as mock_start, \

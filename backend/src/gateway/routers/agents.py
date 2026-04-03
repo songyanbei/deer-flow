@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from src.agents.lead_agent.engine_registry import normalize_engine_type
 from src.config.agents_config import AgentConfig, McpBindingConfig, list_custom_agents, load_agent_config, load_agent_soul
 from src.config.paths import get_paths
-from src.gateway.dependencies import get_tenant_id
+from src.gateway.dependencies import get_tenant_id, get_user_id, require_role
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["agents"])
@@ -303,6 +303,7 @@ async def get_agent(
     status_code=201,
     summary="Create Custom Agent",
     description="Create a new custom agent with its config and system prompt file.",
+    dependencies=[require_role("admin", "owner")],
 )
 async def create_agent_endpoint(
     body: AgentCreateRequest,
@@ -353,6 +354,7 @@ async def create_agent_endpoint(
     response_model=AgentResponse,
     summary="Update Custom Agent",
     description="Update an existing custom agent's config and/or prompt file.",
+    dependencies=[require_role("admin", "owner")],
 )
 async def update_agent(
     name: str,
@@ -421,11 +423,21 @@ async def update_agent(
         raise HTTPException(status_code=500, detail=f"Failed to update agent: {str(e)}")
 
 
-def _resolve_user_md_path(tenant_id: str) -> Path:
-    """Return tenant-scoped USER.md path, falling back to global for default tenant."""
+def _resolve_user_md_path(tenant_id: str, user_id: str | None = None) -> Path:
+    """Return user-scoped or tenant-scoped USER.md path.
+
+    With both tenant_id and user_id → ``tenants/{tid}/users/{uid}/USER.md``.
+    With tenant_id only → ``tenants/{tid}/USER.md`` (fallback).
+    Default tenant → ``{base_dir}/USER.md``.
+    """
     paths = get_paths()
-    if tenant_id and tenant_id != "default":
-        return paths.tenant_user_md_file(tenant_id)
+    effective_tenant = tenant_id if tenant_id and tenant_id != "default" else None
+    effective_user = user_id if user_id and user_id != "anonymous" else None
+
+    if effective_tenant and effective_user:
+        return paths.tenant_user_md_file_for_user(effective_tenant, effective_user)
+    if effective_tenant:
+        return paths.tenant_user_md_file(effective_tenant)
     return paths.user_md_file
 
 
@@ -433,13 +445,14 @@ def _resolve_user_md_path(tenant_id: str) -> Path:
     "/user-profile",
     response_model=UserProfileResponse,
     summary="Get User Profile",
-    description="Read the tenant-scoped USER.md file that is injected into all custom agents.",
+    description="Read the user-scoped USER.md file that is injected into all custom agents.",
 )
 async def get_user_profile(
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> UserProfileResponse:
     try:
-        user_md_path = _resolve_user_md_path(tenant_id)
+        user_md_path = _resolve_user_md_path(tenant_id, user_id)
         if not user_md_path.exists():
             return UserProfileResponse(content=None)
         raw = user_md_path.read_text(encoding="utf-8").strip()
@@ -455,14 +468,15 @@ async def get_user_profile(
     "/user-profile",
     response_model=UserProfileResponse,
     summary="Update User Profile",
-    description="Write the tenant-scoped USER.md file that is injected into all custom agents.",
+    description="Write the user-scoped USER.md file that is injected into all custom agents.",
 )
 async def update_user_profile(
     request: UserProfileUpdateRequest,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> UserProfileResponse:
     try:
-        user_md_path = _resolve_user_md_path(tenant_id)
+        user_md_path = _resolve_user_md_path(tenant_id, user_id)
         user_md_path.parent.mkdir(parents=True, exist_ok=True)
         user_md_path.write_text(request.content, encoding="utf-8")
         logger.info(f"Updated USER.md at {user_md_path}")
@@ -479,6 +493,7 @@ async def update_user_profile(
     status_code=204,
     summary="Delete Custom Agent",
     description="Delete a custom agent and all its files (config, prompt file, memory).",
+    dependencies=[require_role("admin", "owner")],
 )
 async def delete_agent(
     name: str,
@@ -586,6 +601,7 @@ def _sync_upsert_agent(
     "/agents/sync",
     response_model=AgentSyncResponse,
     summary="Batch Sync Agents",
+    dependencies=[require_role("admin", "owner")],
     description=(
         "Batch-create/update agents in a single call. "
         "In 'upsert' mode, existing agents are updated and new ones created. "

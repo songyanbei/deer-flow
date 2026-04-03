@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.agents.intervention.decision_cache import build_cached_intervention_entry
-from src.gateway.dependencies import get_tenant_id
+from src.gateway.dependencies import get_tenant_id, get_user_id
 from src.gateway.thread_registry import get_thread_registry
 
 logger = logging.getLogger(__name__)
@@ -172,15 +172,16 @@ async def resolve_intervention(
     body: InterventionResolveRequest,
     request: Request,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> InterventionResolveResponse:
     """Resolve an intervention request.
 
     This endpoint accepts a structured resolution for a pending intervention.
     The resolution is persisted and will be picked up when the workflow resumes.
     """
-    # Tenant access control
-    if not get_thread_registry().check_access(thread_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Access denied: thread belongs to another tenant")
+    # Tenant + user access control
+    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     from src.agents.workflow_resume import apply_intervention_resolution, build_intervention_resolution_record
 

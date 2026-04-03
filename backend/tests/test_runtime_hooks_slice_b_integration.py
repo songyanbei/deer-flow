@@ -89,7 +89,18 @@ def _mock_langgraph_client(*, state_values: dict):
 
 
 def _make_app():
+    from starlette.middleware.base import BaseHTTPMiddleware
+
     app = FastAPI()
+
+    class _MockIdentityMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            request.state.tenant_id = "default"
+            request.state.user_id = "test-user"
+            request.state.role = "admin"
+            return await call_next(request)
+
+    app.add_middleware(_MockIdentityMiddleware)
     app.include_router(interventions.router)
     return app
 
@@ -191,7 +202,11 @@ def test_gateway_resolve_runs_lifecycle_and_state_commit_hooks():
     client_mock = _mock_langgraph_client(state_values={"task_pool": [task], "run_id": "run-1"})
     fake_sdk = SimpleNamespace(get_client=lambda url: client_mock)
 
-    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}):
+    mock_registry = MagicMock()
+    mock_registry.check_access.return_value = True
+
+    with patch.dict("sys.modules", {"langgraph_sdk": fake_sdk}), \
+         patch.object(interventions, "get_thread_registry", return_value=mock_registry):
         with TestClient(_make_app()) as client:
             response = client.post(
                 "/api/threads/thread-1/interventions/req-1:resolve",

@@ -34,8 +34,18 @@ def engine(ledger):
 def client(ledger):
     """TestClient with the governance router, patching the global ledger."""
     from fastapi import FastAPI
+    from starlette.middleware.base import BaseHTTPMiddleware
 
     app = FastAPI()
+
+    class _MockIdentityMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            request.state.tenant_id = "default"
+            request.state.user_id = "test-user"
+            request.state.role = "admin"
+            return await call_next(request)
+
+    app.add_middleware(_MockIdentityMiddleware)
     app.include_router(router)
 
     with patch("src.gateway.routers.governance.governance_ledger", ledger):

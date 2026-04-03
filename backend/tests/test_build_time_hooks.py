@@ -432,7 +432,7 @@ class TestMakeLeadAgentHooksIntegration:
         monkeypatch.setattr(
             "src.mcp.runtime_manager.mcp_runtime",
             SimpleNamespace(
-                scope_key_for_agent=lambda name: f"domain:{name}",
+                scope_key_for_agent=lambda name, tenant_id=None: f"domain:{name}",
                 get_tools_sync=lambda _scope: [],
             ),
         )

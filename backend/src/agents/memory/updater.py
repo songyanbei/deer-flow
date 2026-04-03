@@ -16,7 +16,7 @@ from src.config.paths import get_paths
 from src.models import create_chat_model
 
 
-def _get_memory_file_path(agent_name: str | None = None, tenant_id: str | None = None) -> Path:
+def _get_memory_file_path(agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> Path:
     """Get the path to the memory file.
 
     Args:
@@ -25,13 +25,23 @@ def _get_memory_file_path(agent_name: str | None = None, tenant_id: str | None =
         tenant_id: If provided (and not "default"), returns the tenant-scoped
                    memory file path.  When None or "default", falls back to
                    the global path for backward compatibility.
+        user_id: If provided (and not "anonymous"), returns the user-scoped
+                 path within the tenant.
 
     Returns:
         Path to the memory file.
     """
     paths = get_paths()
     effective_tenant = tenant_id if tenant_id and tenant_id != "default" else None
+    effective_user = user_id if user_id and user_id != "anonymous" else None
 
+    # User-level isolation: tenants/{tid}/users/{uid}/...
+    if effective_tenant and effective_user:
+        if agent_name is not None:
+            return paths.tenant_user_agent_memory_file(effective_tenant, effective_user, agent_name)
+        return paths.tenant_user_memory_file(effective_tenant, effective_user)
+
+    # Tenant-level fallback (no user_id)
     if agent_name is not None:
         if effective_tenant:
             return paths.tenant_agent_memory_file(effective_tenant, agent_name)
@@ -43,7 +53,6 @@ def _get_memory_file_path(agent_name: str | None = None, tenant_id: str | None =
     config = get_memory_config()
     if config.storage_path:
         p = Path(config.storage_path)
-        # Absolute path: use as-is; relative path: resolve against base_dir
         return p if p.is_absolute() else paths.base_dir / p
     return paths.memory_file
 
@@ -68,13 +77,13 @@ def _create_empty_memory() -> dict[str, Any]:
     }
 
 
-# Memory cache: keyed by (tenant_id, agent_name) tuple.
+# Memory cache: keyed by (tenant_id, user_id, agent_name) tuple.
 # Value: (memory_data, file_mtime)
-_CacheKey = tuple[str | None, str | None]
+_CacheKey = tuple[str | None, str | None, str | None]
 _memory_cache: dict[_CacheKey, tuple[dict[str, Any], float | None]] = {}
 
 
-def get_memory_data(agent_name: str | None = None, tenant_id: str | None = None) -> dict[str, Any]:
+def get_memory_data(agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> dict[str, Any]:
     """Get the current memory data (cached with file modification time check).
 
     The cache is automatically invalidated if the memory file has been modified
@@ -83,12 +92,13 @@ def get_memory_data(agent_name: str | None = None, tenant_id: str | None = None)
     Args:
         agent_name: If provided, loads per-agent memory. If None, loads global memory.
         tenant_id: If provided, loads tenant-scoped memory.
+        user_id: If provided, loads user-scoped memory within the tenant.
 
     Returns:
         The memory data dictionary.
     """
-    cache_key: _CacheKey = (tenant_id, agent_name)
-    file_path = _get_memory_file_path(agent_name, tenant_id)
+    cache_key: _CacheKey = (tenant_id, user_id, agent_name)
+    file_path = _get_memory_file_path(agent_name, tenant_id, user_id)
 
     # Get current file modification time
     try:
@@ -100,26 +110,27 @@ def get_memory_data(agent_name: str | None = None, tenant_id: str | None = None)
 
     # Invalidate cache if file has been modified or doesn't exist
     if cached is None or cached[1] != current_mtime:
-        memory_data = _load_memory_from_file(agent_name, tenant_id)
+        memory_data = _load_memory_from_file(agent_name, tenant_id, user_id)
         _memory_cache[cache_key] = (memory_data, current_mtime)
         return memory_data
 
     return cached[0]
 
 
-def reload_memory_data(agent_name: str | None = None, tenant_id: str | None = None) -> dict[str, Any]:
+def reload_memory_data(agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> dict[str, Any]:
     """Reload memory data from file, forcing cache invalidation.
 
     Args:
         agent_name: If provided, reloads per-agent memory. If None, reloads global memory.
         tenant_id: If provided, reloads tenant-scoped memory.
+        user_id: If provided, reloads user-scoped memory within the tenant.
 
     Returns:
         The reloaded memory data dictionary.
     """
-    cache_key: _CacheKey = (tenant_id, agent_name)
-    file_path = _get_memory_file_path(agent_name, tenant_id)
-    memory_data = _load_memory_from_file(agent_name, tenant_id)
+    cache_key: _CacheKey = (tenant_id, user_id, agent_name)
+    file_path = _get_memory_file_path(agent_name, tenant_id, user_id)
+    memory_data = _load_memory_from_file(agent_name, tenant_id, user_id)
 
     try:
         mtime = file_path.stat().st_mtime if file_path.exists() else None
@@ -130,17 +141,18 @@ def reload_memory_data(agent_name: str | None = None, tenant_id: str | None = No
     return memory_data
 
 
-def _load_memory_from_file(agent_name: str | None = None, tenant_id: str | None = None) -> dict[str, Any]:
+def _load_memory_from_file(agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> dict[str, Any]:
     """Load memory data from file.
 
     Args:
         agent_name: If provided, loads per-agent memory file. If None, loads global.
         tenant_id: If provided, loads tenant-scoped file.
+        user_id: If provided, loads user-scoped file within the tenant.
 
     Returns:
         The memory data dictionary.
     """
-    file_path = _get_memory_file_path(agent_name, tenant_id)
+    file_path = _get_memory_file_path(agent_name, tenant_id, user_id)
 
     if not file_path.exists():
         return _create_empty_memory()
@@ -195,18 +207,19 @@ def _strip_upload_mentions_from_memory(memory_data: dict[str, Any]) -> dict[str,
     return memory_data
 
 
-def _save_memory_to_file(memory_data: dict[str, Any], agent_name: str | None = None, tenant_id: str | None = None) -> bool:
+def _save_memory_to_file(memory_data: dict[str, Any], agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> bool:
     """Save memory data to file and update cache.
 
     Args:
         memory_data: The memory data to save.
         agent_name: If provided, saves to per-agent memory file. If None, saves to global.
         tenant_id: If provided, saves to tenant-scoped file.
+        user_id: If provided, saves to user-scoped file within the tenant.
 
     Returns:
         True if successful, False otherwise.
     """
-    file_path = _get_memory_file_path(agent_name, tenant_id)
+    file_path = _get_memory_file_path(agent_name, tenant_id, user_id)
 
     try:
         # Ensure directory exists
@@ -229,7 +242,7 @@ def _save_memory_to_file(memory_data: dict[str, Any], agent_name: str | None = N
         except OSError:
             mtime = None
 
-        _memory_cache[(tenant_id, agent_name)] = (memory_data, mtime)
+        _memory_cache[(tenant_id, user_id, agent_name)] = (memory_data, mtime)
 
         print(f"Memory saved to {file_path}")
         return True
@@ -255,7 +268,7 @@ class MemoryUpdater:
         model_name = self._model_name or config.model_name
         return create_chat_model(name=model_name, thinking_enabled=False)
 
-    def update_memory(self, messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, tenant_id: str | None = None) -> bool:
+    def update_memory(self, messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> bool:
         """Update memory based on conversation messages.
 
         Args:
@@ -263,6 +276,7 @@ class MemoryUpdater:
             thread_id: Optional thread ID for tracking source.
             agent_name: If provided, updates per-agent memory. If None, updates global memory.
             tenant_id: If provided, updates tenant-scoped memory.
+            user_id: If provided, updates user-scoped memory within the tenant.
 
         Returns:
             True if update was successful, False otherwise.
@@ -276,7 +290,7 @@ class MemoryUpdater:
 
         try:
             # Get current memory
-            current_memory = get_memory_data(agent_name, tenant_id)
+            current_memory = get_memory_data(agent_name, tenant_id, user_id)
 
             # Format conversation for prompt
             conversation_text = format_conversation_for_update(messages)
@@ -313,7 +327,7 @@ class MemoryUpdater:
             updated_memory = _strip_upload_mentions_from_memory(updated_memory)
 
             # Save
-            return _save_memory_to_file(updated_memory, agent_name, tenant_id)
+            return _save_memory_to_file(updated_memory, agent_name, tenant_id, user_id)
 
         except json.JSONDecodeError as e:
             print(f"Failed to parse LLM response for memory update: {e}")
@@ -393,7 +407,7 @@ class MemoryUpdater:
         return current_memory
 
 
-def update_memory_from_conversation(messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, tenant_id: str | None = None) -> bool:
+def update_memory_from_conversation(messages: list[Any], thread_id: str | None = None, agent_name: str | None = None, tenant_id: str | None = None, user_id: str | None = None) -> bool:
     """Convenience function to update memory from a conversation.
 
     Args:
@@ -401,9 +415,10 @@ def update_memory_from_conversation(messages: list[Any], thread_id: str | None =
         thread_id: Optional thread ID.
         agent_name: If provided, updates per-agent memory. If None, updates global memory.
         tenant_id: If provided, updates tenant-scoped memory.
+        user_id: If provided, updates user-scoped memory within the tenant.
 
     Returns:
         True if successful, False otherwise.
     """
     updater = MemoryUpdater()
-    return updater.update_memory(messages, thread_id, agent_name, tenant_id)
+    return updater.update_memory(messages, thread_id, agent_name, tenant_id, user_id)

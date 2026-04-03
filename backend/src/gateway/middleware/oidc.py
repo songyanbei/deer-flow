@@ -159,7 +159,9 @@ def _extract_tenant_id(claims: dict[str, Any], tenant_claims: list[str]) -> str:
             keys = list(value.keys())
             if keys:
                 return keys[0]
-    return "default"
+    # Return None instead of "default" so that dependencies.py can decide
+    # whether to reject (OIDC enabled) or fall back (single-tenant mode).
+    return None
 
 
 # ── Middleware ──────────────────────────────────────────────────────────
@@ -228,9 +230,14 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=500, content={"detail": f"Authentication error: {exc}"})
 
         # Inject identity context.
+        # tenant_id may be None when the claim is absent — dependencies.py
+        # will reject the request (OIDC enabled → missing tenant is an error).
         request.state.tenant_id = _extract_tenant_id(claims, self._config.tenant_claims)
-        request.state.user_id = claims.get("sub", "anonymous")
+        # Do not fall back to "anonymous": let dependencies.py decide based on
+        # whether OIDC is enabled.
+        request.state.user_id = claims.get("sub") or None
         request.state.username = claims.get("preferred_username", "")
+        request.state.role = claims.get("role") or None
         request.state.claims = claims
 
         return await call_next(request)

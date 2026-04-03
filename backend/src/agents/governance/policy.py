@@ -91,37 +91,54 @@ def _decision_mode_to_governance(mode: GovernanceDecisionMode) -> GovernanceDeci
 # Policy Registry
 # ---------------------------------------------------------------------------
 
+_DEFAULT_TENANT = "default"
+
+
 class PolicyRegistry:
-    """Thread-safe registry of governance policy rules.
+    """Thread-safe registry of governance policy rules, bucketed by tenant.
 
     Rules are sorted by priority (lower first).  The first matching rule wins.
-    When the registry is empty, ``evaluate()`` returns ``PolicyMatchResult.no_match()``.
+    When the tenant bucket is empty, ``evaluate()`` returns ``PolicyMatchResult.no_match()``.
+
+    Callers that do not pass ``tenant_id`` operate on the ``"default"`` bucket
+    (backward-compatible with single-tenant mode).
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._rules: list[PolicyRule] = []
+        self._tenant_rules: dict[str, list[PolicyRule]] = {}
+
+    def _bucket(self, tenant_id: str | None) -> str:
+        return tenant_id if tenant_id and tenant_id != _DEFAULT_TENANT else _DEFAULT_TENANT
 
     # -- Mutation -------------------------------------------------------------
 
-    def load(self, rules: list[PolicyRule]) -> None:
-        """Replace all rules with *rules*, sorted by priority."""
+    def load(self, rules: list[PolicyRule], tenant_id: str | None = None) -> None:
+        """Replace all rules for *tenant_id* with *rules*, sorted by priority."""
+        bid = self._bucket(tenant_id)
         with self._lock:
-            self._rules = sorted(rules, key=lambda r: r.get("priority") or 100)
-        logger.info("[PolicyRegistry] Loaded %d governance rules", len(rules))
+            self._tenant_rules[bid] = sorted(rules, key=lambda r: r.get("priority") or 100)
+        logger.info("[PolicyRegistry] Loaded %d governance rules for tenant=%s", len(rules), bid)
 
-    def add_rule(self, rule: PolicyRule) -> None:
-        """Add a single rule and re-sort."""
+    def add_rule(self, rule: PolicyRule, tenant_id: str | None = None) -> None:
+        """Add a single rule to the tenant bucket and re-sort."""
+        bid = self._bucket(tenant_id)
         with self._lock:
-            self._rules.append(rule)
-            self._rules.sort(key=lambda r: r.get("priority") or 100)
-        logger.debug("[PolicyRegistry] Added rule '%s'", rule.get("rule_id"))
+            bucket = self._tenant_rules.setdefault(bid, [])
+            bucket.append(rule)
+            bucket.sort(key=lambda r: r.get("priority") or 100)
+        logger.debug("[PolicyRegistry] Added rule '%s' to tenant=%s", rule.get("rule_id"), bid)
 
-    def clear(self) -> None:
-        """Remove all rules (testing / hot-reload)."""
+    def clear(self, tenant_id: str | None = None) -> None:
+        """Remove all rules for a tenant (or all tenants if None)."""
         with self._lock:
-            self._rules.clear()
-        logger.debug("[PolicyRegistry] Cleared all rules")
+            if tenant_id is None:
+                self._tenant_rules.clear()
+                logger.debug("[PolicyRegistry] Cleared all rules (all tenants)")
+            else:
+                bid = self._bucket(tenant_id)
+                self._tenant_rules.pop(bid, None)
+                logger.debug("[PolicyRegistry] Cleared rules for tenant=%s", bid)
 
     # -- Query ----------------------------------------------------------------
 
@@ -132,24 +149,33 @@ class PolicyRegistry:
         agent: str | None = None,
         category: str | None = None,
         source_path: str | None = None,
+        tenant_id: str | None = None,
     ) -> PolicyMatchResult:
         """Find the first matching rule and return its governance decision.
 
-        Returns ``PolicyMatchResult.no_match()`` when no rule matches.
-        Short-circuits immediately when the registry is empty (zero overhead).
+        Evaluates the tenant-specific bucket first, then falls back to the
+        default bucket.  Returns ``PolicyMatchResult.no_match()`` when no
+        rule matches in either bucket.
         """
+        bid = self._bucket(tenant_id)
+
         with self._lock:
-            if not self._rules:
+            # Tenant-specific rules first, then default fallback
+            rules_snapshot: list[PolicyRule] = []
+            if bid != _DEFAULT_TENANT:
+                rules_snapshot.extend(self._tenant_rules.get(bid, []))
+            rules_snapshot.extend(self._tenant_rules.get(_DEFAULT_TENANT, []))
+
+            if not rules_snapshot:
                 return PolicyMatchResult.no_match()
-            rules_snapshot = list(self._rules)
 
         for rule in rules_snapshot:
             if _scope_matches(rule, tool=tool, agent=agent, category=category, source_path=source_path):
                 risk = parse_risk_level(rule.get("risk_level"))
                 decision = _decision_mode_to_governance(rule["decision"])
                 logger.info(
-                    "[PolicyRegistry] Rule '%s' matched: tool=%s agent=%s → decision=%s risk=%s",
-                    rule.get("rule_id"), tool, agent, decision.value, risk.value,
+                    "[PolicyRegistry] Rule '%s' matched (tenant=%s): tool=%s agent=%s → decision=%s risk=%s",
+                    rule.get("rule_id"), bid, tool, agent, decision.value, risk.value,
                 )
                 return PolicyMatchResult(
                     matched=True,
@@ -166,20 +192,26 @@ class PolicyRegistry:
     @property
     def is_empty(self) -> bool:
         with self._lock:
-            return len(self._rules) == 0
+            return all(len(v) == 0 for v in self._tenant_rules.values())
 
     @property
     def rule_count(self) -> int:
         with self._lock:
-            return len(self._rules)
+            return sum(len(v) for v in self._tenant_rules.values())
 
-    def list_rules(self) -> list[PolicyRule]:
-        """Return a snapshot of all rules (for introspection)."""
+    def list_rules(self, tenant_id: str | None = None) -> list[PolicyRule]:
+        """Return a snapshot of rules for a tenant (or all if None)."""
         with self._lock:
-            return list(self._rules)
+            if tenant_id is None:
+                result: list[PolicyRule] = []
+                for v in self._tenant_rules.values():
+                    result.extend(v)
+                return result
+            bid = self._bucket(tenant_id)
+            return list(self._tenant_rules.get(bid, []))
 
     def __repr__(self) -> str:
-        return f"<PolicyRegistry rules={self.rule_count}>"
+        return f"<PolicyRegistry rules={self.rule_count} tenants={len(self._tenant_rules)}>"
 
 
 # ---------------------------------------------------------------------------

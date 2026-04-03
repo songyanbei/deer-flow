@@ -1,11 +1,14 @@
 """Unified extensions configuration for MCP servers and skills."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+logger = logging.getLogger(__name__)
 
 
 class McpOAuthConfig(BaseModel):
@@ -232,6 +235,47 @@ class ExtensionsConfig(BaseModel):
             # Default to enable for public & custom skill
             return skill_category in ("public", "custom")
         return skill_config.enabled
+
+
+    @classmethod
+    def from_tenant(cls, tenant_id: str | None) -> "ExtensionsConfig":
+        """Load extensions config with tenant overlay.
+
+        When *tenant_id* is non-default, looks for
+        ``tenants/{tenant_id}/extensions_config.json`` (relative to the app
+        data directory) and merges it on top of the platform-level config.
+        Tenant entries override platform entries for the same key.
+
+        Falls back to the platform-level config when no tenant overlay exists.
+        """
+        base = cls.from_file()
+        if not tenant_id or tenant_id == "default":
+            return base
+
+        try:
+            from src.config.paths import get_paths
+
+            tenant_cfg_path = get_paths().tenant_dir(tenant_id) / "extensions_config.json"
+            if not tenant_cfg_path.exists():
+                return base
+
+            with open(tenant_cfg_path, encoding="utf-8") as f:
+                tenant_data = json.load(f)
+
+            cls.resolve_env_variables(tenant_data)
+            tenant_cfg = cls.model_validate(tenant_data)
+
+            # Merge: tenant overrides platform for same-name entries
+            merged_servers = dict(base.mcp_servers)
+            merged_servers.update(tenant_cfg.mcp_servers)
+
+            merged_skills = dict(base.skills)
+            merged_skills.update(tenant_cfg.skills)
+
+            return cls(mcp_servers=merged_servers, skills=merged_skills)
+        except Exception:
+            logger.warning("Failed to load tenant overlay for tenant_id=%s, using platform config", tenant_id, exc_info=True)
+            return base
 
 
 _extensions_config: ExtensionsConfig | None = None

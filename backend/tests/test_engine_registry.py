@@ -263,10 +263,17 @@ from contextlib import contextmanager
 
 @contextmanager
 def _multi_patch(paths):
-    """Patch get_paths in both routers and config modules."""
-    with patch("src.gateway.routers.agents.get_paths", return_value=paths), \
-         patch("src.config.agents_config.get_paths", return_value=paths):
-        yield
+    """Patch get_paths in both routers and config modules, and override role to admin."""
+    from src.gateway.app import app
+    from src.gateway.dependencies import get_role
+
+    app.dependency_overrides[get_role] = lambda: "admin"
+    try:
+        with patch("src.gateway.routers.agents.get_paths", return_value=paths), \
+             patch("src.config.agents_config.get_paths", return_value=paths):
+            yield
+    finally:
+        app.dependency_overrides.pop(get_role, None)
 
 
 class TestCrudEngineType:

@@ -46,6 +46,8 @@ def record_decision(
     alternatives: list[str] | None = None,
     confidence: float | None = None,
     duration_ms: float | None = None,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Record a structured decision to the decisions logger.
 
@@ -67,6 +69,8 @@ def record_decision(
         "alternatives": alternatives,
         "confidence": confidence,
         "duration_ms": round(duration_ms, 2) if duration_ms is not None else None,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
     }
 
     for key, value in optional_fields.items():

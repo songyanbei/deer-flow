@@ -97,6 +97,7 @@ class _IntegrationAppContext:
             request.state.tenant_id = tenant_id
             request.state.user_id = user_id
             request.state.username = username
+            request.state.role = "admin"
             return await call_next(request)
 
         self.app.include_router(agents_mod.router)
@@ -186,7 +187,7 @@ class TestFullPlatformLifecycle:
                 "/api/runtime/threads",
                 json={"portal_session_id": "sess_e2e_001"},
             )
-        assert create_resp.status_code == 200
+        assert create_resp.status_code == 201
         assert create_resp.json()["thread_id"] == "thread-e2e-001"
         assert create_resp.json()["portal_session_id"] == "sess_e2e_001"
         assert create_resp.json()["tenant_id"] == "default"
@@ -426,7 +427,7 @@ class TestMultiTenantIsolation:
                     "/api/runtime/threads",
                     json={"portal_session_id": "sess_a"},
                 )
-                assert resp.status_code == 200
+                assert resp.status_code == 201
 
             # Tenant B tries to read it → 403
             with patch("src.gateway.routers.runtime.get_thread_state_summary", new_callable=AsyncMock):

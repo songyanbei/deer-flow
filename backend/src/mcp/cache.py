@@ -1,138 +1,152 @@
-"""Cache for MCP tools to avoid repeated loading."""
+"""Cache for MCP tools to avoid repeated loading.
+
+The cache is partitioned by tenant: each ``tenant_id`` key gets its own
+independent tool list and mtime tracker so that tenant-scoped
+``extensions_config.json`` changes only invalidate the affected partition.
+
+The default (platform-level) partition uses ``tenant_id="default"``.
+"""
 
 import asyncio
 import logging
 import os
+from dataclasses import dataclass, field
 
 from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
-_mcp_tools_cache: list[BaseTool] | None = None
-_cache_initialized = False
-_initialization_lock = asyncio.Lock()
-_config_mtime: float | None = None  # Track config file modification time
+_DEFAULT_TENANT = "default"
 
 
-def _get_config_mtime() -> float | None:
+@dataclass
+class _TenantCache:
+    """Per-tenant MCP tools cache entry."""
+    tools: list[BaseTool] | None = None
+    initialized: bool = False
+    config_mtime: float | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Keyed by tenant_id
+_tenant_caches: dict[str, _TenantCache] = {}
+_global_lock = asyncio.Lock()
+
+
+def _get_tenant_cache(tenant_id: str | None) -> _TenantCache:
+    tid = tenant_id or _DEFAULT_TENANT
+    return _tenant_caches.setdefault(tid, _TenantCache())
+
+
+def _get_config_mtime(tenant_id: str | None = None) -> float | None:
     """Get the modification time of the extensions config file.
 
-    Returns:
-        The modification time as a float, or None if the file doesn't exist.
+    For non-default tenants, also checks the tenant overlay file.
     """
     from src.config.extensions_config import ExtensionsConfig
 
+    mtime: float | None = None
+
+    # Platform-level mtime
     config_path = ExtensionsConfig.resolve_config_path()
     if config_path and config_path.exists():
-        return os.path.getmtime(config_path)
-    return None
+        mtime = os.path.getmtime(config_path)
+
+    # Tenant overlay mtime — use the most recent of the two
+    if tenant_id and tenant_id != _DEFAULT_TENANT:
+        try:
+            from src.config.paths import get_paths
+            tenant_cfg = get_paths().tenant_dir(tenant_id) / "extensions_config.json"
+            if tenant_cfg.exists():
+                t_mtime = os.path.getmtime(tenant_cfg)
+                mtime = max(mtime or 0, t_mtime)
+        except Exception:
+            pass
+
+    return mtime
 
 
-def _is_cache_stale() -> bool:
-    """Check if the cache is stale due to config file changes.
-
-    Returns:
-        True if the cache should be invalidated, False otherwise.
-    """
-    global _config_mtime
-
-    if not _cache_initialized:
-        return False  # Not initialized yet, not stale
-
-    current_mtime = _get_config_mtime()
-
-    # If we couldn't get mtime before or now, assume not stale
-    if _config_mtime is None or current_mtime is None:
+def _is_cache_stale(tc: _TenantCache, tenant_id: str | None) -> bool:
+    if not tc.initialized:
         return False
 
-    # If the config file has been modified since we cached, it's stale
-    if current_mtime > _config_mtime:
-        logger.info(f"MCP config file has been modified (mtime: {_config_mtime} -> {current_mtime}), cache is stale")
+    current_mtime = _get_config_mtime(tenant_id)
+    if tc.config_mtime is None or current_mtime is None:
+        return False
+
+    if current_mtime > tc.config_mtime:
+        logger.info("MCP config modified for tenant=%s (mtime: %s -> %s), cache stale", tenant_id or _DEFAULT_TENANT, tc.config_mtime, current_mtime)
         return True
 
     return False
 
 
-async def initialize_mcp_tools() -> list[BaseTool]:
-    """Initialize and cache MCP tools.
+async def initialize_mcp_tools(tenant_id: str | None = None) -> list[BaseTool]:
+    """Initialize and cache MCP tools for a tenant partition."""
+    tc = _get_tenant_cache(tenant_id)
 
-    This should be called once at application startup.
-
-    Returns:
-        List of LangChain tools from all enabled MCP servers.
-    """
-    global _mcp_tools_cache, _cache_initialized, _config_mtime
-
-    async with _initialization_lock:
-        if _cache_initialized:
-            logger.info("MCP tools already initialized")
-            return _mcp_tools_cache or []
+    async with tc.lock:
+        if tc.initialized:
+            return tc.tools or []
 
         from src.mcp.tools import get_mcp_tools
 
-        logger.info("Initializing MCP tools...")
-        _mcp_tools_cache = await get_mcp_tools()
-        _cache_initialized = True
-        _config_mtime = _get_config_mtime()  # Record config file mtime
-        logger.info(f"MCP tools initialized: {len(_mcp_tools_cache)} tool(s) loaded (config mtime: {_config_mtime})")
+        tid = tenant_id or _DEFAULT_TENANT
+        logger.info("Initializing MCP tools for tenant=%s ...", tid)
+        tc.tools = await get_mcp_tools(tenant_id=tenant_id)
+        tc.initialized = True
+        tc.config_mtime = _get_config_mtime(tenant_id)
+        logger.info("MCP tools initialized for tenant=%s: %d tool(s) (mtime: %s)", tid, len(tc.tools), tc.config_mtime)
+        return tc.tools
 
-        return _mcp_tools_cache
 
-
-def get_cached_mcp_tools() -> list[BaseTool]:
+def get_cached_mcp_tools(tenant_id: str | None = None) -> list[BaseTool]:
     """Get cached MCP tools with lazy initialization.
 
-    If tools are not initialized, automatically initializes them.
-    This ensures MCP tools work in both FastAPI and LangGraph Studio contexts.
-
-    Also checks if the config file has been modified since last initialization,
-    and re-initializes if needed. This ensures that changes made through the
-    Gateway API (which runs in a separate process) are reflected in the
-    LangGraph Server.
-
-    Returns:
-        List of cached MCP tools.
+    Checks for config staleness and re-initializes when needed.
+    Partitioned by ``tenant_id`` — each tenant sees its own tool set.
     """
-    global _cache_initialized
+    tc = _get_tenant_cache(tenant_id)
 
-    # Check if cache is stale due to config file changes
-    if _is_cache_stale():
-        logger.info("MCP cache is stale, resetting for re-initialization...")
-        reset_mcp_tools_cache()
+    if _is_cache_stale(tc, tenant_id):
+        logger.info("MCP cache stale for tenant=%s, resetting ...", tenant_id or _DEFAULT_TENANT)
+        _reset_tenant_cache(tc)
 
-    if not _cache_initialized:
-        logger.info("MCP tools not initialized, performing lazy initialization...")
+    if not tc.initialized:
+        logger.info("MCP tools not initialized for tenant=%s, lazy init ...", tenant_id or _DEFAULT_TENANT)
         try:
-            # Try to initialize in the current event loop
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # If loop is already running (e.g., in LangGraph Studio),
-                # we need to create a new loop in a thread
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, initialize_mcp_tools())
+                    future = executor.submit(asyncio.run, initialize_mcp_tools(tenant_id))
                     future.result()
             else:
-                # If no loop is running, we can use the current loop
-                loop.run_until_complete(initialize_mcp_tools())
+                loop.run_until_complete(initialize_mcp_tools(tenant_id))
         except RuntimeError:
-            # No event loop exists, create one
-            asyncio.run(initialize_mcp_tools())
+            asyncio.run(initialize_mcp_tools(tenant_id))
         except Exception as e:
-            logger.error(f"Failed to lazy-initialize MCP tools: {e}")
+            logger.error("Failed to lazy-initialize MCP tools for tenant=%s: %s", tenant_id or _DEFAULT_TENANT, e)
             return []
 
-    return _mcp_tools_cache or []
+    return tc.tools or []
 
 
-def reset_mcp_tools_cache() -> None:
-    """Reset the MCP tools cache.
+def _reset_tenant_cache(tc: _TenantCache) -> None:
+    tc.tools = None
+    tc.initialized = False
+    tc.config_mtime = None
 
-    This is useful for testing or when you want to reload MCP tools.
-    """
-    global _mcp_tools_cache, _cache_initialized, _config_mtime
-    _mcp_tools_cache = None
-    _cache_initialized = False
-    _config_mtime = None
-    logger.info("MCP tools cache reset")
+
+def reset_mcp_tools_cache(tenant_id: str | None = None) -> None:
+    """Reset the MCP tools cache for a specific tenant (or all if None)."""
+    if tenant_id is not None:
+        tc = _tenant_caches.get(tenant_id or _DEFAULT_TENANT)
+        if tc:
+            _reset_tenant_cache(tc)
+            logger.info("MCP tools cache reset for tenant=%s", tenant_id or _DEFAULT_TENANT)
+    else:
+        for tid, tc in _tenant_caches.items():
+            _reset_tenant_cache(tc)
+        logger.info("MCP tools cache reset for all tenants")

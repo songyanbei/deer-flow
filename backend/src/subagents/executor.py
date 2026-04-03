@@ -130,6 +130,8 @@ class SubagentExecutor:
         sandbox_state: SandboxState | None = None,
         thread_data: ThreadDataState | None = None,
         thread_id: str | None = None,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
         trace_id: str | None = None,
     ):
         """Initialize the executor.
@@ -141,6 +143,8 @@ class SubagentExecutor:
             sandbox_state: Sandbox state from parent agent.
             thread_data: Thread data from parent agent.
             thread_id: Thread ID for sandbox operations.
+            tenant_id: Tenant ID from parent agent (for isolation).
+            user_id: User ID from parent agent (for isolation).
             trace_id: Trace ID from parent for distributed tracing.
         """
         self.config = config
@@ -148,6 +152,8 @@ class SubagentExecutor:
         self.sandbox_state = sandbox_state
         self.thread_data = thread_data
         self.thread_id = thread_id
+        self.tenant_id = tenant_id
+        self.user_id = user_id
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
 
@@ -231,14 +237,25 @@ class SubagentExecutor:
             agent = self._create_agent()
             state = self._build_initial_state(task)
 
-            # Build config with thread_id for sandbox access and recursion limit
+            # Build config with identity for sandbox access and recursion limit.
+            # tenant_id + user_id must be propagated so that subagent middlewares
+            # (ThreadDataMiddleware, MemoryMiddleware) use the correct tenant.
             run_config: RunnableConfig = {
                 "recursion_limit": self.config.max_turns,
             }
-            context = {}
+            configurable: dict[str, str] = {}
+            context: dict[str, str] = {}
             if self.thread_id:
-                run_config["configurable"] = {"thread_id": self.thread_id}
+                configurable["thread_id"] = self.thread_id
                 context["thread_id"] = self.thread_id
+            if self.tenant_id:
+                configurable["tenant_id"] = self.tenant_id
+                context["tenant_id"] = self.tenant_id
+            if self.user_id:
+                configurable["user_id"] = self.user_id
+                context["user_id"] = self.user_id
+            if configurable:
+                run_config["configurable"] = configurable
 
             logger.info(f"[trace={self.trace_id}] Subagent {self.config.name} starting execution with max_turns={self.config.max_turns}")
 

@@ -89,6 +89,7 @@ class GovernanceEngine:
         category: str = "tool_execution",
         request_id: str | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> GovernanceEvaluation:
         """Evaluate governance policy for a tool call (before execution).
 
@@ -102,6 +103,7 @@ class GovernanceEngine:
             agent=agent_name,
             category=category,
             source_path="before_tool",
+            tenant_id=tenant_id,
         )
 
         if not match.matched:
@@ -133,6 +135,7 @@ class GovernanceEngine:
                 reason=match.reason,
                 metadata={"tool_name": tool_name, "tool_args_keys": list(tool_args.keys())},
                 tenant_id=tenant_id,
+                user_id=user_id,
             )
             governance_id = entry["governance_id"]
 
@@ -165,6 +168,7 @@ class GovernanceEngine:
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> str:
         """Record an interrupt emission in the governance ledger.
 
@@ -187,6 +191,7 @@ class GovernanceEngine:
             reason=reason,
             metadata={**(metadata or {}), "interrupt_type": interrupt_type},
             tenant_id=tenant_id,
+            user_id=user_id,
         )
         return entry["governance_id"]
 
@@ -204,6 +209,7 @@ class GovernanceEngine:
         resolved_by: str = "inline",
         metadata: dict[str, Any] | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> str | None:
         """Record an interrupt resolution in the governance ledger.
 
@@ -241,6 +247,7 @@ class GovernanceEngine:
                 "resolution_behavior": resolution_behavior,
             },
             tenant_id=tenant_id,
+            user_id=user_id,
         )
         return entry["governance_id"]
 
@@ -254,6 +261,7 @@ class GovernanceEngine:
         category: str = "state_commit",
         metadata: dict[str, Any] | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> str:
         """Record a state-commit governance audit entry.
 
@@ -273,6 +281,7 @@ class GovernanceEngine:
             action_summary=f"State commit: {commit_type}",
             metadata=metadata,
             tenant_id=tenant_id,
+            user_id=user_id,
         )
         return entry["governance_id"]
 

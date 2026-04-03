@@ -424,10 +424,20 @@ class TestMemoryFilePath:
 def _make_test_app(tmp_path: Path):
     """Create a FastAPI app with the agents router, patching paths to tmp_path."""
     from fastapi import FastAPI
+    from starlette.middleware.base import BaseHTTPMiddleware
 
     from src.gateway.routers.agents import router
 
     app = FastAPI()
+
+    class _MockIdentityMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            request.state.tenant_id = "default"
+            request.state.user_id = "test-user"
+            request.state.role = "admin"
+            return await call_next(request)
+
+    app.add_middleware(_MockIdentityMiddleware)
     app.include_router(router)
     return app
 

@@ -118,6 +118,7 @@ class GovernanceLedger:
         reason: str | None = None,
         metadata: dict[str, Any] | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
     ) -> GovernanceLedgerEntry:
         """Create and persist a new governance ledger entry.
 
@@ -150,6 +151,7 @@ class GovernanceLedger:
             "reason": reason,
             "metadata": metadata,
             "tenant_id": tenant_id or "default",
+            "user_id": user_id,
             "created_at": _utc_now_iso(),
         }
 
@@ -229,6 +231,7 @@ class GovernanceLedger:
         self,
         *,
         tenant_id: str | None = None,
+        user_id: str | None = None,
         thread_id: str | None = None,
         run_id: str | None = None,
         status: GovernanceLedgerStatus | None = None,
@@ -254,6 +257,8 @@ class GovernanceLedger:
 
         if tenant_id:
             results = [e for e in results if e.get("tenant_id", "default") == tenant_id]
+        if user_id:
+            results = [e for e in results if e.get("user_id") == user_id]
         if thread_id:
             results = [e for e in results if e["thread_id"] == thread_id]
         if run_id:

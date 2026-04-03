@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from src.config.paths import VIRTUAL_PATH_PREFIX, get_paths
-from src.gateway.dependencies import get_tenant_id
+from src.gateway.dependencies import get_tenant_id, get_user_id
 from src.gateway.thread_registry import get_thread_registry
 from src.sandbox.sandbox_provider import get_sandbox_provider
 
@@ -80,6 +80,7 @@ async def upload_files(
     thread_id: str,
     files: list[UploadFile] = File(...),
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> UploadResponse:
     """Upload multiple files to a thread's uploads directory.
 
@@ -93,9 +94,9 @@ async def upload_files(
     Returns:
         Upload response with success status and file information.
     """
-    # Tenant access control
-    if not get_thread_registry().check_access(thread_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Access denied: thread belongs to another tenant")
+    # Tenant + user access control
+    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
@@ -172,7 +173,7 @@ async def upload_files(
 
 
 @router.get("/list", response_model=dict)
-async def list_uploaded_files(thread_id: str, tenant_id: str = Depends(get_tenant_id)) -> dict:
+async def list_uploaded_files(thread_id: str, tenant_id: str = Depends(get_tenant_id), user_id: str = Depends(get_user_id)) -> dict:
     """List all files in a thread's uploads directory.
 
     Args:
@@ -181,9 +182,9 @@ async def list_uploaded_files(thread_id: str, tenant_id: str = Depends(get_tenan
     Returns:
         Dictionary containing list of files with their metadata.
     """
-    # Tenant access control
-    if not get_thread_registry().check_access(thread_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Access denied: thread belongs to another tenant")
+    # Tenant + user access control
+    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     uploads_dir = get_uploads_dir(thread_id)
 
@@ -211,7 +212,7 @@ async def list_uploaded_files(thread_id: str, tenant_id: str = Depends(get_tenan
 
 
 @router.delete("/{filename}")
-async def delete_uploaded_file(thread_id: str, filename: str, tenant_id: str = Depends(get_tenant_id)) -> dict:
+async def delete_uploaded_file(thread_id: str, filename: str, tenant_id: str = Depends(get_tenant_id), user_id: str = Depends(get_user_id)) -> dict:
     """Delete a file from a thread's uploads directory.
 
     Args:
@@ -221,9 +222,9 @@ async def delete_uploaded_file(thread_id: str, filename: str, tenant_id: str = D
     Returns:
         Success message.
     """
-    # Tenant access control
-    if not get_thread_registry().check_access(thread_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Access denied: thread belongs to another tenant")
+    # Tenant + user access control
+    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     uploads_dir = get_uploads_dir(thread_id)
     file_path = uploads_dir / filename

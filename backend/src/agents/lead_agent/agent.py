@@ -275,6 +275,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
         intervention_cache = config.get("configurable", {}).get("intervention_cache")
         intervention_thread_id = config.get("configurable", {}).get("thread_id") or ""
         intervention_tenant_id = config.get("configurable", {}).get("tenant_id")
+        intervention_user_id = config.get("configurable", {}).get("user_id")
         middlewares.append(
             InterventionMiddleware(
                 intervention_policies=intervention_policies,
@@ -286,6 +287,7 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
                 resolved_fingerprints=resolved_fingerprints,
                 intervention_cache=intervention_cache,
                 tenant_id=intervention_tenant_id,
+                user_id=intervention_user_id,
             )
         )
         middlewares.append(HelpRequestMiddleware())
@@ -378,7 +380,7 @@ def make_lead_agent(config: RunnableConfig):
 
         agent = create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False) + [setup_agent],
+            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False, tenant_id=tenant_id) + [setup_agent],
             middleware=_build_middlewares(config, model_name=model_name),
             system_prompt=system_prompt,
             state_schema=ThreadState,
@@ -403,7 +405,7 @@ def make_lead_agent(config: RunnableConfig):
         try:
             from src.mcp.runtime_manager import mcp_runtime
 
-            scope_key = mcp_runtime.scope_key_for_agent(agent_name)
+            scope_key = mcp_runtime.scope_key_for_agent(agent_name, tenant_id=tenant_id)
             mcp_tools = mcp_runtime.get_tools_sync(scope_key)
 
             mcp_tools = engine_builder.prepare_extra_tools(mcp_tools)
@@ -422,6 +424,7 @@ def make_lead_agent(config: RunnableConfig):
             include_mcp=not bool(cfg.get("is_domain_agent", False)),
             subagent_enabled=subagent_enabled,
             is_domain_agent=bool(cfg.get("is_domain_agent", False)),
+            tenant_id=tenant_id,
         )
         + extra_tools,
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),

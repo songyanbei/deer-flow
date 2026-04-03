@@ -11,8 +11,12 @@ from src.mcp.oauth import build_oauth_tool_interceptor, get_initial_oauth_header
 logger = logging.getLogger(__name__)
 
 
-async def get_mcp_tools() -> list[BaseTool]:
+async def get_mcp_tools(tenant_id: str | None = None) -> list[BaseTool]:
     """Get all tools from enabled MCP servers.
+
+    Args:
+        tenant_id: When provided and not "default", loads the tenant-overlay
+                   extensions config (merged on top of the platform config).
 
     Returns:
         List of LangChain tools from all enabled MCP servers.
@@ -27,11 +31,8 @@ async def get_mcp_tools() -> list[BaseTool]:
         logger.warning("langchain-mcp-adapters not installed. Install it to enable MCP tools: pip install langchain-mcp-adapters")
         return []
 
-    # NOTE: We use ExtensionsConfig.from_file() instead of get_extensions_config()
-    # to always read the latest configuration from disk. This ensures that changes
-    # made through the Gateway API (which runs in a separate process) are immediately
-    # reflected when initializing MCP tools.
-    extensions_config = ExtensionsConfig.from_file()
+    # Load config with tenant overlay when applicable.
+    extensions_config = ExtensionsConfig.from_tenant(tenant_id)
     servers_config = build_servers_config(extensions_config)
 
     if not servers_config:

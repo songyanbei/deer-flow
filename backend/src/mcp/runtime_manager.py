@@ -224,12 +224,21 @@ class McpRuntimeManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def scope_key_for_agent(agent_name: str) -> str:
+    def scope_key_for_agent(agent_name: str, tenant_id: str | None = None) -> str:
+        if tenant_id and tenant_id != "default":
+            return f"tenant:{tenant_id}:domain:{agent_name}"
         return f"domain:{agent_name}"
 
     @staticmethod
     def scope_key_for_run(run_id: str) -> str:
         return f"run:{run_id}"
+
+    @staticmethod
+    def scope_key_for_tenant(tenant_id: str | None = None) -> str:
+        """Global scope key, optionally tenant-partitioned."""
+        if tenant_id and tenant_id != "default":
+            return f"tenant:{tenant_id}:global"
+        return "global"
 
 
 # Process-level singleton

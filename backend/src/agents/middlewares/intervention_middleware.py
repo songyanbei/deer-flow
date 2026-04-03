@@ -230,6 +230,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         intervention_cache: dict[str, dict[str, Any]] | None = None,
         engine: GovernanceEngine | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
     ):
         self._intervention_policies = intervention_policies or {}
         self._hitl_keywords = hitl_keywords or []
@@ -241,6 +242,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
         self._intervention_cache = intervention_cache if intervention_cache is not None else {}
         self._engine = engine or governance_engine
         self._tenant_id = tenant_id
+        self._user_id = user_id
 
     def _should_intervene(self, tool_name: str, tool_args: dict[str, Any]) -> tuple[bool, dict[str, Any] | None]:
         """Determine whether a tool call should trigger intervention.
@@ -366,6 +368,7 @@ class InterventionMiddleware(AgentMiddleware[InterventionMiddlewareState]):
             run_id=self._run_id,
             thread_id=self._thread_id,
             tenant_id=self._tenant_id,
+            user_id=self._user_id,
         )
 
         if evaluation.policy_matched:

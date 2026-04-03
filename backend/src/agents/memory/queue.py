@@ -18,6 +18,7 @@ class ConversationContext:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_name: str | None = None
     tenant_id: str | None = None
+    user_id: str | None = None
     dedupe_key: str = ""
 
 
@@ -42,6 +43,7 @@ class MemoryUpdateQueue:
         messages: list[Any],
         agent_name: str | None = None,
         tenant_id: str | None = None,
+        user_id: str | None = None,
         *,
         dedupe_key: str | None = None,
     ) -> None:
@@ -52,6 +54,7 @@ class MemoryUpdateQueue:
             messages: The conversation messages.
             agent_name: If provided, memory is stored per-agent. If None, uses global memory.
             tenant_id: If provided, memory is tenant-scoped.
+            user_id: If provided, memory is user-scoped within the tenant.
             dedupe_key: Optional logical key used to replace stale pending updates.
                 Defaults to a per-thread/per-agent/per-tenant key so different
                 scopes do not overwrite each other.
@@ -66,6 +69,7 @@ class MemoryUpdateQueue:
             messages=messages,
             agent_name=agent_name,
             tenant_id=tenant_id,
+            user_id=user_id,
             dedupe_key=effective_dedupe_key,
         )
 
@@ -135,6 +139,7 @@ class MemoryUpdateQueue:
                         thread_id=context.thread_id,
                         agent_name=context.agent_name,
                         tenant_id=context.tenant_id,
+                        user_id=context.user_id,
                     )
                     if success:
                         print(f"Memory updated successfully for thread {context.thread_id}")

@@ -121,6 +121,34 @@ class Paths:
         """Tenant + agent scoped memory: ``tenants/{tid}/agents/{name}/memory.json``."""
         return self.tenant_agent_dir(tenant_id, agent_name) / "memory.json"
 
+    # ── User-scoped paths (within a tenant) ───────────────────────────
+
+    def tenant_user_dir(self, tenant_id: str, user_id: str) -> Path:
+        """User data root within a tenant: ``tenants/{tid}/users/{uid}/``.
+
+        Raises:
+            ValueError: If *user_id* contains unsafe characters.
+        """
+        if not _SAFE_THREAD_ID_RE.match(user_id):
+            raise ValueError(f"Invalid user_id: {user_id!r}")
+        return self.tenant_dir(tenant_id) / "users" / user_id
+
+    def tenant_user_memory_file(self, tenant_id: str, user_id: str) -> Path:
+        """User-level global memory: ``tenants/{tid}/users/{uid}/memory.json``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "memory.json"
+
+    def tenant_user_agent_memory_file(self, tenant_id: str, user_id: str, agent_name: str) -> Path:
+        """User × Agent memory: ``tenants/{tid}/users/{uid}/agents/{name}/memory.json``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "agents" / agent_name.lower() / "memory.json"
+
+    def tenant_user_md_file_for_user(self, tenant_id: str, user_id: str) -> Path:
+        """User profile: ``tenants/{tid}/users/{uid}/USER.md``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "USER.md"
+
+    def tenant_user_governance_ledger(self, tenant_id: str, user_id: str) -> Path:
+        """User governance ledger: ``tenants/{tid}/users/{uid}/governance_ledger.jsonl``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "governance_ledger.jsonl"
+
     def thread_dir(self, thread_id: str) -> Path:
         """
         Host path for a thread's data: `{base_dir}/threads/{thread_id}/`

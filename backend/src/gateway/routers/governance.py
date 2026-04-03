@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from src.agents.governance.ledger import governance_ledger
 from src.agents.governance.types import GovernanceLedgerEntry
-from src.gateway.dependencies import get_tenant_id
+from src.gateway.dependencies import get_role, get_tenant_id, get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -147,15 +147,21 @@ async def list_queue(
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    role: str = Depends(get_role),
 ) -> GovernanceListResponse:
     """List pending governance items (operator queue).
 
     Returns items with ``status=pending_intervention``, newest first.
-    Scoped to the requesting tenant.
+    Scoped to the requesting tenant.  Members see only their own records;
+    admins/owners see all records in the tenant.
     """
+    # Members see only their own governance records; admins see all
+    effective_user_id = None if role in ("admin", "owner") else user_id
     # Query all matching pending entries (no pagination yet) to get accurate total
     all_matching = governance_ledger.query(
         tenant_id=tenant_id,
+        user_id=effective_user_id,
         thread_id=thread_id,
         run_id=run_id,
         status="pending_intervention",
@@ -191,15 +197,14 @@ async def list_history(
     limit: int = Query(50, ge=1, le=500, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    role: str = Depends(get_role),
 ) -> GovernanceListResponse:
     """List resolved governance items (history view).
 
     By default returns all non-pending items. Use the ``status`` filter to
-    narrow to a specific terminal status.
-
-    Time range filters:
-    - ``created_from`` / ``created_to`` — filter by creation time (applies to all entries)
-    - ``resolved_from`` / ``resolved_to`` — filter by resolution time (only entries with resolved_at)
+    narrow to a specific terminal status.  Members see only their own records;
+    admins/owners see all records in the tenant.
     """
     # Validate status filter
     if status == "pending_intervention":
@@ -208,9 +213,12 @@ async def list_history(
             detail="Use /queue for pending_intervention items",
         )
 
+    # Members see only their own governance records; admins see all
+    effective_user_id = None if role in ("admin", "owner") else user_id
     # Query all matching entries to get accurate total, then paginate
     all_matching = governance_ledger.query(
         tenant_id=tenant_id,
+        user_id=effective_user_id,
         thread_id=thread_id,
         run_id=run_id,
         status=status,
@@ -241,18 +249,23 @@ async def list_history(
 async def get_detail(
     governance_id: str,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    role: str = Depends(get_role),
 ) -> GovernanceItemResponse:
     """Get full detail of a single governance item.
 
     Returns intervention display/action context as top-level fields for
     rendering in the operator console without additional API calls.
-    Scoped to the requesting tenant.
+    Scoped to the requesting tenant.  Members can only view their own records.
     """
     entry = governance_ledger.get_by_id(governance_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Governance item not found: {governance_id}")
     if entry.get("tenant_id", "default") != tenant_id:
-        raise HTTPException(status_code=403, detail="Access denied: governance item belongs to another tenant")
+        raise HTTPException(status_code=403, detail="Access denied")
+    # Members can only view their own records
+    if role not in ("admin", "owner") and entry.get("user_id") and entry["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     return GovernanceItemResponse.from_entry(entry, include_detail=True)
 
 
@@ -265,23 +278,24 @@ async def operator_resolve(
     governance_id: str,
     body: OperatorResolveRequest,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    role: str = Depends(get_role),
 ) -> OperatorResolveResponse:
     """Resolve a pending governance item via operator action.
 
     This endpoint is a thin wrapper around the existing intervention resolution
-    contract.  It looks up the governance item, finds the associated thread and
-    intervention request, validates the action, and delegates to the same
-    resolution logic used by the inline intervention card.
-
-    The operator action MUST produce the same state transition as resolving via
-    the thread card — no parallel approval protocol.
+    contract.  Members can only resolve their own records; admins/owners can
+    resolve any record in the tenant.
     """
-    # 1. Look up the governance item and verify tenant ownership
+    # 1. Look up the governance item and verify tenant + user ownership
     entry = governance_ledger.get_by_id(governance_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Governance item not found: {governance_id}")
     if entry.get("tenant_id", "default") != tenant_id:
-        raise HTTPException(status_code=403, detail="Access denied: governance item belongs to another tenant")
+        raise HTTPException(status_code=403, detail="Access denied")
+    # Members can only resolve their own governance records
+    if role not in ("admin", "owner") and entry.get("user_id") and entry["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
 
     if entry["status"] != "pending_intervention":
         raise HTTPException(

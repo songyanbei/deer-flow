@@ -63,6 +63,7 @@ class GovernanceInterruptEmitAuditHook(RuntimeHookHandler):
                     **intervention_context,
                 },
                 tenant_id=metadata.get("tenant_id"),
+                user_id=metadata.get("user_id"),
             )
         except Exception:
             logger.exception("[GovernanceAuditHook] Failed to record interrupt emit audit")
@@ -106,6 +107,7 @@ class GovernanceInterruptResolveAuditHook(RuntimeHookHandler):
                 resolved_by=resolved_by,
                 metadata={"hook_metadata": {k: v for k, v in metadata.items() if isinstance(v, (str, int, float, bool))}},
                 tenant_id=metadata.get("tenant_id"),
+                user_id=metadata.get("user_id"),
             )
         except Exception:
             logger.exception("[GovernanceAuditHook] Failed to record interrupt resolve audit")
@@ -145,6 +147,7 @@ class GovernanceStateCommitAuditHook(RuntimeHookHandler):
                     }
                 },
                 tenant_id=metadata.get("tenant_id"),
+                user_id=metadata.get("user_id"),
             )
         except Exception:
             logger.exception("[GovernanceAuditHook] Failed to record state commit audit")

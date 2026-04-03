@@ -52,10 +52,10 @@ class TestThreadRegistry:
         reg.register("thread-1", "tenant-a")
         assert reg.check_access("thread-1", "tenant-b") is False
 
-    def test_check_access_unregistered_allowed(self, tmp_path):
-        """Unregistered threads are accessible for backward compatibility."""
+    def test_check_access_unregistered_denied(self, tmp_path):
+        """Unregistered threads are denied (security: deny by default)."""
         reg = self._make_registry(tmp_path)
-        assert reg.check_access("unknown-thread", "tenant-a") is True
+        assert reg.check_access("unknown-thread", "tenant-a") is False
 
     def test_list_threads_by_tenant(self, tmp_path):
         reg = self._make_registry(tmp_path)

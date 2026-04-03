@@ -321,9 +321,19 @@ def test_runtime_manager_failed_scope_does_not_block_other_scope(monkeypatch):
 
 
 def _make_mcp_app() -> FastAPI:
+    from starlette.middleware.base import BaseHTTPMiddleware
+
     from src.gateway.routers.mcp import router
 
     app = FastAPI()
+
+    class _MockIdentityMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            request.state.tenant_id = "default"
+            request.state.role = "admin"
+            return await call_next(request)
+
+    app.add_middleware(_MockIdentityMiddleware)
     app.include_router(router)
     return app
 
@@ -350,7 +360,7 @@ def test_mcp_router_get_returns_new_fields_without_breaking_contract(monkeypatch
         skills={},
     )
 
-    monkeypatch.setattr(mcp_router, "get_extensions_config", lambda: config)
+    monkeypatch.setattr(mcp_router.ExtensionsConfig, "from_tenant", classmethod(lambda cls, tid: config))
 
     with TestClient(_make_mcp_app()) as client:
         response = client.get("/api/mcp/config")
@@ -390,9 +400,15 @@ def test_mcp_router_put_persists_mcp_servers_and_preserves_skills(monkeypatch, t
         skills={"skill-a": SkillStateConfig(enabled=True)},
     )
 
-    monkeypatch.setattr(mcp_router.ExtensionsConfig, "resolve_config_path", classmethod(lambda cls, config_path=None: config_path or config_path))
-    monkeypatch.setattr(mcp_router, "get_extensions_config", lambda: current_config)
-    monkeypatch.setattr(mcp_router, "reload_extensions_config", lambda: reloaded_config)
+    _call_count = {"n": 0}
+
+    def _from_tenant_side_effect(cls, tid):
+        _call_count["n"] += 1
+        # First call is for current_config (preserve skills), second is for reloaded response
+        return current_config if _call_count["n"] == 1 else reloaded_config
+
+    monkeypatch.setattr(mcp_router.ExtensionsConfig, "resolve_config_path", classmethod(lambda cls, cp=None: config_path))
+    monkeypatch.setattr(mcp_router.ExtensionsConfig, "from_tenant", classmethod(_from_tenant_side_effect))
     monkeypatch.setattr(mcp_router.Path, "cwd", classmethod(lambda cls: tmp_path / "backend"))
 
     with TestClient(_make_mcp_app()) as client:
@@ -435,7 +451,7 @@ def test_mcp_router_put_returns_500_when_write_fails(monkeypatch):
     from src.gateway.routers import mcp as mcp_router
 
     monkeypatch.setattr(mcp_router.ExtensionsConfig, "resolve_config_path", classmethod(lambda cls, config_path=None: Path("E:/broken/extensions_config.json")))
-    monkeypatch.setattr(mcp_router, "get_extensions_config", lambda: ExtensionsConfig(mcp_servers={}, skills={}))
+    monkeypatch.setattr(mcp_router.ExtensionsConfig, "from_tenant", classmethod(lambda cls, tid: ExtensionsConfig(mcp_servers={}, skills={})))
     monkeypatch.setattr("builtins.open", Mock(side_effect=OSError("disk full")))
 
     with TestClient(_make_mcp_app()) as client:

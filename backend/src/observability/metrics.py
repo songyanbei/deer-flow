@@ -103,8 +103,13 @@ class WorkflowMetrics:
         self._inc_counter("mcp.call.total", 1, {"tool": tool_name, "agent": agent, "success": str(success)})
         self._record_histogram("mcp.call.duration_ms", duration_ms, {"tool": tool_name, "agent": agent})
 
-    def record_intervention(self, agent: str, tool: str, risk_level: str) -> None:
-        self._inc_counter("intervention.total", 1, {"agent": agent, "tool": tool, "risk_level": risk_level})
+    def record_intervention(self, agent: str, tool: str, risk_level: str, tenant_id: str | None = None, user_id: str | None = None) -> None:
+        labels = {"agent": agent, "tool": tool, "risk_level": risk_level}
+        if tenant_id:
+            labels["tenant_id"] = tenant_id
+        if user_id:
+            labels["user_id"] = user_id
+        self._inc_counter("intervention.total", 1, labels)
 
     def record_helper_retry(self, parent_task_id: str, agent: str) -> None:
         self._inc_counter("helper.retry.total", 1, {"parent_task_id": parent_task_id, "agent": agent})

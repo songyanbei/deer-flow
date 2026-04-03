@@ -123,19 +123,23 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
         if not config.enabled:
             return None
 
-        # Get thread ID and tenant_id from runtime context (LangGraph Server) or config fallback
+        # Get thread ID, tenant_id, and user_id from runtime context (LangGraph
+        # Server) or config fallback.
         thread_id = None
         tenant_id = None
+        user_id = None
         if runtime.context is not None:
             thread_id = runtime.context.get("thread_id")
             tenant_id = runtime.context.get("tenant_id")
-        if not thread_id or not tenant_id:
+            user_id = runtime.context.get("user_id")
+        if not thread_id or not tenant_id or not user_id:
             try:
                 from langgraph.config import get_config
                 cfg = get_config().get("configurable", {})
                 thread_id = thread_id or cfg.get("thread_id")
                 tenant_id = tenant_id or cfg.get("tenant_id", "default")
-            except Exception:
+                user_id = user_id or cfg.get("user_id")
+            except ImportError:
                 pass
         tenant_id = tenant_id or "default"
         if not thread_id:
@@ -161,12 +165,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
 
         # Queue the filtered conversation for memory update
         queue = get_memory_queue()
+        user_scope = user_id or "anonymous"
         queue.add(
             thread_id=thread_id,
             messages=filtered_messages,
             agent_name=self._agent_name,
             tenant_id=tenant_id,
-            dedupe_key=f"conversation:{tenant_id}:{self._agent_name or 'global'}:{thread_id}",
+            user_id=user_id,
+            dedupe_key=f"conversation:{tenant_id}:{user_scope}:{self._agent_name or 'global'}:{thread_id}",
         )
 
         return None

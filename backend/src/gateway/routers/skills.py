@@ -10,18 +10,16 @@ import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from fastapi import Depends
+
 from src.config.extensions_config import ExtensionsConfig, SkillStateConfig, get_extensions_config, reload_extensions_config
+from src.gateway.dependencies import get_tenant_id, require_role
 from src.gateway.path_utils import resolve_thread_virtual_path
 from src.skills import Skill, load_skills
 from src.skills.loader import get_skills_root_path
 
 logger = logging.getLogger(__name__)
 
-# NOTE: This router provides system-level skill configuration shared across all tenants.
-# Skill availability is NOT tenant-scoped by design. Tenant-level capability
-# control is achieved indirectly through allowed_agents filtering at the runtime
-# adapter layer. If per-tenant skill isolation is needed in the future, extend
-# with a tenant_skills_dir pattern similar to tenant_agents_dir.
 router = APIRouter(prefix="/api", tags=["skills"])
 
 
@@ -156,39 +154,17 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
     summary="List All Skills",
     description="Retrieve a list of all available skills from both public and custom directories.",
 )
-async def list_skills() -> SkillsListResponse:
-    """List all available skills.
+async def list_skills(tenant_id: str = Depends(get_tenant_id)) -> SkillsListResponse:
+    """List all available skills (platform + tenant-scoped).
 
     Returns all skills regardless of their enabled status.
 
     Returns:
         A list of all skills with their metadata.
-
-    Example Response:
-        ```json
-        {
-            "skills": [
-                {
-                    "name": "PDF Processing",
-                    "description": "Extract and analyze PDF content",
-                    "license": "MIT",
-                    "category": "public",
-                    "enabled": true
-                },
-                {
-                    "name": "Frontend Design",
-                    "description": "Generate frontend designs and components",
-                    "license": null,
-                    "category": "custom",
-                    "enabled": false
-                }
-            ]
-        }
-        ```
     """
     try:
-        # Load all skills (including disabled ones)
-        skills = load_skills(enabled_only=False)
+        # Load all skills (including disabled ones) with tenant overlay
+        skills = load_skills(enabled_only=False, tenant_id=tenant_id)
         return SkillsListResponse(skills=[_skill_to_response(skill) for skill in skills])
     except Exception as e:
         logger.error(f"Failed to load skills: {e}", exc_info=True)
@@ -201,7 +177,7 @@ async def list_skills() -> SkillsListResponse:
     summary="Get Skill Details",
     description="Retrieve detailed information about a specific skill by its name.",
 )
-async def get_skill(skill_name: str) -> SkillResponse:
+async def get_skill(skill_name: str, tenant_id: str = Depends(get_tenant_id)) -> SkillResponse:
     """Get a specific skill by name.
 
     Args:
@@ -212,20 +188,9 @@ async def get_skill(skill_name: str) -> SkillResponse:
 
     Raises:
         HTTPException: 404 if skill not found.
-
-    Example Response:
-        ```json
-        {
-            "name": "PDF Processing",
-            "description": "Extract and analyze PDF content",
-            "license": "MIT",
-            "category": "public",
-            "enabled": true
-        }
-        ```
     """
     try:
-        skills = load_skills(enabled_only=False)
+        skills = load_skills(enabled_only=False, tenant_id=tenant_id)
         skill = next((s for s in skills if s.name == skill_name), None)
 
         if skill is None:
@@ -244,8 +209,9 @@ async def get_skill(skill_name: str) -> SkillResponse:
     response_model=SkillResponse,
     summary="Update Skill",
     description="Update a skill's enabled status by modifying the skills_state_config.json file.",
+    dependencies=[require_role("admin", "owner")],
 )
-async def update_skill(skill_name: str, request: SkillUpdateRequest) -> SkillResponse:
+async def update_skill(skill_name: str, request: SkillUpdateRequest, tenant_id: str = Depends(get_tenant_id)) -> SkillResponse:
     """Update a skill's enabled status.
 
     This will modify the skills_state_config.json file to update the enabled state.
@@ -281,7 +247,7 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest) -> SkillRes
     """
     try:
         # Find the skill to verify it exists
-        skills = load_skills(enabled_only=False)
+        skills = load_skills(enabled_only=False, tenant_id=tenant_id)
         skill = next((s for s in skills if s.name == skill_name), None)
 
         if skill is None:
@@ -316,7 +282,7 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest) -> SkillRes
         reload_extensions_config()
 
         # Reload the skills to get the updated status (for API response)
-        skills = load_skills(enabled_only=False)
+        skills = load_skills(enabled_only=False, tenant_id=tenant_id)
         updated_skill = next((s for s in skills if s.name == skill_name), None)
 
         if updated_skill is None:
@@ -337,8 +303,9 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest) -> SkillRes
     response_model=SkillInstallResponse,
     summary="Install Skill",
     description="Install a skill from a .skill file (ZIP archive) located in the thread's user-data directory.",
+    dependencies=[require_role("admin", "owner")],
 )
-async def install_skill(request: SkillInstallRequest) -> SkillInstallResponse:
+async def install_skill(request: SkillInstallRequest, tenant_id: str = Depends(get_tenant_id)) -> SkillInstallResponse:
     """Install a skill from a .skill file.
 
     The .skill file is a ZIP archive containing a skill directory with SKILL.md
@@ -395,9 +362,13 @@ async def install_skill(request: SkillInstallRequest) -> SkillInstallResponse:
         if not zipfile.is_zipfile(skill_file_path):
             raise HTTPException(status_code=400, detail="File is not a valid ZIP archive")
 
-        # Get the custom skills directory
-        skills_root = get_skills_root_path()
-        custom_skills_dir = skills_root / "custom"
+        # Determine install target: tenant-scoped or platform custom
+        if tenant_id and tenant_id != "default":
+            from src.config.paths import get_paths
+            custom_skills_dir = get_paths().tenant_dir(tenant_id) / "skills"
+        else:
+            skills_root = get_skills_root_path()
+            custom_skills_dir = skills_root / "custom"
 
         # Create custom directory if it doesn't exist
         custom_skills_dir.mkdir(parents=True, exist_ok=True)
