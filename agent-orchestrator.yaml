@@ -17,7 +17,7 @@ projects:
     name: DeerFlow
     repo: songyanbei/deer-flow
     path: /mnt/e/work/deer-flow
-    defaultBranch: main
+    defaultBranch: codex/save-multi-agent-work
     sessionPrefix: df
     tracker:
       plugin: github
