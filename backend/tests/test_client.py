@@ -1574,3 +1574,86 @@ class TestGatewayConformance:
         parsed = MemoryStatusResponse(**result)
         assert parsed.config.enabled is True
         assert parsed.data.version == "1.0"
+
+
+class TestTenantUserCacheRebuild:
+    """Regression: switching tenant_id or user_id must rebuild the agent."""
+
+    def test_different_tenant_triggers_rebuild(self, client):
+        """Switching tenant_id between calls forces agent rebuild."""
+        agents_created = []
+
+        def fake_create_agent(**kwargs):
+            agent = MagicMock()
+            agents_created.append(agent)
+            return agent
+
+        config_a = client._get_runnable_config("t1", tenant_id="tenant-a", user_id="u1")
+        config_b = client._get_runnable_config("t1", tenant_id="tenant-b", user_id="u1")
+
+        with (
+            patch("src.client.create_chat_model"),
+            patch("src.client.create_agent", side_effect=fake_create_agent),
+            patch("src.client._build_middlewares", return_value=[]),
+            patch("src.client.apply_prompt_template", return_value="prompt"),
+            patch.object(client, "_get_tools", return_value=[]),
+        ):
+            client._ensure_agent(config_a)
+            first_agent = client._agent
+
+            client._ensure_agent(config_b)
+            second_agent = client._agent
+
+        assert len(agents_created) == 2
+        assert first_agent is not second_agent
+
+    def test_different_user_triggers_rebuild(self, client):
+        """Switching user_id between calls forces agent rebuild."""
+        agents_created = []
+
+        def fake_create_agent(**kwargs):
+            agent = MagicMock()
+            agents_created.append(agent)
+            return agent
+
+        config_a = client._get_runnable_config("t1", tenant_id="tenant-a", user_id="user-1")
+        config_b = client._get_runnable_config("t1", tenant_id="tenant-a", user_id="user-2")
+
+        with (
+            patch("src.client.create_chat_model"),
+            patch("src.client.create_agent", side_effect=fake_create_agent),
+            patch("src.client._build_middlewares", return_value=[]),
+            patch("src.client.apply_prompt_template", return_value="prompt"),
+            patch.object(client, "_get_tools", return_value=[]),
+        ):
+            client._ensure_agent(config_a)
+            first_agent = client._agent
+
+            client._ensure_agent(config_b)
+            second_agent = client._agent
+
+        assert len(agents_created) == 2
+        assert first_agent is not second_agent
+
+    def test_same_tenant_user_reuses_agent(self, client):
+        """Same tenant_id + user_id does not trigger rebuild."""
+        mock_agent = MagicMock()
+
+        def fake_create_agent(**kwargs):
+            return mock_agent
+
+        config_a = client._get_runnable_config("t1", tenant_id="tenant-a", user_id="u1")
+        config_b = client._get_runnable_config("t2", tenant_id="tenant-a", user_id="u1")
+
+        with (
+            patch("src.client.create_chat_model"),
+            patch("src.client.create_agent", side_effect=fake_create_agent) as mock_create,
+            patch("src.client._build_middlewares", return_value=[]),
+            patch("src.client.apply_prompt_template", return_value="prompt"),
+            patch.object(client, "_get_tools", return_value=[]),
+        ):
+            client._ensure_agent(config_a)
+            client._ensure_agent(config_b)
+
+        # Only one creation call — cache hit on the second
+        assert mock_create.call_count == 1

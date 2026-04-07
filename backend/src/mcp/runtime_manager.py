@@ -241,5 +241,40 @@ class McpRuntimeManager:
         return "global"
 
 
+
 # Process-level singleton
 mcp_runtime = McpRuntimeManager()
+
+
+async def _unload_tenant_scopes_async(tenant_id: str) -> int:
+    """Disconnect and remove all MCP scopes belonging to a tenant."""
+    prefix = f"tenant:{tenant_id}:"
+    removed = 0
+    async with mcp_runtime._lock:
+        keys_to_remove = [k for k in list(mcp_runtime._scopes.keys()) if k.startswith(prefix)]
+    for key in keys_to_remove:
+        await mcp_runtime.disconnect_scope(key)
+        removed += 1
+    if removed:
+        logger.info("[McpRuntime] Unloaded %d scope(s) for tenant=%s", removed, tenant_id)
+    return removed
+
+
+def unload_tenant_scopes(tenant_id: str) -> int:
+    """Synchronous wrapper: disconnect all MCP scopes for a tenant.
+
+    Used by lifecycle operations (tenant decommission).
+    """
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _unload_tenant_scopes_async(tenant_id))
+                return future.result()
+        else:
+            return loop.run_until_complete(_unload_tenant_scopes_async(tenant_id))
+    except RuntimeError:
+        return asyncio.run(_unload_tenant_scopes_async(tenant_id))

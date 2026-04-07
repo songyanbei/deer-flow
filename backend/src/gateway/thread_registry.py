@@ -111,9 +111,15 @@ class ThreadRegistry:
                 updated["tenant_id"] = tenant_id
                 if user_id:
                     updated["user_id"] = user_id
+                # Backfill created_at for legacy entries promoted from string format
+                if "created_at" not in updated:
+                    updated["created_at"] = datetime.now(timezone.utc).isoformat()
                 data[thread_id] = updated
             else:
-                entry: dict[str, Any] = {"tenant_id": tenant_id}
+                entry: dict[str, Any] = {
+                    "tenant_id": tenant_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
                 if user_id:
                     entry["user_id"] = user_id
                 data[thread_id] = entry
@@ -270,6 +276,79 @@ class ThreadRegistry:
             data[thread_id] = entry
             self._save(data)
             return dict(entry)
+
+    # ── lifecycle API (for admin / cleanup operations) ──────────────────
+
+    def list_threads_by_user(self, tenant_id: str, user_id: str) -> list[str]:
+        """Return all thread IDs belonging to a specific user within a tenant."""
+        with self._lock:
+            result = []
+            for tid, entry in self._load().items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("tenant_id") == tenant_id and entry.get("user_id") == user_id:
+                    result.append(tid)
+            return result
+
+    def delete_threads_by_user(self, tenant_id: str, user_id: str) -> int:
+        """Remove all threads belonging to a specific user within a tenant.
+
+        Returns the number of threads removed.
+        """
+        with self._lock:
+            data = dict(self._load())
+            to_remove = [
+                tid for tid, entry in data.items()
+                if isinstance(entry, dict)
+                and entry.get("tenant_id") == tenant_id
+                and entry.get("user_id") == user_id
+            ]
+            for tid in to_remove:
+                del data[tid]
+            if to_remove:
+                self._save(data)
+            return len(to_remove)
+
+    def delete_threads_by_tenant(self, tenant_id: str) -> int:
+        """Remove all threads belonging to a tenant.
+
+        Returns the number of threads removed.
+        """
+        with self._lock:
+            data = dict(self._load())
+            to_remove = [
+                tid for tid, entry in data.items()
+                if (entry.get("tenant_id") if isinstance(entry, dict) else entry) == tenant_id
+            ]
+            for tid in to_remove:
+                del data[tid]
+            if to_remove:
+                self._save(data)
+            return len(to_remove)
+
+    def list_expired_threads(self, max_age_seconds: int) -> list[str]:
+        """Return thread IDs whose ``created_at`` is older than *max_age_seconds*.
+
+        Threads without a ``created_at`` field are treated as expired.
+        """
+        cutoff = datetime.now(timezone.utc).timestamp() - max_age_seconds
+        with self._lock:
+            result = []
+            for tid, entry in self._load().items():
+                if not isinstance(entry, dict):
+                    result.append(tid)  # legacy entry, no timestamp → treat as expired
+                    continue
+                created = entry.get("created_at")
+                if created is None:
+                    result.append(tid)
+                    continue
+                try:
+                    ts = datetime.fromisoformat(created).timestamp()
+                    if ts < cutoff:
+                        result.append(tid)
+                except (ValueError, TypeError):
+                    result.append(tid)
+            return result
 
 
 # ── Module-level singleton ──────────────────────────────────────────────

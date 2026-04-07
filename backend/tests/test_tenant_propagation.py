@@ -404,3 +404,63 @@ class TestApplyPromptTemplateTenant:
                 agents_dir=Path("/custom2"),
             )
             mock_pdm.assert_called_once_with("agent-y", agents_dir=Path("/custom2"))
+
+
+class TestMemoryMiddlewareOidcSkip:
+    """Regression: MemoryMiddleware must skip memory write when OIDC identity is missing."""
+
+    def _run_middleware(self, runtime_ctx, oidc_env="true"):
+        """Helper that runs MemoryMiddleware.after_agent with the given context."""
+        from src.agents.middlewares.memory_middleware import MemoryMiddleware
+
+        mw = MemoryMiddleware(agent_name="test-agent")
+
+        runtime = SimpleNamespace(context=runtime_ctx)
+        state = {
+            "messages": [
+                SimpleNamespace(type="human", content="hello"),
+                SimpleNamespace(type="ai", content="hi", tool_calls=None),
+            ]
+        }
+
+        with (
+            patch("src.agents.middlewares.memory_middleware.get_memory_config") as mock_cfg,
+            patch("src.agents.middlewares.memory_middleware.get_memory_queue") as mock_queue,
+            patch.dict("os.environ", {"OIDC_ENABLED": oidc_env}),
+        ):
+            mock_cfg.return_value = SimpleNamespace(enabled=True)
+            result = mw.after_agent(state, runtime)
+            return result, mock_queue
+
+    def test_skips_when_oidc_tenant_default(self):
+        """OIDC enabled + tenant_id 'default' → skip memory write."""
+        result, mock_queue = self._run_middleware(
+            {"thread_id": "t1", "tenant_id": "default", "user_id": "u1"}
+        )
+        assert result is None
+        mock_queue.return_value.add.assert_not_called()
+
+    def test_skips_when_oidc_user_missing(self):
+        """OIDC enabled + user_id missing → skip memory write."""
+        result, mock_queue = self._run_middleware(
+            {"thread_id": "t1", "tenant_id": "real-tenant", "user_id": None}
+        )
+        assert result is None
+        mock_queue.return_value.add.assert_not_called()
+
+    def test_proceeds_when_oidc_identity_complete(self):
+        """OIDC enabled + both tenant_id and user_id present → proceed."""
+        result, mock_queue = self._run_middleware(
+            {"thread_id": "t1", "tenant_id": "real-tenant", "user_id": "real-user"}
+        )
+        assert result is None
+        mock_queue.return_value.add.assert_called_once()
+
+    def test_proceeds_when_oidc_disabled(self):
+        """OIDC disabled → proceed even with default tenant."""
+        result, mock_queue = self._run_middleware(
+            {"thread_id": "t1", "tenant_id": "default", "user_id": None},
+            oidc_env="false",
+        )
+        assert result is None
+        mock_queue.return_value.add.assert_called_once()

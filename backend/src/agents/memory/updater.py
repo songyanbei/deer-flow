@@ -422,3 +422,33 @@ def update_memory_from_conversation(messages: list[Any], thread_id: str | None =
     """
     updater = MemoryUpdater()
     return updater.update_memory(messages, thread_id, agent_name, tenant_id, user_id)
+
+
+def migrate_tenant_memory_to_user_level(tenant_id: str, user_id: str) -> bool:
+    """Copy tenant-level memory to user-level path if the user-level file doesn't exist.
+
+    This is a one-time migration helper for upgrading from tenant-level to
+    user-level memory isolation.  If the user already has a memory file,
+    this function does nothing (returns False).
+
+    Args:
+        tenant_id: The tenant to migrate from.
+        user_id: The user to migrate to.
+
+    Returns:
+        True if migration was performed, False if skipped.
+    """
+    import shutil
+
+    tenant_path = _get_memory_file_path(agent_name=None, tenant_id=tenant_id, user_id=None)
+    user_path = _get_memory_file_path(agent_name=None, tenant_id=tenant_id, user_id=user_id)
+
+    if user_path.exists():
+        return False  # already migrated
+
+    if not tenant_path.exists():
+        return False  # nothing to migrate
+
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tenant_path, user_path)
+    return True

@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import os
 import re
 import shutil
 import tempfile
@@ -178,6 +179,14 @@ class DeerFlowClient:
             value = overrides.get(key)
             if value:
                 configurable[key] = value
+
+        # Defense-in-depth: warn when OIDC is enabled but identity is missing.
+        if os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes"):
+            if "tenant_id" not in configurable:
+                logger.warning("DeerFlowClient: OIDC enabled but tenant_id not provided for thread %s", thread_id)
+            if "user_id" not in configurable:
+                logger.warning("DeerFlowClient: OIDC enabled but user_id not provided for thread %s", thread_id)
+
         return RunnableConfig(
             configurable=configurable,
             recursion_limit=overrides.get("recursion_limit", 100),

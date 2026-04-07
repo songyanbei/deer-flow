@@ -150,3 +150,14 @@ def reset_mcp_tools_cache(tenant_id: str | None = None) -> None:
         for tid, tc in _tenant_caches.items():
             _reset_tenant_cache(tc)
         logger.info("MCP tools cache reset for all tenants")
+
+
+def invalidate_tenant(tenant_id: str) -> None:
+    """Remove the cache entry for a specific tenant entirely.
+
+    Used by lifecycle operations (tenant decommission) to free memory.
+    """
+    tc = _tenant_caches.pop(tenant_id, None)
+    if tc:
+        _reset_tenant_cache(tc)
+        logger.info("MCP cache invalidated and removed for tenant=%s", tenant_id)

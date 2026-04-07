@@ -1,3 +1,5 @@
+import logging
+import os
 from typing import NotRequired, override
 
 from langchain.agents import AgentState
@@ -8,6 +10,8 @@ from langgraph.runtime import Runtime
 from src.agents.thread_state import ThreadDataState
 from src.config.paths import Paths, get_paths
 from src.gateway.thread_registry import get_thread_registry
+
+logger = logging.getLogger(__name__)
 
 
 class ThreadDataMiddlewareState(AgentState):
@@ -48,7 +52,7 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         if thread_id is None:
             try:
                 thread_id = get_config().get("configurable", {}).get("thread_id")
-            except Exception:
+            except (ImportError, RuntimeError):
                 pass
         if thread_id is None:
             raise ValueError("Thread ID is required in the context")
@@ -66,11 +70,20 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
                 cfg = get_config().get("configurable", {})
                 tenant_id = tenant_id or cfg.get("tenant_id", "default")
                 user_id = user_id or cfg.get("user_id")
-            except Exception:
+            except (ImportError, RuntimeError):
                 tenant_id = "default"
+
+        # Defense-in-depth: warn when OIDC is enabled but identity is missing.
+        _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
+        if _oidc_enabled:
+            if tenant_id == "default":
+                logger.warning("ThreadDataMiddleware: OIDC enabled but tenant_id fell back to 'default' for thread %s", thread_id)
+            if not user_id:
+                logger.warning("ThreadDataMiddleware: OIDC enabled but user_id missing for thread %s", thread_id)
+
         try:
             get_thread_registry().register(thread_id, tenant_id, user_id=user_id)
-        except Exception:
+        except (ValueError, OSError):
             pass  # best-effort; don't block thread execution
 
         if self._lazy_init:

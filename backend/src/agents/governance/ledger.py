@@ -301,6 +301,58 @@ class GovernanceLedger:
         with self._lock:
             return len(self._entries)
 
+    # ── lifecycle API (for admin / cleanup operations) ──────────────────
+
+    def archive_by_user(self, tenant_id: str, user_id: str) -> int:
+        """Archive (remove) all entries belonging to a specific user within a tenant.
+
+        Returns the number of entries removed.
+        """
+        snapshot = None
+        with self._lock:
+            before = len(self._entries)
+            kept = []
+            for entry in self._entries:
+                if entry.get("tenant_id", "default") == tenant_id and entry.get("user_id") == user_id:
+                    self._by_id.pop(entry["governance_id"], None)
+                    req_id = entry.get("request_id")
+                    if req_id:
+                        self._by_request_id.pop(req_id, None)
+                else:
+                    kept.append(entry)
+            removed = before - len(kept)
+            if removed:
+                self._entries = kept
+                snapshot = list(self._entries)
+        if snapshot is not None:
+            self._rewrite_disk(snapshot)
+        return removed
+
+    def purge_by_tenant(self, tenant_id: str) -> int:
+        """Purge all entries belonging to a specific tenant.
+
+        Returns the number of entries removed.
+        """
+        snapshot = None
+        with self._lock:
+            before = len(self._entries)
+            kept = []
+            for entry in self._entries:
+                if entry.get("tenant_id", "default") == tenant_id:
+                    self._by_id.pop(entry["governance_id"], None)
+                    req_id = entry.get("request_id")
+                    if req_id:
+                        self._by_request_id.pop(req_id, None)
+                else:
+                    kept.append(entry)
+            removed = before - len(kept)
+            if removed:
+                self._entries = kept
+                snapshot = list(self._entries)
+        if snapshot is not None:
+            self._rewrite_disk(snapshot)
+        return removed
+
     def clear(self) -> None:
         """Remove all entries (testing only)."""
         with self._lock:

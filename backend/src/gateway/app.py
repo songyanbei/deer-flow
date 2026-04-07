@@ -10,6 +10,7 @@ from src.config.app_config import get_app_config
 from src.gateway.config import get_gateway_config
 from src.gateway.middleware.oidc import OIDCAuthMiddleware
 from src.gateway.middleware.oidc_config import load_oidc_config
+from src.admin.router import router as admin_router
 from src.gateway.routers import agents, artifacts, governance, interventions, mcp, memory, models, runtime, skills, uploads
 from src.observability import WorkflowMetrics, init_observability
 
@@ -171,6 +172,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Runtime API is mounted at /api/runtime
     app.include_router(runtime.router)
+
+    # Admin API is mounted at /api/admin
+    app.include_router(admin_router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:

@@ -180,6 +180,31 @@ class MemoryUpdateQueue:
             self._queue.clear()
             self._processing = False
 
+    # ── lifecycle API (for admin / cleanup operations) ──────────────────
+
+    def cancel_by_user(self, tenant_id: str, user_id: str) -> int:
+        """Cancel all pending updates for a specific user within a tenant.
+
+        Returns the number of cancelled items.
+        """
+        with self._lock:
+            before = len(self._queue)
+            self._queue = [
+                c for c in self._queue
+                if not (c.tenant_id == tenant_id and c.user_id == user_id)
+            ]
+            return before - len(self._queue)
+
+    def cancel_by_tenant(self, tenant_id: str) -> int:
+        """Cancel all pending updates for a specific tenant.
+
+        Returns the number of cancelled items.
+        """
+        with self._lock:
+            before = len(self._queue)
+            self._queue = [c for c in self._queue if c.tenant_id != tenant_id]
+            return before - len(self._queue)
+
     @property
     def pending_count(self) -> int:
         """Get the number of pending updates."""

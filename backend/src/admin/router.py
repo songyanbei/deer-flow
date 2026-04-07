@@ -1,0 +1,86 @@
+"""Admin API router — lifecycle management endpoints.
+
+All endpoints require the ``admin`` or ``owner`` role.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from src.admin.lifecycle_manager import LifecycleManager
+from src.gateway.dependencies import get_tenant_id, require_role
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def _get_manager() -> LifecycleManager:
+    return LifecycleManager()
+
+
+@router.delete(
+    "/users/{user_id}",
+    dependencies=[require_role("admin", "owner")],
+    summary="Delete all data for a user within the caller's tenant",
+)
+async def delete_user(
+    user_id: str,
+    tenant_id: str = Query(..., description="Tenant to scope the deletion"),
+    caller_tenant: str = Depends(get_tenant_id),
+) -> dict:
+    # Prevent cross-tenant deletion: owner/admin can only manage their own tenant.
+    if caller_tenant != tenant_id and caller_tenant != "default":
+        raise HTTPException(status_code=403, detail="Cannot delete users in another tenant")
+    result = _get_manager().delete_user(tenant_id, user_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "threads_removed": result.threads_removed,
+        "memory_queue_cancelled": result.memory_queue_cancelled,
+        "ledger_entries_removed": result.ledger_entries_removed,
+        "filesystem_cleaned": result.filesystem_cleaned,
+    }
+
+
+@router.delete(
+    "/tenants/{tenant_id}",
+    dependencies=[require_role("admin", "owner")],
+    summary="Decommission an entire tenant",
+)
+async def decommission_tenant(
+    tenant_id: str,
+    caller_tenant: str = Depends(get_tenant_id),
+) -> dict:
+    # Prevent cross-tenant decommission: owner/admin can only manage their own tenant.
+    if caller_tenant != tenant_id and caller_tenant != "default":
+        raise HTTPException(status_code=403, detail="Cannot decommission another tenant")
+    result = _get_manager().decommission_tenant(tenant_id)
+    return {
+        "status": "ok",
+        "tenant_id": tenant_id,
+        "threads_removed": result.threads_removed,
+        "memory_queue_cancelled": result.memory_queue_cancelled,
+        "ledger_entries_removed": result.ledger_entries_removed,
+        "mcp_scopes_unloaded": result.mcp_scopes_unloaded,
+        "filesystem_cleaned": result.filesystem_cleaned,
+    }
+
+
+@router.post(
+    "/cleanup/expired-threads",
+    dependencies=[require_role("admin", "owner")],
+    summary="Clean up threads older than max_age_seconds",
+)
+async def cleanup_expired_threads(
+    max_age_seconds: int = Query(default=604800, ge=3600, description="Max thread age in seconds (default 7 days)"),
+) -> dict:
+    result = _get_manager().cleanup_expired_threads(max_age_seconds)
+    return {
+        "status": "ok",
+        "threads_removed": result.threads_removed,
+        "max_age_seconds": max_age_seconds,
+    }

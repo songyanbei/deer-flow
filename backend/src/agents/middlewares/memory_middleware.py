@@ -143,18 +143,23 @@ class MemoryMiddleware(AgentMiddleware[MemoryMiddlewareState]):
                 thread_id = thread_id or cfg.get("thread_id")
                 tenant_id = tenant_id or cfg.get("tenant_id", "default")
                 user_id = user_id or cfg.get("user_id")
-            except Exception:
+            except (ImportError, RuntimeError):
                 pass
         tenant_id = tenant_id or "default"
         if not thread_id:
             print("MemoryMiddleware: No thread_id in context, skipping memory update")
             return None
 
-        # When OIDC is enabled, missing user_id is an identity break — skip
-        # memory write to prevent tenant-level data leakage.
-        if not user_id and os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes"):
-            logger.warning("MemoryMiddleware: OIDC enabled but user_id missing for thread %s, skipping memory write", thread_id)
-            return None
+        # When OIDC is enabled, missing or default identity is an isolation
+        # break — skip memory write to prevent cross-tenant/cross-user leakage.
+        _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
+        if _oidc_enabled:
+            if tenant_id == "default":
+                logger.warning("MemoryMiddleware: OIDC enabled but tenant_id fell back to 'default' for thread %s, skipping memory write", thread_id)
+                return None
+            if not user_id:
+                logger.warning("MemoryMiddleware: OIDC enabled but user_id missing for thread %s, skipping memory write", thread_id)
+                return None
 
         # Get messages from state
         messages = state.get("messages", [])
