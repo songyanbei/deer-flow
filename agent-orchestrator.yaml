@@ -37,12 +37,10 @@ projects:
       - 开发前必读: collaboration/features/<需求>.md
       - 开发前必读: collaboration/architecture/ 下对应的架构文档
       - 开发前必读: collaboration/handoffs/ 下对应的阻塞记录
-      - 后端只改 backend/，前端只改 frontend/，绝不越界
-      - 发现对方缺能力 → 写入 collaboration/handoffs/ 对应文件（open）
-      - 对方请求你的 → 实现后标记 closed
-      - 严格按 checklist 逐项完成，完成一项 commit 一次
+      - 如果你是 reviewer/审查角色：禁止修改任何代码文件，只输出审查报告
+      - 如果你是开发角色：后端只改 backend/，前端只改 frontend/，绝不越界
+      - 严格按 checklist 逐项完成
       - 使用 conventional commits (feat: / fix: / refactor: / test:)
-      - 完成后更新 feature 文档状态
       - 创建 PR 时描述中加 Closes #<issue-number>
 
 
