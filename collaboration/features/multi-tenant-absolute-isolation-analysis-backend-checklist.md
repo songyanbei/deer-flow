@@ -43,14 +43,15 @@
   - 新增 `migrate_tenant_memory_to_user_level()` 迁移辅助函数，支持一次性迁移。
   - prompt 注入链已补齐 `user_id` 传播：`apply_prompt_template()` → `_get_memory_context()` → `get_memory_data()` 全链路传入 `user_id`。
   - executor `_build_context()` → `get_persistent_domain_memory_context()` → `get_memory_data()` 全链路传入 `user_id`。
-  - 已知差距：GovernanceLedger 持久化仍为全局单文件 `governance_ledger.jsonl`，`paths.tenant_user_governance_ledger()` 已定义但未接入；当前通过 query 过滤实现逻辑隔离，存储级隔离留后续优化。
+  - GovernanceLedger 已实现存储级隔离：`record()` 根据 `tenant_id` + `user_id` 写入 `tenants/{tid}/users/{uid}/governance_ledger.jsonl`；无 user_id 或 `default` 租户回退全局文件；`_load_from_disk()` 自动扫描全局 + per-user 文件。
   - 剩余差距：兼容窗口结束后旧路径禁写策略，仍应继续作为文档/实现待补项保留。
 
 - Task Pack D `租户级共享资源隔离`：`基本完成`
   - skills 已支持 tenant 目录加载与 tenant 安装路径。
-  - `extensions_config.json` 已形成“平台基线 + tenant overlay”模型。
+  - `extensions_config.json` 已形成”平台基线 + tenant overlay”模型。
   - MCP runtime scope、cache、tools 链路都已补 tenant 维度。
   - policy registry 已按 tenant 分桶。
+  - 子智能体 skills/tools 租户传播已补齐：`task_tool.py` 的 `get_skills_prompt_section(tenant_id=)` 和 `get_available_tools(tenant_id=)` 调用已传入 `tenant_id`。
   - 剩余差距：若后续要把 policy 持久化或进一步固化装载时机，仍可继续细化，但当前隔离主目标已基本达成。
 
 - Task Pack E `RBAC 执行层`：`基本完成`

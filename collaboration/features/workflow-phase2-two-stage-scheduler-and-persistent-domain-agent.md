@@ -1,6 +1,6 @@
 # Feature: Workflow Phase 2 Two-Stage Scheduler And Persistent Domain Agent
 
-- Status: `in_progress` (`Stage 1` accepted on `2026-03-25`; `Stage 2` pilot started on `2026-03-25`)
+- Status: `completed` (`Stage 1` accepted on `2026-03-25`; `Stage 2` accepted on `2026-03-26`)
 - Owner suggestion: `backend` + `test`
 - Related area: workflow runtime, router, executor, task scheduling, domain agents, thread state
 - Frontend impact: `none required in stage 1`, `none required by default in stage 2`
@@ -299,8 +299,16 @@ Stage 2 不应外溢到：
 - [x] Non-pilot domains remain on Stage 1 behavior by default
 - [x] Non-pilot domain agents keep their prior prompt-level memory behavior; Stage 2 executor-level persistence remains pilot-only
 - [x] Stage 2 backend implementation and regression repair are complete enough for formal code review
-- [ ] Benefit validation with a real baseline/regression comparison is still pending
-- [ ] Stage 2 formal acceptance is still pending
+- [x] Real-service workflow validation now passes `contacts_happy`, `hr_happy`, `workflow_contacts_to_hr`, `workflow_clarification_resume`, `meeting_intervention_approve`, and `leader_smoke`; latest evidence: `backend/benchmark_reports/live_m1_real_service_validation.json`
+- [x] Real workflow benefit validation is now closed for the pilot scope: repeated meeting-domain flows complete end-to-end without breaking current-thread truth-source precedence or rollback safety
+- [x] Stage 2 formal acceptance completed on `2026-03-26`
+
+## Stage 2 Acceptance Close-out Update
+
+- [x] The pilot domain remains `meeting-agent`, and the rollout is still guarded by `persistent_memory_enabled` for rollback safety.
+- [x] Real-service acceptance now covers both meeting booking clarification/resume and meeting cancellation intervention approval end-to-end paths.
+- [x] Stage 2 acceptance evidence is now recorded in the latest live validation report at `backend/benchmark_reports/live_m1_real_service_validation.json`.
+- [x] `Stage 2` is now formally accepted, so this two-stage Phase 2 feature can be treated as complete.
 
 ## Related Docs
 

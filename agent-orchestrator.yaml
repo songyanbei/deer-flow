@@ -1,0 +1,65 @@
+##############################################
+# DeerFlow — Agent Orchestrator Configuration
+##############################################
+
+port: 3000
+
+# ──────────────── 全局默认 ────────────────
+defaults:
+  runtime: tmux
+  agent: claude-code
+  workspace: worktree
+  notifiers: [desktop]
+
+# ──────────────── 项目配置 ────────────────
+projects:
+  deer-flow:
+    name: DeerFlow
+    repo: songyanbei/deer-flow
+    path: /mnt/e/work/deer-flow
+    defaultBranch: main
+    sessionPrefix: df
+    tracker:
+      plugin: github
+    scm:
+      plugin: github
+    symlinks: [.env, .claude]
+
+    # 默认 agent 配置（不指定 model，各 CLI 用自己的默认值）
+    # Claude Code → 读 ~/.claude/ 配置（opus4.6）
+    # Codex → 读 ~/.config/codex/config.toml（gpt-5.4）
+    agentConfig:
+      permissions: skip
+      systemPromptFile: /mnt/e/work/deer-flow/prompts/backend-dev.md
+
+    # 通用规则（所有 agent 都会读到）
+    agentRules: |
+      - 开发前必读: collaboration/features/<需求>.md
+      - 开发前必读: collaboration/architecture/ 下对应的架构文档
+      - 开发前必读: collaboration/handoffs/ 下对应的阻塞记录
+      - 后端只改 backend/，前端只改 frontend/，绝不越界
+      - 发现对方缺能力 → 写入 collaboration/handoffs/ 对应文件（open）
+      - 对方请求你的 → 实现后标记 closed
+      - 严格按 checklist 逐项完成，完成一项 commit 一次
+      - 使用 conventional commits (feat: / fix: / refactor: / test:)
+      - 完成后更新 feature 文档状态
+      - 创建 PR 时描述中加 Closes #<issue-number>
+
+
+# ──────────────── 自动响应规则 ────────────────
+reactions:
+  ci-failed:
+    auto: true
+    action: send-to-agent
+    retries: 2
+  changes-requested:
+    auto: true
+    action: send-to-agent
+    escalateAfter: 30m
+  approved-and-green:
+    auto: false
+    action: notify
+  agent-stuck:
+    threshold: 10m
+    action: notify
+    priority: urgent

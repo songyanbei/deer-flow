@@ -1,194 +1,199 @@
 # Workflow Platform Capability Standardization Backend Checklist
 
 - Audience: `backend`
-- Status: `implemented` — 代码 + 测试已交付，pending formal code review
-- Goal: 把已验证通过的能力抽象成平台标准，而不是继续在单个 agent 上复制特例
+- Status: `implemented`
+- Last aligned with code: `2026-03-27`
+- Goal: treat validated runtime capabilities as reusable platform standards instead of per-agent one-off wiring
 
-## Backend Role
-
-后端在本阶段负责三件事：
-
-1. 统一梳理当前能力归属
-2. 定义新 agent 的最小接入模型
-3. 定义并固化 capability profile 的 admission contract
-
-本阶段不是扩新业务 agent，也不是继续做单个 pilot 的需求实现。
-
-## Scope
+## Backend Scope
 
 ### In Scope
 
-1. 梳理当前 backend 已有能力，区分：
-   - `Platform Core`
-   - `Capability Profile`
-   - `Pilot / Experimental`
-
-2. 对齐 agent config 的最小接入面
-   - 哪些字段属于用户需要理解的最小输入
-   - 哪些字段属于平台内部 wiring，不应进一步暴露
-
-3. 为第一批 profile 定义 admission contract
-   - `persistent_domain_memory`
-   - `domain_runbook_support`
-   - `domain_verifier_pack`
-   - `governance_strict_mode`
-
-4. 明确 admission contract 对应的 backend 责任
-   - config schema
-   - validator
-   - runtime default behavior
-   - rollback semantics
+1. Standardize platform capability layering.
+2. Define the minimum onboarding contract for new agents.
+3. Define admission contracts for the first batch of capability profiles.
+4. Expose one readiness entry point that aggregates onboarding, platform-core wiring, and profile admission.
 
 ### Out Of Scope
 
-1. 新增业务 domain agent
-2. 全量推广 persistent memory 到更多 domain
-3. 重写 scheduler / governance / intervention 实现
-4. 新增 frontend 配置页
-5. Knowledge Harness / Improvement Harness
+1. Adding a new business-domain agent.
+2. Rewriting scheduler, governance, or intervention runtime.
+3. Rolling persistent memory out to every domain.
+4. Frontend onboarding UI.
 
-## Required Backend Outputs
+## Delivered
 
-### 1. Platform Capability Inventory — ✅ Delivered
+### 1. Platform Capability Inventory
 
-> 代码：`backend/src/config/platform_capabilities.py`
-> 测试：`backend/tests/test_platform_capabilities.py` (12 tests)
+- Code: `backend/src/config/platform_capabilities.py`
+- Tests: `backend/tests/test_platform_capabilities.py` (`19` tests)
 
-后端已输出能力清单，共 14 项能力分三层：
+Current inventory in code:
 
-**Platform Core (8)**:
-1. ✅ engine registry
-2. ✅ workflow runtime
-3. ✅ parallel scheduler
-4. ✅ intervention / clarification / resume protocol
-5. ✅ runtime hook harness
-6. ✅ governance core
-7. ✅ observability base path
-8. ✅ verifier runtime integration
+- `20` total capabilities
+- `14` Platform Core
+- `4` Capability Profile
+- `2` Pilot / Experimental
 
-**Capability Profile (4)**:
-1. ✅ persistent domain memory
-2. ✅ domain runbook support
-3. ✅ domain verifier pack
-4. ✅ governance strict mode
+Current `Platform Core` list:
 
-**Pilot / Experimental (2)**:
-1. ✅ meeting persistent memory hint extraction
-2. ✅ meeting memory write-back boundary
+1. `engine_registry`
+2. `workflow_runtime`
+3. `intervention_protocol`
+4. `runtime_hook_harness`
+5. `parallel_scheduler`
+6. `governance_core`
+7. `observability_base`
+8. `verifier_runtime`
+9. `output_guardrails`
+10. `mcp_binding_runtime`
+11. `subagent_delegation`
+12. `middleware_chain`
+13. `build_time_extension_hooks`
+14. `sandbox_workspace_runtime`
 
-### 2. Agent Minimum Onboarding Contract — ✅ Delivered
+Current `Capability Profile` list:
 
-> 代码：`backend/src/config/onboarding.py`
-> 测试：`backend/tests/test_onboarding.py` (9 tests)
+1. `persistent_domain_memory`
+2. `domain_runbook_support`
+3. `domain_verifier_pack`
+4. `governance_strict_mode`
 
-后端已明确全部 18 个 `AgentConfig` 字段的接入分类：
+Current `Pilot / Experimental` list:
 
-**Required（必填）**:
-1. ✅ `name`
-2. ✅ `domain`
+1. `meeting_persistent_memory_hints`
+2. `meeting_memory_writeback_boundary`
 
-**Business Optional（业务可选）**:
-3. ✅ `description`
-4. ✅ `system_prompt_file` / `SOUL.md`
-5. ✅ `available_skills`
-6. ✅ `mcp_binding`
-7. ✅ `tool_groups`
-8. ✅ `engine_type`
-9. ✅ `requested_orchestration_mode`
-10. ✅ `model`
+### 2. Agent Minimum Onboarding Contract
 
-**Platform Internal（平台内部，不应暴露给用户）**:
-11. ✅ `persistent_memory_enabled` — 通过 profile admission 管理
-12. ✅ `persistent_runbook_file` — 通过 profile admission 管理
-13. ✅ `hitl_keywords` — Phase 1 backward-compat
-14. ✅ `intervention_policies` — governance wiring
-15. ✅ `max_tool_calls` — platform safety default
-16. ✅ `guardrail_structured_completion` — platform guardrail
-17. ✅ `guardrail_max_retries` — platform guardrail
-18. ✅ `guardrail_safe_default` — platform guardrail
+- Code: `backend/src/config/onboarding.py`
+- Tests: `backend/tests/test_onboarding.py` (`13` tests)
 
-`validate_onboarding()` 校验器在字段缺失或 internal 字段被显式设置时自动报告 error/warning。
+Current `AgentConfig` onboarding classification:
 
-测试 `test_onboarding_fields_cover_all_agent_config_fields` 确保每次 `AgentConfig` 新增字段时必须同步更新分类。
+- Required: `name`, `domain`
+- Business Optional: `description`, `system_prompt_file`, `available_skills`, `mcp_binding`, `tool_groups`, `engine_type`, `requested_orchestration_mode`, `model`
+- Platform Internal: `persistent_memory_enabled`, `persistent_runbook_file`, `hitl_keywords`, `intervention_policies`, `max_tool_calls`, `guardrail_structured_completion`, `guardrail_max_retries`, `guardrail_safe_default`
 
-### 3. Capability Profile Admission Contract — ✅ Delivered
+Current backend behavior:
 
-> 代码：`backend/src/config/capability_profiles.py`
-> 测试：`backend/tests/test_capability_profiles.py` (18 tests)
+- `validate_onboarding()` errors on missing `name` or `domain`
+- `validate_onboarding()` warns on any platform-internal field carrying a non-default value
+- onboarding field coverage is tied to `AgentConfig`, so new fields must be classified explicitly
 
-后端已为每个 profile 输出统一 admission contract，每个 profile 包含：
+### 3. Capability Profile Admission Contract
 
-1. ✅ profile name + display_name
-2. ✅ profile goal
-3. ✅ why_not_core
-4. ✅ target_domains
-5. ✅ required config
-6. ✅ required docs / artifacts
-7. ✅ required tests
-8. ✅ rollback path
+- Code: `backend/src/config/capability_profiles.py`
+- Tests: `backend/tests/test_capability_profiles.py` (`30` tests)
 
-每个 profile 还有对应的 admission validator：
+Delivered admission model:
 
-- `persistent_domain_memory` → 检查 domain / enable switch / RUNBOOK.md 存在性 / runbook 内容完整性 / hint extractor 注册
-- `domain_runbook_support` → 检查 runbook 文件存在性
-- `domain_verifier_pack` → 检查 domain / verifier registry 注册
-- `governance_strict_mode` → 检查 domain
+- each profile has a `ProfileDefinition`
+- each profile has a validator
+- each validator returns structured issues with severity
+- `validate_all_active_profiles()` auto-detects active profiles
+- `validate_platform_core_wiring()` validates platform-core config integrity
 
-`validate_all_active_profiles()` 可自动检测 agent config 中哪些 profile 被隐式激活。
+Current admission checks:
 
-### 4. Persistent Domain Memory Admission Definition — ✅ Delivered
+- `persistent_domain_memory`
+  - requires non-empty `domain`
+  - requires `persistent_memory_enabled=true`
+  - requires runbook file
+  - warns on incomplete runbook sections
+  - warns when no domain hint extractor is registered
+- `domain_runbook_support`
+  - requires configured or default runbook file to exist
+- `domain_verifier_pack`
+  - requires non-empty `domain`
+  - warns when verifier family is not registered
+- `governance_strict_mode`
+  - requires non-empty `domain`
 
-> 代码：`backend/src/agents/persistent_domain_memory.py`
-> 测试：`backend/tests/test_hint_extractor_registry.py` (8 tests) + `backend/tests/test_persistent_domain_memory.py` (11 existing tests, all pass)
+### 4. Platform Core Wiring Validation
 
-后端已把 pilot-only 的逻辑和平台级 profile 分开：
+- Code: `backend/src/config/capability_profiles.py`
+- Covered by:
+  - `backend/tests/test_capability_profiles.py`
+  - `backend/tests/test_platform_readiness.py`
 
-1. ✅ `persistent_memory_enabled` 只是入口开关 — admission validator 明确检查全部准入条件
-2. ✅ 新 domain 接入前必须满足：
-   - ✅ 明确 domain — admission check `domain_required`
-   - ✅ runbook — admission check `runbook_exists` + `runbook_section_*`
-   - ✅ allowlist / denylist boundary — runbook 内容检查 `allowed` + `must_stay` sections
-   - ✅ truth priority — runbook 内容检查 `conflict` section
-   - ✅ rollback switch — `ProfileDefinition.rollback_doc` 明确说明关闭开关即回退
-   - ✅ regression — `ProfileDefinition.required_tests_doc` 明确回归要求
-3. ✅ domain-specific hint extraction 通过 `DomainHintExtractor` ABC + 注册表实现
-   - `MeetingHintExtractor` 明确标记为 Pilot / Experimental
-   - 新 domain 必须注册自己的 extractor，不得复制 meeting 的实现
-   - admission validator 在域缺少 extractor 时发出 warning
+Current checks in `validate_platform_core_wiring()`:
+
+- output guardrail retry range
+- output guardrail safe default legality
+- MCP binding empty reference detection
+- MCP binding `ephemeral` warning
+- `max_tool_calls` bounds and unusually high values
+
+### 5. Unified Readiness Entry
+
+- Code: `backend/src/config/agents_config.py`
+- Tests: `backend/tests/test_platform_readiness.py` (`4` tests)
+
+Delivered entry point:
+
+- `validate_agent_platform_readiness(config)`
+
+Current aggregation:
+
+1. onboarding
+2. platform core wiring
+3. all active capability profiles
+
+### 6. Supporting Runtime Alignment
+
+Key runtime behaviors now aligned with the standardization docs:
+
+- `load_agent_runbook()` supports explicit runbook config and default `RUNBOOK.md`
+- runbook injection works independently from persistent memory
+- intervention protocol now explicitly includes:
+  - risky-tool intervention
+  - `ask_clarification`
+  - `request_help`
+- build-time hooks are formalized as Platform Core
+- sandbox/workspace runtime is formalized as Platform Core
 
 ## Change Surface
 
-本阶段实际改动面：
+### Core Standardization Modules
 
-**修改的文件**:
-- `backend/src/config/agents_config.py` — 新增 `validate_agent_platform_readiness()` 聚合入口
-- `backend/src/agents/persistent_domain_memory.py` — 引入 `DomainHintExtractor` ABC + 注册表，将 meeting pilot 逻辑封装为 `MeetingHintExtractor`
+- `backend/src/config/platform_capabilities.py`
+- `backend/src/config/onboarding.py`
+- `backend/src/config/capability_profiles.py`
+- `backend/src/config/agents_config.py`
 
-**新增的文件**:
-- `backend/src/config/platform_capabilities.py` — 平台能力清单
-- `backend/src/config/onboarding.py` — 最小接入合约 + 校验
-- `backend/src/config/capability_profiles.py` — Profile 准入合约 + 校验
-- `backend/tests/test_platform_capabilities.py` — 12 tests
-- `backend/tests/test_onboarding.py` — 9 tests
-- `backend/tests/test_capability_profiles.py` — 18 tests
-- `backend/tests/test_hint_extractor_registry.py` — 8 tests
-- `backend/tests/test_platform_readiness.py` — 4 tests
+### Related Runtime Modules
 
-**未改动的文件（符合设计预期）**:
-- `backend/src/agents/governance/` — 无需修改，governance core 已是 Platform Core
-- `backend/src/agents/hooks/` — 无需修改，hook harness 已是 Platform Core
-- `backend/src/agents/thread_state.py` — 无需修改，本阶段不改运行时状态
+- `backend/src/agents/lead_agent/engines/base.py`
+- `backend/src/agents/lead_agent/agent.py`
+- `backend/src/agents/persistent_domain_memory.py`
+- `backend/src/sandbox/middleware.py`
+- `backend/src/sandbox/tools.py`
+- `backend/src/config/paths.py`
 
-所有 validator 和 admission helper 均落在 `backend/src/config/` 标准化模块内，未散落到 domain agent 目录。
+### Relevant Test Files
+
+- `backend/tests/test_platform_capabilities.py` — `19`
+- `backend/tests/test_onboarding.py` — `13`
+- `backend/tests/test_capability_profiles.py` — `30`
+- `backend/tests/test_platform_readiness.py` — `4`
+- `backend/tests/test_hint_extractor_registry.py` — `8`
+- `backend/tests/test_persistent_domain_memory.py` — existing regression coverage
+- `backend/tests/test_build_time_hooks.py` — `22`
+- `backend/tests/test_sandbox_workspace_runtime.py` — `8`
 
 ## Backend Acceptance Criteria
 
-1. ✅ 平台能力分层口径在 backend 侧清晰一致 — `platform_capabilities.py` 中 14 项能力互斥分三层
-2. ✅ 新 agent 最小接入模型在 backend 侧清晰一致 — `onboarding.py` 中 18 字段分类 + `validate_onboarding()`
-3. ✅ capability profile admission contract 在 backend 侧清晰一致 — `capability_profiles.py` 中 4 个 profile 的统一模板 + validator
-4. ✅ persistent domain memory 不再被表述成”开了开关就等于可复制” — admission validator 检查 domain / runbook / hint extractor，`MeetingHintExtractor` 明确标记 Pilot
-5. ✅ 后续新增 domain agent 时，backend 可以依据同一 admission 标准执行 — `validate_agent_platform_readiness()` 一次调用完成 onboarding + profile admission 检查
+1. Capability layering in backend matches the current runtime and is mutually exclusive.
+2. New-agent onboarding is lightweight and centered on business identity plus exposure surface.
+3. Platform-internal fields are not presented as the normal onboarding path.
+4. Capability Profile admission is explicit, checkable, and rollback-aware.
+5. Readiness can be assessed from one backend API/helper call.
+6. Newly promoted Platform Core capabilities are reflected in the canonical inventory and supporting docs.
 
-## Handoff Rule
+## Related Docs
 
-如果 backend 在标准化过程中发现需要 frontend 补充展示、配置或运营入口，不在本阶段自行扩展范围，统一通过 `handoffs/backend-to-frontend.md` 提出。
+- [workflow-platform-capability-standardization.md](E:/work/deer-flow/collaboration/features/workflow-platform-capability-standardization.md)
+- [workflow-platform-capability-standardization-test-checklist.md](E:/work/deer-flow/collaboration/features/workflow-platform-capability-standardization-test-checklist.md)
+- [workflow-platform-capability-standardization-capability-matrix.md](E:/work/deer-flow/collaboration/features/workflow-platform-capability-standardization-capability-matrix.md)
+- [workflow-new-agent-onboarding-guide.md](E:/work/deer-flow/collaboration/features/workflow-new-agent-onboarding-guide.md)

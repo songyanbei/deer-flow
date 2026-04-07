@@ -1,8 +1,8 @@
 # Backend Checklist: Workflow Phase 2 Two-Stage Scheduler And Persistent Domain Agent
 
-- Status: `in_progress` (`Stage 1` backend accepted on `2026-03-25`; `Stage 2` backend pilot in progress)
+- Status: `completed` (`Stage 1` backend accepted on `2026-03-25`; `Stage 2` backend accepted on `2026-03-26`)
 - Depends on: [workflow-phase2-two-stage-scheduler-and-persistent-domain-agent.md](./workflow-phase2-two-stage-scheduler-and-persistent-domain-agent.md)
-- Last updated: `2026-03-25`
+- Last updated: `2026-03-26`
 
 ## Document Intent
 
@@ -254,8 +254,9 @@ Stage 2 的主要改动范围应控制在：
 - [x] Kept non-pilot domains on Stage 1 behavior by default
 - [x] Restored non-pilot domain prompt-level memory behavior while keeping Stage 2 executor-level persistence pilot-only
 - [x] Stage 2 backend implementation is ready for formal code review
-- [ ] Real workflow benefit validation is still pending
-- [ ] Stage 2 backend acceptance is still pending
+- [x] Real-service workflow validation now passes `contacts_happy`, `hr_happy`, `workflow_contacts_to_hr`, `workflow_clarification_resume`, `meeting_intervention_approve`, and `leader_smoke`
+- [x] Real workflow pilot validation is now recorded in `backend/benchmark_reports/live_m1_real_service_validation.json`
+- [x] Stage 2 backend acceptance completed on `2026-03-26`
 
 - [ ] 主 feature 文档状态及时更新
 - [ ] 如阶段边界变化，先回填主文档再扩代码

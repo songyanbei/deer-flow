@@ -1,91 +1,139 @@
 # Workflow Platform Capability Standardization Capability Matrix
 
-- Status: `implemented` — 已代码化为 `backend/src/config/platform_capabilities.py`、`onboarding.py`、`capability_profiles.py`
-- Purpose: 统一记录当前 DeerFlow 能力的层级归属、开放策略和 admission 口径
-- Code Reference: 本矩阵中的分层、接入面、准入合约均有对应的代码实现和测试
+- Status: `implemented`
+- Last aligned with code: `2026-03-27`
+- Source of truth:
+  - `backend/src/config/platform_capabilities.py`
+  - `backend/src/config/onboarding.py`
+  - `backend/src/config/capability_profiles.py`
+  - `backend/src/config/agents_config.py`
+- Related guide:
+  - [workflow-new-agent-onboarding-guide.md](E:/work/deer-flow/collaboration/features/workflow-new-agent-onboarding-guide.md)
 
-## Platform Layer Definitions
+## Layer Definitions
 
 ### Platform Core
 
-- 默认继承
-- 平台负责 wiring
-- 用户新增 agent 时无须理解内部实现
+- All agents inherit by default.
+- Wiring is platform-managed.
+- New agent onboarding should not require users to understand the internals.
 
 ### Capability Profile
 
-- 平台可选高级能力
-- 通过 profile 启用
-- 启用前有 admission check
+- Optional advanced capability.
+- Enabled through profile-level admission instead of ad hoc internal knobs.
+- Must have explicit admission, acceptance, and rollback semantics.
 
 ### Pilot / Experimental
 
-- 已有局部验证
-- 尚未抽象成通用 contract
-- 暂不直接对新 agent 开放
+- Validated in one domain or one implementation slice only.
+- Not ready to open directly to new agents.
+- Must not be generalized until a reusable contract exists.
 
-## Capability Matrix
+## Capability Inventory
 
-> 代码化实现：`backend/src/config/platform_capabilities.py` — `CapabilityTier` 枚举 + `CapabilityDescriptor` 描述 + `get_capability_matrix()` 导出
-> 程序化查询：`list_capabilities(CapabilityTier.PLATFORM_CORE)` / `get_capability("engine_registry")`
+Current canonical inventory: `20` capabilities.
 
-| Capability | Current Layer | Current Evidence | Open Strategy | Notes |
-|---|---|---|---|---|
-| Engine registry | Platform Core | `engine_type` + registry/builder 已全局存在 | Default | 新 agent 不应重复声明内部 builder 规则 |
-| Workflow runtime | Platform Core | planner / router / executor / task_pool 已全局存在 | Default | 属于平台骨架 |
-| Intervention / clarification / resume protocol | Platform Core | `thread_state` / `workflow_resume` / gateway resolve 已统一 | Default | 不应继续暴露成 agent 级协议配置 |
-| Runtime hook harness | Platform Core | interrupt/state-commit hooks 已统一 | Default | 属于平台控制面 |
-| Parallel scheduler | Platform Core | scheduler + graph 路径已作用于 workflow runtime | Default | 不是单一 agent pilot |
-| Governance core | Platform Core | governance engine / ledger / middleware 已存在 | Default | 默认治理路径属于平台能力 |
-| Observability base path | Platform Core | workflow 结构化可观测性已存在 | Default | agent 不应单独处理 trace wiring |
-| Verifier runtime integration | Platform Core | verifier 已挂 runtime hooks | Default | profile 只定义 domain-specific pack |
-| Persistent domain memory runtime entry | Capability Profile | 通用开关与注入入口已存在 | Admission required | 入口已平台化，domain 接入标准未完全产品化 |
-| Domain runbook support | Capability Profile | runbook loader 已存在 | Admission required | 需要明确哪些 profile 必须带 runbook |
-| Domain verifier pack | Capability Profile | runtime verifier integration 已存在 | Admission required | 具体 domain pack 应按准入标准开放 |
-| Governance strict mode | Capability Profile | 治理能力已存在，可进一步按 domain 收紧 | Admission required | 属于 profile，而非默认对所有 agent 开启 |
-| Meeting persistent memory hint extraction | Pilot / Experimental | `meeting-agent` 试点已成立 | Do not generalize directly | 当前仍是 domain-specific 逻辑 |
-| Meeting-specific memory write-back boundary | Pilot / Experimental | meeting pilot 已验证 | Do not generalize directly | 需先抽象 admission contract |
+- `14` Platform Core
+- `4` Capability Profile
+- `2` Pilot / Experimental
+
+### Platform Core
+
+| Capability | Evidence | Open Strategy | Notes |
+|---|---|---|---|
+| `engine_registry` | `engine_type` + registry/builder are global | Default | New agents should not redefine builder wiring |
+| `workflow_runtime` | planner / router / executor / task_pool are global | Default | Core workflow backbone |
+| `intervention_protocol` | `InterventionMiddleware` + `ClarificationMiddleware` + `HelpRequestMiddleware` converge on `thread_state` / `workflow_resume` / gateway resolve | Default | Now explicitly covers risky-tool intervention, user clarification, and help escalation |
+| `runtime_hook_harness` | interrupt / state-commit hooks unified by registry and runner | Default | Platform control-plane capability |
+| `parallel_scheduler` | dependency-aware scheduler integrated into workflow runtime | Default | Not a single-agent pilot |
+| `governance_core` | governance engine / ledger / middleware already exist | Default | Base governance path is platform behavior |
+| `observability_base` | workflow structured observability exists | Default | Agents should not wire traces individually |
+| `verifier_runtime` | verifier hooks integrated into runtime | Default | Domain-specific verifier packs stay in profiles |
+| `output_guardrails` | structured completion guardrail + retry + safe default already wired in executor | Default | Guardrail internals should not be hand-configured per agent |
+| `mcp_binding_runtime` | declarative binding + scope-aware runtime manager | Default | Agents declare references only; runtime owns lifecycle |
+| `subagent_delegation` | subagent executor + concurrency control + task tool | Default | Delegation internals are platform-managed |
+| `middleware_chain` | `_build_middlewares()` auto-composes ordered middleware pipeline | Default | New agents inherit correct chain automatically |
+| `build_time_extension_hooks` | `BuildContext` + `BuildTimeHooks` 4-phase contract + singleton registration | Default | Writable hook surface limited to `available_skills`, `extra_tools`, `metadata` |
+| `sandbox_workspace_runtime` | `Paths` singleton + `ThreadDataMiddleware` + `UploadsMiddleware` + `SandboxMiddleware` + virtual-path translation | Default | Thread workspace and sandbox lifecycle are platform-owned |
+
+### Capability Profile
+
+| Capability | Evidence | Open Strategy | Notes |
+|---|---|---|---|
+| `persistent_domain_memory` | generic toggle + prompt injection entry exist | Admission required | Entry is platformized; domain boundary still needs admission |
+| `domain_runbook_support` | runbook loader + prompt injection exist | Admission required | Independent profile; does not require persistent memory |
+| `domain_verifier_pack` | runtime verifier integration exists | Admission required | Domain verifier family must be explicitly registered |
+| `governance_strict_mode` | base governance exists and can be tightened per domain | Admission required | Stricter than default governance path |
+
+### Pilot / Experimental
+
+| Capability | Evidence | Open Strategy | Notes |
+|---|---|---|---|
+| `meeting_persistent_memory_hints` | meeting hint extraction rules validated only in meeting domain | Do not generalize directly | Still domain-specific |
+| `meeting_memory_writeback_boundary` | meeting write-back boundary validated only in meeting domain | Do not generalize directly | Needs reusable admission contract first |
 
 ## Agent Minimum Onboarding Matrix
 
-> 代码化实现：`backend/src/config/onboarding.py` — `FieldCategory` 枚举 + `ONBOARDING_FIELDS` 分类 + `validate_onboarding()` 校验
-> 程序化查询：`get_onboarding_matrix()` 导出 JSON 格式
+Programmatic export:
 
-| Category | Should User Provide? | Notes |
+- `src.config.onboarding.get_onboarding_matrix()`
+- `src.config.onboarding.validate_onboarding(config)`
+
+### Required
+
+| Field | Should user provide? | Notes |
 |---|---|---|
-| `name` | Yes | 基础身份字段 |
-| `domain` | Yes | 基础身份字段 |
-| `SOUL.md` / prompt | Yes | 业务身份与行为边界 |
-| `available_skills` | Yes | 业务能力暴露 |
-| `mcp_binding` / `tool_groups` | Yes | 外部能力暴露 |
-| `engine_type` | Optional | 运行模式选择，不是必须 |
-| `requested_orchestration_mode` | Optional | 运行模式选择，不是必须 |
-| hook registration details | No | 平台自动 wiring |
-| scheduler internals | No | 平台自动 wiring |
-| intervention protocol internals | No | 平台自动 wiring |
-| governance ledger details | No | 平台自动 wiring |
-| verifier runtime details | No | 平台自动 wiring |
-| persistent memory injection internals | No | 通过 profile + validator 处理 |
+| `name` | Yes | Agent identity |
+| `domain` | Yes | Router discovery and business ownership |
+
+### Business Optional
+
+| Field | Should user provide? | Notes |
+|---|---|---|
+| `description` | Optional | Human-readable description |
+| `system_prompt_file` | Optional | Defaults to `SOUL.md` |
+| `available_skills` | Optional | Skill allowlist; `None` means all enabled skills |
+| `mcp_binding` | Optional | Declarative MCP references only |
+| `tool_groups` | Optional | Tool exposure surface |
+| `engine_type` | Optional | Runtime engine selector |
+| `requested_orchestration_mode` | Optional | Runtime routing hint |
+| `model` | Optional | Per-agent model override |
+
+### Platform Internal
+
+| Field | Should user provide? | Notes |
+|---|---|---|
+| `persistent_memory_enabled` | No | Managed via profile admission |
+| `persistent_runbook_file` | No | Managed via profile admission |
+| `hitl_keywords` | No | Platform governance wiring |
+| `intervention_policies` | No | Platform governance wiring |
+| `max_tool_calls` | No | Platform safety default |
+| `guardrail_structured_completion` | No | Platform guardrail default |
+| `guardrail_max_retries` | No | Platform guardrail default |
+| `guardrail_safe_default` | No | Platform guardrail default |
 
 ## Capability Profile Admission Matrix
 
-> 代码化实现：`backend/src/config/capability_profiles.py` — `ProfileDefinition` + per-profile admission validator + `validate_profile_admission()` 校验
-> 程序化查询：`get_profile_admission_matrix()` 导出 JSON 格式
-> 聚合入口：`backend/src/config/agents_config.py` — `validate_agent_platform_readiness(config)` 一次调用完成 onboarding + profile admission
+Programmatic entry points:
 
-| Profile | Required Config | Required Docs | Required Tests | Rollback Requirement |
+- `src.config.capability_profiles.validate_profile_admission(profile, config)`
+- `src.config.capability_profiles.validate_all_active_profiles(config)`
+- `src.config.agents_config.validate_agent_platform_readiness(config)`
+
+| Profile | Activation Signal | Required Config | Required Artifacts | Rollback |
 |---|---|---|---|---|
-| `persistent_domain_memory` | domain + enable switch | runbook + persistence boundary definition | profile regression + truth precedence regression | 关闭开关后退回默认 thread-truth behavior |
-| `domain_runbook_support` | profile enablement | runbook | runbook injection regression | 关闭后不再注入 runbook context |
-| `domain_verifier_pack` | domain verifier binding | verifier contract doc | verifier regression | 关闭后退回平台默认 verifier path |
-| `governance_strict_mode` | profile enablement | policy / guard boundary doc | governance regression | 关闭后退回默认治理路径 |
+| `persistent_domain_memory` | `persistent_memory_enabled=true` | non-empty `domain` + enable switch | `RUNBOOK.md` and persistence boundary docs | disable switch and revert to thread-truth-only behavior |
+| `domain_runbook_support` | explicit runbook file or default `RUNBOOK.md` exists | runbook config optional; file must exist | `RUNBOOK.md` or configured runbook file | remove runbook config/file and stop injecting runbook |
+| `domain_verifier_pack` | verifier registry contains current `domain` | non-empty `domain` | verifier family registered + verifier contract docs | unregister or disable domain verifier pack |
+| `governance_strict_mode` | `intervention_policies` or `hitl_keywords` present | non-empty `domain` | domain policy / guard boundary docs | remove stricter domain-scoped rules |
 
 ## Standardization Rule
 
-只有同时满足以下条件的能力，才允许从 `Pilot / Experimental` 升级为 `Capability Profile`：
+Only capabilities that satisfy all of the following may graduate from `Pilot / Experimental` to `Capability Profile`:
 
-1. 有稳定的平台入口
-2. 有明确 admission requirement
-3. 有明确 acceptance
-4. 有明确 rollback
-5. 不再依赖单一 domain 的特定实现细节
+1. Stable platform entry point exists.
+2. Admission requirements are explicit and checkable.
+3. Acceptance and regression expectations are explicit.
+4. Rollback semantics are explicit.
+5. The capability no longer depends on one domain's hard-coded implementation details.
