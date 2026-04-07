@@ -39,13 +39,14 @@ async def delete_user(
             raise HTTPException(status_code=403, detail="Cannot delete users in another tenant")
     result = _get_manager().delete_user(tenant_id, user_id)
     return {
-        "status": "ok",
+        "status": "partial" if result.has_errors else "ok",
         "tenant_id": tenant_id,
         "user_id": user_id,
         "threads_removed": result.threads_removed,
         "memory_queue_cancelled": result.memory_queue_cancelled,
         "ledger_entries_removed": result.ledger_entries_removed,
         "filesystem_cleaned": result.filesystem_cleaned,
+        **({"errors": result.errors} if result.has_errors else {}),
     }
 
 
@@ -65,13 +66,14 @@ async def decommission_tenant(
             raise HTTPException(status_code=403, detail="Cannot decommission another tenant")
     result = _get_manager().decommission_tenant(tenant_id)
     return {
-        "status": "ok",
+        "status": "partial" if result.has_errors else "ok",
         "tenant_id": tenant_id,
         "threads_removed": result.threads_removed,
         "memory_queue_cancelled": result.memory_queue_cancelled,
         "ledger_entries_removed": result.ledger_entries_removed,
         "mcp_scopes_unloaded": result.mcp_scopes_unloaded,
         "filesystem_cleaned": result.filesystem_cleaned,
+        **({"errors": result.errors} if result.has_errors else {}),
     }
 
 

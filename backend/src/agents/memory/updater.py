@@ -1,11 +1,15 @@
 """Memory updater for reading, writing, and updating memory data."""
 
 import json
+import logging
+import os
 import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from src.agents.memory.prompt import (
     MEMORY_UPDATE_PROMPT,
@@ -220,6 +224,21 @@ def _save_memory_to_file(memory_data: dict[str, Any], agent_name: str | None = N
         True if successful, False otherwise.
     """
     file_path = _get_memory_file_path(agent_name, tenant_id, user_id)
+
+    # Old-path write prohibition: when OIDC is enabled and user_id is
+    # available, memory MUST be written to the user-scoped path.  Reject
+    # writes that would land on the tenant-level (or global) path instead,
+    # preventing cross-user memory pollution.
+    if os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes"):
+        effective_tenant = tenant_id if tenant_id and tenant_id != "default" else None
+        effective_user = user_id if user_id and user_id != "anonymous" else None
+        if effective_tenant and not effective_user:
+            logger.warning(
+                "[Memory] OIDC enabled but user_id missing — refusing to write "
+                "to tenant-level path %s (would pollute shared memory)",
+                file_path,
+            )
+            return False
 
     try:
         # Ensure directory exists
