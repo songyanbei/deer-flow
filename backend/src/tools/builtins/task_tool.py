@@ -60,20 +60,8 @@ def task_tool(
     if config is None:
         return f"Error: Unknown subagent type '{subagent_type}'. Available: general-purpose, bash"
 
-    # Build config overrides
-    overrides: dict = {}
-
-    skills_section = get_skills_prompt_section()
-    if skills_section:
-        overrides["system_prompt"] = config.system_prompt + "\n\n" + skills_section
-
-    if max_turns is not None:
-        overrides["max_turns"] = max_turns
-
-    if overrides:
-        config = replace(config, **overrides)
-
-    # Extract parent context from runtime
+    # Extract parent context from runtime (must happen before skills/tools
+    # so tenant_id is available for scoping)
     sandbox_state = None
     thread_data = None
     thread_id = None
@@ -97,12 +85,25 @@ def task_tool(
         # Get or generate trace_id for distributed tracing
         trace_id = metadata.get("trace_id") or str(uuid.uuid4())[:8]
 
+    # Build config overrides (after runtime extraction so tenant_id is available)
+    overrides: dict = {}
+
+    skills_section = get_skills_prompt_section(tenant_id=tenant_id)
+    if skills_section:
+        overrides["system_prompt"] = config.system_prompt + "\n\n" + skills_section
+
+    if max_turns is not None:
+        overrides["max_turns"] = max_turns
+
+    if overrides:
+        config = replace(config, **overrides)
+
     # Get available tools (excluding task tool to prevent nesting)
     # Lazy import to avoid circular dependency
     from src.tools import get_available_tools
 
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
-    tools = get_available_tools(model_name=parent_model, subagent_enabled=False)
+    tools = get_available_tools(model_name=parent_model, subagent_enabled=False, tenant_id=tenant_id)
 
     # Create executor
     executor = SubagentExecutor(

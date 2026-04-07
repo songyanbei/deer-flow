@@ -4,12 +4,16 @@ Every governance decision (allow, deny, require_intervention) produces exactly
 one ``GovernanceLedgerEntry``.  The ledger is the single source of truth for
 Stage 5B operator queue / history queries.
 
-Storage: JSON-lines file at ``{data_dir}/governance_ledger.jsonl``.
+Storage: per-user JSONL files at ``{data_dir}/tenants/{tid}/users/{uid}/governance_ledger.jsonl``.
+Entries without a valid ``tenant_id``/``user_id`` fall back to the global
+``{data_dir}/governance_ledger.jsonl``.
+
 In-memory index provides fast lookups by thread/run/request_id/status.
 """
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
@@ -54,17 +58,56 @@ class GovernanceLedger:
         self._by_request_id: dict[str, GovernanceLedgerEntry] = {}
 
         self._data_dir = data_dir or _DEFAULT_DATA_DIR
-        self._file_path = os.path.join(self._data_dir, _LEDGER_FILENAME)
+        self._global_file_path = os.path.join(self._data_dir, _LEDGER_FILENAME)
         self._load_from_disk()
+
+    # -- File path routing ----------------------------------------------------
+
+    def _file_path_for_entry(self, entry: GovernanceLedgerEntry) -> str:
+        """Return the JSONL file path an entry should be stored in.
+
+        Entries with a valid ``tenant_id`` (not ``"default"``) **and**
+        ``user_id`` are routed to per-user files.  Everything else falls
+        back to the global file.
+        """
+        tenant_id = entry.get("tenant_id")
+        user_id = entry.get("user_id")
+        if tenant_id and tenant_id != "default" and user_id:
+            return os.path.join(
+                self._data_dir, "tenants", tenant_id, "users", user_id, _LEDGER_FILENAME,
+            )
+        return self._global_file_path
 
     # -- Persistence ----------------------------------------------------------
 
     def _load_from_disk(self) -> None:
-        """Load existing entries from JSONL file on startup."""
-        if not os.path.isfile(self._file_path):
-            return
+        """Load existing entries from all JSONL files on startup.
+
+        Scans the global ledger file **and** per-user files under
+        ``tenants/*/users/*/governance_ledger.jsonl``.
+        """
+        files_to_load: list[str] = []
+        if os.path.isfile(self._global_file_path):
+            files_to_load.append(self._global_file_path)
+        # Discover per-user ledger files
+        pattern = os.path.join(self._data_dir, "tenants", "*", "users", "*", _LEDGER_FILENAME)
+        for path in glob.glob(pattern):
+            if path not in files_to_load:
+                files_to_load.append(path)
+
+        for fp in files_to_load:
+            self._load_file(fp)
+
+        if self._entries:
+            logger.info(
+                "[GovernanceLedger] Loaded %d entries from %d file(s)",
+                len(self._entries), len(files_to_load),
+            )
+
+    def _load_file(self, file_path: str) -> None:
+        """Load entries from a single JSONL file into the in-memory index."""
         try:
-            with open(self._file_path, encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -75,28 +118,33 @@ class GovernanceLedger:
                     req_id = entry.get("request_id")
                     if req_id:
                         self._by_request_id[req_id] = entry
-            logger.info("[GovernanceLedger] Loaded %d entries from %s", len(self._entries), self._file_path)
         except Exception:
-            logger.exception("[GovernanceLedger] Failed to load ledger from %s", self._file_path)
+            logger.exception("[GovernanceLedger] Failed to load ledger from %s", file_path)
 
     def _append_to_disk(self, entry: GovernanceLedgerEntry) -> None:
-        """Append a single entry to the JSONL file."""
+        """Append a single entry to its scoped JSONL file."""
+        file_path = self._file_path_for_entry(entry)
         try:
-            os.makedirs(self._data_dir, exist_ok=True)
-            with open(self._file_path, "a", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except Exception:
-            logger.exception("[GovernanceLedger] Failed to append entry to %s", self._file_path)
+            logger.exception("[GovernanceLedger] Failed to append entry to %s", file_path)
 
-    def _rewrite_disk(self, snapshot: list[GovernanceLedgerEntry]) -> None:
-        """Rewrite the entire JSONL file from a snapshot taken under lock."""
+    def _rewrite_file(self, file_path: str, entries: list[GovernanceLedgerEntry]) -> None:
+        """Rewrite a single JSONL file from a list of entries."""
         try:
-            os.makedirs(self._data_dir, exist_ok=True)
-            with open(self._file_path, "w", encoding="utf-8") as f:
-                for entry in snapshot:
+            if not entries:
+                # No entries left — remove the file
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                return
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                for entry in entries:
                     f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except Exception:
-            logger.exception("[GovernanceLedger] Failed to rewrite ledger at %s", self._file_path)
+            logger.exception("[GovernanceLedger] Failed to rewrite ledger at %s", file_path)
 
     # -- Write ----------------------------------------------------------------
 
@@ -206,10 +254,11 @@ class GovernanceLedger:
             entry["resolved_at"] = _utc_now_iso()
             entry["resolved_by"] = resolved_by
 
-            # Take snapshot under lock for safe disk rewrite
-            snapshot = list(self._entries)
+            # Rewrite only the file that contains this entry
+            target_file = self._file_path_for_entry(entry)
+            snapshot = [e for e in self._entries if self._file_path_for_entry(e) == target_file]
 
-        self._rewrite_disk(snapshot)
+        self._rewrite_file(target_file, snapshot)
 
         logger.info(
             "[GovernanceLedger] Resolved governance_id=%s → status=%s resolved_by=%s",
@@ -308,9 +357,9 @@ class GovernanceLedger:
 
         Returns the number of entries removed.
         """
-        snapshot = None
+        affected_files: dict[str, list[GovernanceLedgerEntry]] = {}
+        removed = 0
         with self._lock:
-            before = len(self._entries)
             kept = []
             for entry in self._entries:
                 if entry.get("tenant_id", "default") == tenant_id and entry.get("user_id") == user_id:
@@ -318,14 +367,18 @@ class GovernanceLedger:
                     req_id = entry.get("request_id")
                     if req_id:
                         self._by_request_id.pop(req_id, None)
+                    fp = self._file_path_for_entry(entry)
+                    affected_files.setdefault(fp, [])  # mark file as affected
+                    removed += 1
                 else:
                     kept.append(entry)
-            removed = before - len(kept)
             if removed:
                 self._entries = kept
-                snapshot = list(self._entries)
-        if snapshot is not None:
-            self._rewrite_disk(snapshot)
+                # Build remaining-entries snapshot per affected file
+                for fp in affected_files:
+                    affected_files[fp] = [e for e in self._entries if self._file_path_for_entry(e) == fp]
+        for fp, remaining in affected_files.items():
+            self._rewrite_file(fp, remaining)
         return removed
 
     def purge_by_tenant(self, tenant_id: str) -> int:
@@ -333,9 +386,9 @@ class GovernanceLedger:
 
         Returns the number of entries removed.
         """
-        snapshot = None
+        affected_files: dict[str, list[GovernanceLedgerEntry]] = {}
+        removed = 0
         with self._lock:
-            before = len(self._entries)
             kept = []
             for entry in self._entries:
                 if entry.get("tenant_id", "default") == tenant_id:
@@ -343,14 +396,17 @@ class GovernanceLedger:
                     req_id = entry.get("request_id")
                     if req_id:
                         self._by_request_id.pop(req_id, None)
+                    fp = self._file_path_for_entry(entry)
+                    affected_files.setdefault(fp, [])
+                    removed += 1
                 else:
                     kept.append(entry)
-            removed = before - len(kept)
             if removed:
                 self._entries = kept
-                snapshot = list(self._entries)
-        if snapshot is not None:
-            self._rewrite_disk(snapshot)
+                for fp in affected_files:
+                    affected_files[fp] = [e for e in self._entries if self._file_path_for_entry(e) == fp]
+        for fp, remaining in affected_files.items():
+            self._rewrite_file(fp, remaining)
         return removed
 
     def clear(self) -> None:
@@ -359,10 +415,12 @@ class GovernanceLedger:
             self._entries.clear()
             self._by_id.clear()
             self._by_request_id.clear()
-        # Also clear disk
-        if os.path.isfile(self._file_path):
+        # Also clear disk — global file + any per-user files
+        for fp in [self._global_file_path] + glob.glob(
+            os.path.join(self._data_dir, "tenants", "*", "users", "*", _LEDGER_FILENAME)
+        ):
             try:
-                os.remove(self._file_path)
+                os.remove(fp)
             except OSError:
                 pass
 

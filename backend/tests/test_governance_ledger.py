@@ -1,5 +1,6 @@
 """Tests for governance ledger — audit trail persistence and queries."""
 
+import os
 import tempfile
 
 from src.agents.governance.ledger import GovernanceLedger
@@ -233,3 +234,105 @@ class TestGovernanceLedger:
 
         results = self.ledger.query(resolved_to=cutoff, limit=0)
         assert all(r.get("resolved_at") and r["resolved_at"] <= cutoff for r in results)
+
+
+# ── Per-user file isolation ────────────────────────────────────────────
+
+
+class TestLedgerPerUserFileIsolation:
+    """Verify that entries with tenant_id + user_id are stored in per-user files."""
+
+    def setup_method(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.ledger = GovernanceLedger(data_dir=self._tmpdir)
+
+    def teardown_method(self):
+        self.ledger.clear()
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _base_kwargs(self, **overrides):
+        defaults = {
+            "thread_id": "t1",
+            "run_id": "r1",
+            "task_id": "tk1",
+            "source_agent": "agent-a",
+            "hook_name": "before_tool",
+            "source_path": "governance.engine",
+            "risk_level": RiskLevel.MEDIUM,
+            "category": "tool_execution",
+            "decision": GovernanceDecision.ALLOW,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_entry_with_tenant_and_user_writes_to_per_user_file(self):
+        """Entries with tenant_id != 'default' and user_id should be stored
+        in tenants/{tid}/users/{uid}/governance_ledger.jsonl."""
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="alice"))
+        per_user_file = os.path.join(
+            self._tmpdir, "tenants", "acme", "users", "alice", "governance_ledger.jsonl",
+        )
+        global_file = os.path.join(self._tmpdir, "governance_ledger.jsonl")
+        assert os.path.isfile(per_user_file), "Per-user file should exist"
+        assert not os.path.isfile(global_file), "Global file should NOT be created"
+
+    def test_entry_without_user_writes_to_global_file(self):
+        """Entries without user_id fall back to the global file."""
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id=None))
+        global_file = os.path.join(self._tmpdir, "governance_ledger.jsonl")
+        assert os.path.isfile(global_file)
+
+    def test_default_tenant_writes_to_global_file(self):
+        """Entries with tenant_id='default' fall back to global file."""
+        self.ledger.record(**self._base_kwargs(tenant_id="default", user_id="bob"))
+        global_file = os.path.join(self._tmpdir, "governance_ledger.jsonl")
+        assert os.path.isfile(global_file)
+
+    def test_different_users_get_separate_files(self):
+        """Two users in the same tenant should write to different files."""
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="alice"))
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="bob"))
+        alice_file = os.path.join(self._tmpdir, "tenants", "acme", "users", "alice", "governance_ledger.jsonl")
+        bob_file = os.path.join(self._tmpdir, "tenants", "acme", "users", "bob", "governance_ledger.jsonl")
+        assert os.path.isfile(alice_file)
+        assert os.path.isfile(bob_file)
+        assert self.ledger.total_count == 2
+
+    def test_load_from_disk_discovers_per_user_files(self):
+        """A new ledger instance should load entries from per-user files."""
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="alice"))
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="bob"))
+        self.ledger.record(**self._base_kwargs(tenant_id="default", user_id=None))
+
+        ledger2 = GovernanceLedger(data_dir=self._tmpdir)
+        assert ledger2.total_count == 3
+
+    def test_resolve_rewrites_only_affected_file(self):
+        """Resolving an entry should rewrite only the file that entry belongs to."""
+        self.ledger.record(**self._base_kwargs(
+            tenant_id="acme", user_id="alice",
+            decision=GovernanceDecision.REQUIRE_INTERVENTION,
+            request_id="req-1",
+        ))
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="bob"))
+
+        self.ledger.resolve(request_id="req-1", status="resolved", resolved_by="admin")
+
+        # Reload and verify resolve persisted correctly
+        ledger2 = GovernanceLedger(data_dir=self._tmpdir)
+        alice_entry = ledger2.get_by_request_id("req-1")
+        assert alice_entry is not None
+        assert alice_entry["status"] == "resolved"
+
+    def test_archive_by_user_deletes_per_user_file(self):
+        """archive_by_user should remove the per-user file when all entries are archived."""
+        self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="alice"))
+        per_user_file = os.path.join(
+            self._tmpdir, "tenants", "acme", "users", "alice", "governance_ledger.jsonl",
+        )
+        assert os.path.isfile(per_user_file)
+        removed = self.ledger.archive_by_user("acme", "alice")
+        assert removed == 1
+        assert not os.path.isfile(per_user_file), "Per-user file should be deleted after archive"
+        assert self.ledger.total_count == 0
