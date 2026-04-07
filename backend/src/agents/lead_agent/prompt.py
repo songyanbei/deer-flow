@@ -369,12 +369,13 @@ Rules:
 </sop_engine_system>"""
 
 
-def _get_memory_context(agent_name: str | None = None, *, tenant_id: str | None = None) -> str:
+def _get_memory_context(agent_name: str | None = None, *, tenant_id: str | None = None, user_id: str | None = None) -> str:
     """Get memory context for injection into system prompt.
 
     Args:
         agent_name: If provided, loads per-agent memory. If None, loads global memory.
         tenant_id: If provided, resolves tenant-scoped memory path.
+        user_id: If provided, resolves user-scoped memory path within the tenant.
 
     Returns:
         Formatted memory context string wrapped in XML tags, or empty string if disabled.
@@ -387,7 +388,7 @@ def _get_memory_context(agent_name: str | None = None, *, tenant_id: str | None 
         if not config.enabled or not config.injection_enabled:
             return ""
 
-        memory_data = get_memory_data(agent_name, tenant_id=tenant_id)
+        memory_data = get_memory_data(agent_name, tenant_id=tenant_id, user_id=user_id)
         memory_content = format_memory_for_injection(memory_data, max_tokens=config.max_injection_tokens)
 
         if not memory_content.strip():
@@ -482,13 +483,14 @@ def apply_prompt_template(
     is_domain_agent: bool = False,
     engine_mode: str = "default",
     tenant_id: str | None = None,
+    user_id: str | None = None,
     agents_dir=None,
 ) -> str:
     # Keep Stage 2 pilot domains on executor-level persistent memory injection
     # so current-task facts remain closer to the work item, while preserving the
     # prior prompt-level memory behavior for non-pilot domains.
     use_executor_level_persistent_memory = is_domain_agent and is_persistent_domain_memory_enabled(agent_name, agents_dir=agents_dir)
-    memory_context = "" if use_executor_level_persistent_memory else _get_memory_context(agent_name, tenant_id=tenant_id)
+    memory_context = "" if use_executor_level_persistent_memory else _get_memory_context(agent_name, tenant_id=tenant_id, user_id=user_id)
     runbook_context = _get_runbook_context(agent_name, is_domain_agent=is_domain_agent, agents_dir=agents_dir)
 
     # Include subagent section only if enabled (from runtime parameter)

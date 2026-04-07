@@ -326,8 +326,12 @@ class ThreadRegistry:
                 self._save(data)
             return len(to_remove)
 
-    def list_expired_threads(self, max_age_seconds: int) -> list[str]:
+    def list_expired_threads(self, max_age_seconds: int, tenant_id: str | None = None) -> list[str]:
         """Return thread IDs whose ``created_at`` is older than *max_age_seconds*.
+
+        Args:
+            max_age_seconds: Threads older than this are considered expired.
+            tenant_id: If provided, only return threads belonging to this tenant.
 
         Threads without a ``created_at`` field are treated as expired.
         """
@@ -335,6 +339,12 @@ class ThreadRegistry:
         with self._lock:
             result = []
             for tid, entry in self._load().items():
+                # Tenant filter: skip threads not belonging to the specified tenant
+                if tenant_id is not None:
+                    owner = entry.get("tenant_id") if isinstance(entry, dict) else entry
+                    if owner != tenant_id:
+                        continue
+
                 if not isinstance(entry, dict):
                     result.append(tid)  # legacy entry, no timestamp → treat as expired
                     continue

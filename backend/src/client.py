@@ -227,6 +227,7 @@ class DeerFlowClient:
                 subagent_enabled=subagent_enabled,
                 max_concurrent_subagents=max_concurrent_subagents,
                 tenant_id=tenant_id,
+                user_id=user_id,
             ),
             "state_schema": ThreadState,
         }

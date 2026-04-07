@@ -192,7 +192,7 @@ class TestPersistentDomainMemoryTenant:
             mock_mem.return_value = {"user": {"workContext": {"summary": "test"}}}
             mock_fmt.return_value = "formatted"
             get_persistent_domain_memory_context("agent-c", tenant_id="tid-x", agents_dir=Path("/custom"))
-            mock_mem.assert_called_once_with("agent-c", tenant_id="tid-x")
+            mock_mem.assert_called_once_with("agent-c", tenant_id="tid-x", user_id=None)
 
 
 # ── Prompt _get_memory_context tenant propagation ──────────────────────
@@ -220,7 +220,7 @@ class TestPromptMemoryContextTenant:
             mock_data.return_value = {"user": {"workContext": {"summary": "test"}}}
             mock_fmt.return_value = "memory content"
             _get_memory_context("agent-a", tenant_id="tid-y")
-            mock_data.assert_called_once_with("agent-a", tenant_id="tid-y")
+            mock_data.assert_called_once_with("agent-a", tenant_id="tid-y", user_id=None)
 
 
 # ── Memory middleware tenant extraction ────────────────────────────────
@@ -384,7 +384,7 @@ class TestApplyPromptTemplateTenant:
             mock_pdm.return_value = False
             mock_mem.return_value = ""
             apply_prompt_template(agent_name="agent-x", tenant_id="tid-p", agents_dir=Path("/custom"))
-            mock_mem.assert_called_once_with("agent-x", tenant_id="tid-p")
+            mock_mem.assert_called_once_with("agent-x", tenant_id="tid-p", user_id=None)
 
     def test_passes_agents_dir_to_is_persistent_domain_memory_enabled(self):
         from src.agents.lead_agent.prompt import apply_prompt_template

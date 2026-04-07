@@ -137,15 +137,17 @@ class LifecycleManager:
         )
         return result
 
-    def cleanup_expired_threads(self, max_age_seconds: int = 86400 * 7) -> LifecycleResult:
+    def cleanup_expired_threads(self, max_age_seconds: int = 86400 * 7, tenant_id: str | None = None) -> LifecycleResult:
         """Remove threads older than *max_age_seconds*.
 
-        Default: 7 days.  Also removes per-thread filesystem directories.
+        Args:
+            max_age_seconds: Maximum thread age (default 7 days).
+            tenant_id: If provided, only clean up threads belonging to this tenant.
         """
         from src.config.paths import get_paths
 
         result = LifecycleResult()
-        expired = self._registry.list_expired_threads(max_age_seconds)
+        expired = self._registry.list_expired_threads(max_age_seconds, tenant_id=tenant_id)
         paths = get_paths()
         for tid in expired:
             self._registry.unregister(tid)
@@ -160,5 +162,5 @@ class LifecycleManager:
         if expired:
             result.filesystem_cleaned = True
 
-        logger.info("cleanup_expired_threads max_age=%ds: removed=%d", max_age_seconds, result.threads_removed)
+        logger.info("cleanup_expired_threads tenant=%s max_age=%ds: removed=%d", tenant_id, max_age_seconds, result.threads_removed)
         return result

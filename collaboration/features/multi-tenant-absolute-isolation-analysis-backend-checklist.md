@@ -41,6 +41,9 @@
   - memory、agent memory、`USER.md`、governance ledger 的 user 维度能力已进入实现。
   - 路径工具、governance 数据模型和 query/record user 维度已补齐。
   - 新增 `migrate_tenant_memory_to_user_level()` 迁移辅助函数，支持一次性迁移。
+  - prompt 注入链已补齐 `user_id` 传播：`apply_prompt_template()` → `_get_memory_context()` → `get_memory_data()` 全链路传入 `user_id`。
+  - executor `_build_context()` → `get_persistent_domain_memory_context()` → `get_memory_data()` 全链路传入 `user_id`。
+  - 已知差距：GovernanceLedger 持久化仍为全局单文件 `governance_ledger.jsonl`，`paths.tenant_user_governance_ledger()` 已定义但未接入；当前通过 query 过滤实现逻辑隔离，存储级隔离留后续优化。
   - 剩余差距：兼容窗口结束后旧路径禁写策略，仍应继续作为文档/实现待补项保留。
 
 - Task Pack D `租户级共享资源隔离`：`基本完成`

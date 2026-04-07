@@ -313,6 +313,7 @@ def make_lead_agent(config: RunnableConfig):
     is_bootstrap = cfg.get("is_bootstrap", False)
     agent_name = cfg.get("agent_name")
     tenant_id = cfg.get("tenant_id", "default")
+    user_id = cfg.get("user_id")
     agents_dir = resolve_tenant_agents_dir(tenant_id)
 
     agent_config = load_agent_config(agent_name, agents_dir=agents_dir) if not is_bootstrap else None
@@ -436,6 +437,7 @@ def make_lead_agent(config: RunnableConfig):
             is_domain_agent=bool(cfg.get("is_domain_agent", False)),
             engine_mode=engine_prompt_kwargs.engine_mode,
             tenant_id=tenant_id,
+            user_id=user_id,
             agents_dir=agents_dir,
         ),
         state_schema=ThreadState,

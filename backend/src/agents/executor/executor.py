@@ -99,6 +99,7 @@ def _build_context(
     *,
     agent_name: str | None = None,
     tenant_id: str | None = None,
+    user_id: str | None = None,
     agents_dir=None,
 ) -> str:
     # For helper tasks, use the full technical context instead of the short display description
@@ -112,7 +113,7 @@ def _build_context(
         )
         context += f"\n\nKnown facts (do not re-check):\n{facts_block}"
 
-    persistent_domain_memory = get_persistent_domain_memory_context(agent_name, tenant_id=tenant_id, agents_dir=agents_dir)
+    persistent_domain_memory = get_persistent_domain_memory_context(agent_name, tenant_id=tenant_id, user_id=user_id, agents_dir=agents_dir)
     if persistent_domain_memory:
         context += (
             "\n\nPersistent domain memory (advisory only; current thread inputs and verified facts take priority):\n"
@@ -775,6 +776,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
     agent_name = task.get("assigned_agent") or "SYSTEM_FALLBACK"
     continuation_mode = task.get("continuation_mode")
     tenant_id = config.get("configurable", {}).get("tenant_id", "default")
+    user_id = config.get("configurable", {}).get("user_id")
     agents_dir = resolve_tenant_agents_dir(tenant_id)
     logger.info(
         "[Executor] Executing task '%s' via agent '%s' continuation_mode=%s.",
@@ -846,6 +848,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
             clarification_answer,
             agent_name=agent_name,
             tenant_id=tenant_id,
+            user_id=user_id,
             agents_dir=agents_dir,
         )
 
@@ -1021,6 +1024,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                         "",
                         agent_name=agent_name,
                         tenant_id=tenant_id,
+                        user_id=user_id,
                         agents_dir=agents_dir,
                     )
                     input_messages = prior_messages + [

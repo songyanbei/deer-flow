@@ -6,6 +6,7 @@ All endpoints require the ``admin`` or ``owner`` role.
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -31,9 +32,11 @@ async def delete_user(
     tenant_id: str = Query(..., description="Tenant to scope the deletion"),
     caller_tenant: str = Depends(get_tenant_id),
 ) -> dict:
-    # Prevent cross-tenant deletion: owner/admin can only manage their own tenant.
-    if caller_tenant != tenant_id and caller_tenant != "default":
-        raise HTTPException(status_code=403, detail="Cannot delete users in another tenant")
+    # Prevent cross-tenant deletion: when OIDC is enabled, owner/admin can
+    # only manage their own tenant.  When OIDC is off (dev mode), skip check.
+    if os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes"):
+        if caller_tenant != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot delete users in another tenant")
     result = _get_manager().delete_user(tenant_id, user_id)
     return {
         "status": "ok",
@@ -55,9 +58,11 @@ async def decommission_tenant(
     tenant_id: str,
     caller_tenant: str = Depends(get_tenant_id),
 ) -> dict:
-    # Prevent cross-tenant decommission: owner/admin can only manage their own tenant.
-    if caller_tenant != tenant_id and caller_tenant != "default":
-        raise HTTPException(status_code=403, detail="Cannot decommission another tenant")
+    # Prevent cross-tenant decommission: when OIDC is enabled, owner/admin can
+    # only manage their own tenant.  When OIDC is off (dev mode), skip check.
+    if os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes"):
+        if caller_tenant != tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot decommission another tenant")
     result = _get_manager().decommission_tenant(tenant_id)
     return {
         "status": "ok",
@@ -73,14 +78,16 @@ async def decommission_tenant(
 @router.post(
     "/cleanup/expired-threads",
     dependencies=[require_role("admin", "owner")],
-    summary="Clean up threads older than max_age_seconds",
+    summary="Clean up threads older than max_age_seconds within the caller's tenant",
 )
 async def cleanup_expired_threads(
     max_age_seconds: int = Query(default=604800, ge=3600, description="Max thread age in seconds (default 7 days)"),
+    caller_tenant: str = Depends(get_tenant_id),
 ) -> dict:
-    result = _get_manager().cleanup_expired_threads(max_age_seconds)
+    result = _get_manager().cleanup_expired_threads(max_age_seconds, tenant_id=caller_tenant)
     return {
         "status": "ok",
+        "tenant_id": caller_tenant,
         "threads_removed": result.threads_removed,
         "max_age_seconds": max_age_seconds,
     }

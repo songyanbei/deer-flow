@@ -254,12 +254,12 @@ def is_persistent_domain_memory_enabled(agent_name: str | None, *, agents_dir=No
     return bool(agent_cfg and agent_cfg.persistent_memory_enabled)
 
 
-def get_persistent_domain_memory_context(agent_name: str | None, *, max_tokens: int = 1200, tenant_id: str | None = None, agents_dir=None) -> str:
+def get_persistent_domain_memory_context(agent_name: str | None, *, max_tokens: int = 1200, tenant_id: str | None = None, user_id: str | None = None, agents_dir=None) -> str:
     if not is_persistent_domain_memory_enabled(agent_name, agents_dir=agents_dir):
         return ""
 
     try:
-        memory_data = get_memory_data(agent_name, tenant_id=tenant_id)
+        memory_data = get_memory_data(agent_name, tenant_id=tenant_id, user_id=user_id)
     except Exception as exc:
         logger.warning(
             "[PersistentDomainMemory] Failed to load memory context for agent '%s': %s",
