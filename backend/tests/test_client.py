@@ -687,7 +687,7 @@ class TestArtifacts:
             (outputs / "result.txt").write_text("artifact content")
 
             mock_paths = MagicMock()
-            mock_paths.sandbox_user_data_dir.return_value = user_data_dir
+            mock_paths.tenant_user_sandbox_user_data_dir.return_value = user_data_dir
 
             with patch("src.client.get_paths", return_value=mock_paths):
                 content, mime = client.get_artifact("t1", "mnt/user-data/outputs/result.txt")
@@ -701,7 +701,7 @@ class TestArtifacts:
             user_data_dir.mkdir()
 
             mock_paths = MagicMock()
-            mock_paths.sandbox_user_data_dir.return_value = user_data_dir
+            mock_paths.tenant_user_sandbox_user_data_dir.return_value = user_data_dir
 
             with patch("src.client.get_paths", return_value=mock_paths):
                 with pytest.raises(FileNotFoundError):
@@ -717,7 +717,7 @@ class TestArtifacts:
             user_data_dir.mkdir()
 
             mock_paths = MagicMock()
-            mock_paths.sandbox_user_data_dir.return_value = user_data_dir
+            mock_paths.tenant_user_sandbox_user_data_dir.return_value = user_data_dir
 
             with patch("src.client.get_paths", return_value=mock_paths):
                 with pytest.raises(PermissionError):
@@ -907,7 +907,7 @@ class TestScenarioFileLifecycle:
 
             # Retrieve artifact
             mock_paths = MagicMock()
-            mock_paths.sandbox_user_data_dir.return_value = user_data_dir
+            mock_paths.tenant_user_sandbox_user_data_dir.return_value = user_data_dir
 
             with patch("src.client.get_paths", return_value=mock_paths):
                 content, mime = client.get_artifact("t-artifact", "mnt/user-data/outputs/analysis.json")
@@ -1126,7 +1126,7 @@ class TestScenarioThreadIsolation:
             src_file = tmp_path / "secret.txt"
             src_file.write_text("thread-a only")
 
-            def get_dir(thread_id):
+            def get_dir(thread_id, tenant_id="default", user_id="anonymous"):
                 return uploads_a if thread_id == "thread-a" else uploads_b
 
             with patch.object(DeerFlowClient, "_get_uploads_dir", side_effect=get_dir):
@@ -1150,7 +1150,7 @@ class TestScenarioThreadIsolation:
             (data_a / "outputs" / "result.txt").write_text("thread-a artifact")
 
             mock_paths = MagicMock()
-            mock_paths.sandbox_user_data_dir.side_effect = lambda tid: data_a if tid == "thread-a" else data_b
+            mock_paths.tenant_user_sandbox_user_data_dir.side_effect = lambda tenant_id, user_id, tid: data_a if tid == "thread-a" else data_b
 
             with patch("src.client.get_paths", return_value=mock_paths):
                 content, _ = client.get_artifact("thread-a", "mnt/user-data/outputs/result.txt")

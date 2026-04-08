@@ -187,6 +187,15 @@ class DeerFlowClient:
             if "user_id" not in configurable:
                 logger.warning("DeerFlowClient: OIDC enabled but user_id not provided for thread %s", thread_id)
 
+        # Serialize ThreadContext for middleware consumption
+        tenant_id = configurable.get("tenant_id", "default")
+        user_id = configurable.get("user_id", "anonymous")
+        configurable["thread_context"] = {
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "thread_id": thread_id,
+        }
+
         return RunnableConfig(
             configurable=configurable,
             recursion_limit=overrides.get("recursion_limit", 100),
@@ -751,13 +760,13 @@ class DeerFlowClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _get_uploads_dir(thread_id: str) -> Path:
+    def _get_uploads_dir(thread_id: str, tenant_id: str = "default", user_id: str = "anonymous") -> Path:
         """Get (and create) the uploads directory for a thread."""
-        base = get_paths().sandbox_uploads_dir(thread_id)
+        base = get_paths().tenant_user_sandbox_uploads_dir(tenant_id, user_id, thread_id)
         base.mkdir(parents=True, exist_ok=True)
         return base
 
-    def upload_files(self, thread_id: str, files: list[str | Path]) -> dict:
+    def upload_files(self, thread_id: str, files: list[str | Path], *, tenant_id: str = "default", user_id: str = "anonymous") -> dict:
         """Upload local files into a thread's uploads directory.
 
         For PDF, PPT, Excel, and Word files, they are also converted to Markdown.
@@ -765,6 +774,8 @@ class DeerFlowClient:
         Args:
             thread_id: Target thread ID.
             files: List of local file paths to upload.
+            tenant_id: Tenant ID for path isolation (default: "default").
+            user_id: User ID for path isolation (default: "anonymous").
 
         Returns:
             Dict with success, files, message — matching the Gateway API
@@ -783,7 +794,7 @@ class DeerFlowClient:
                 raise FileNotFoundError(f"File not found: {f}")
             resolved_files.append(p)
 
-        uploads_dir = self._get_uploads_dir(thread_id)
+        uploads_dir = self._get_uploads_dir(thread_id, tenant_id, user_id)
         uploaded_files: list[dict] = []
 
         for src_path in resolved_files:
@@ -794,7 +805,6 @@ class DeerFlowClient:
             info: dict[str, Any] = {
                 "filename": src_path.name,
                 "size": str(dest.stat().st_size),
-                "path": str(dest),
                 "virtual_path": f"/mnt/user-data/uploads/{src_path.name}",
                 "artifact_url": f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{src_path.name}",
             }
@@ -825,17 +835,19 @@ class DeerFlowClient:
             "message": f"Successfully uploaded {len(uploaded_files)} file(s)",
         }
 
-    def list_uploads(self, thread_id: str) -> dict:
+    def list_uploads(self, thread_id: str, *, tenant_id: str = "default", user_id: str = "anonymous") -> dict:
         """List files in a thread's uploads directory.
 
         Args:
             thread_id: Thread ID.
+            tenant_id: Tenant ID for path isolation (default: "default").
+            user_id: User ID for path isolation (default: "anonymous").
 
         Returns:
             Dict with "files" and "count" keys, matching the Gateway API
             ``list_uploaded_files`` response.
         """
-        uploads_dir = self._get_uploads_dir(thread_id)
+        uploads_dir = self._get_uploads_dir(thread_id, tenant_id, user_id)
         if not uploads_dir.exists():
             return {"files": [], "count": 0}
 
@@ -846,7 +858,6 @@ class DeerFlowClient:
                 files.append({
                     "filename": fp.name,
                     "size": str(stat.st_size),
-                    "path": str(fp),
                     "virtual_path": f"/mnt/user-data/uploads/{fp.name}",
                     "artifact_url": f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{fp.name}",
                     "extension": fp.suffix,
@@ -854,12 +865,14 @@ class DeerFlowClient:
                 })
         return {"files": files, "count": len(files)}
 
-    def delete_upload(self, thread_id: str, filename: str) -> dict:
+    def delete_upload(self, thread_id: str, filename: str, *, tenant_id: str = "default", user_id: str = "anonymous") -> dict:
         """Delete a file from a thread's uploads directory.
 
         Args:
             thread_id: Thread ID.
             filename: Filename to delete.
+            tenant_id: Tenant ID for path isolation (default: "default").
+            user_id: User ID for path isolation (default: "anonymous").
 
         Returns:
             Dict with success and message, matching the Gateway API
@@ -869,7 +882,7 @@ class DeerFlowClient:
             FileNotFoundError: If the file does not exist.
             PermissionError: If path traversal is detected.
         """
-        uploads_dir = self._get_uploads_dir(thread_id)
+        uploads_dir = self._get_uploads_dir(thread_id, tenant_id, user_id)
         file_path = (uploads_dir / filename).resolve()
 
         try:
@@ -887,12 +900,14 @@ class DeerFlowClient:
     # Public API — artifacts
     # ------------------------------------------------------------------
 
-    def get_artifact(self, thread_id: str, path: str) -> tuple[bytes, str]:
+    def get_artifact(self, thread_id: str, path: str, *, tenant_id: str = "default", user_id: str = "anonymous") -> tuple[bytes, str]:
         """Read an artifact file produced by the agent.
 
         Args:
             thread_id: Thread ID.
             path: Virtual path (e.g. "mnt/user-data/outputs/file.txt").
+            tenant_id: Tenant ID for path resolution.
+            user_id: User ID for path resolution.
 
         Returns:
             Tuple of (file_bytes, mime_type).
@@ -907,7 +922,7 @@ class DeerFlowClient:
             raise ValueError(f"Path must start with /{virtual_prefix}")
 
         relative = clean_path[len(virtual_prefix):].lstrip("/")
-        base_dir = get_paths().sandbox_user_data_dir(thread_id)
+        base_dir = get_paths().tenant_user_sandbox_user_data_dir(tenant_id, user_id, thread_id)
         actual = (base_dir / relative).resolve()
 
         try:

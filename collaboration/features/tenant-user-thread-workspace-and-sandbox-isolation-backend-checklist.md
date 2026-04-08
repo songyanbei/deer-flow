@@ -2,144 +2,127 @@
 
 - Related feature:
   [tenant-user-thread-workspace-and-sandbox-isolation.md](/E:/work/deer-flow/collaboration/features/tenant-user-thread-workspace-and-sandbox-isolation.md)
-- Status: `draft`
+- Status: `mostly complete`
+- Last reviewed: `2026-04-08`
 - Owner: `backend`
 
-## Scope
+## Current Backend Conclusion
 
-本清单只面向后端研发同学，覆盖：
+基于当前代码复核，后端主链路已经完成，剩余主要是生产态容器验证和少量硬化决策：
 
-- `tenant/user/thread` 路径模型重构
-- thread 级沙箱挂载与恢复
-- 持久化与生命周期清理闭环
-- 路径安全与 ownership 校验收口
-- 生产态隔离约束与开发态边界澄清
+- 路径模型、ownership 校验、middleware 身份链路、uploads API、sandbox_state 拆分、生命周期清理顺序都已落地。
+- 当前快照的聚焦回归已通过：`43 passed, 1 skipped, 2 warnings`。
+- 发布前主要还需要真实 AIO/container 挂载边界和 destroy/recover 验证。
 
-## 0. 实施前必须先对齐的约束
+## 0. 约束对齐
 
-- [ ] 对外 API 继续以 `thread_id` 为主键，不新增前端必传身份字段
-- [ ] 生产态坚持“每线程一个沙箱”，不改成“每用户一个共享 workspace”
-- [ ] `workspace` 默认临时，不作为长期数据承诺
-- [ ] `uploads / outputs / checkpoints` 必须持久化
-- [ ] `LocalSandboxProvider` 只作为开发态能力，不作为生产安全边界
+- [x] 对外 API 继续以 `thread_id` 为主键
+- [x] 生产态坚持“每线程一个 sandbox”
+- [x] `workspace` 默认临时，不作为长期数据承诺
+- [x] `uploads / outputs / checkpoints` 持久化
+- [x] `LocalSandboxProvider` 仅作为开发态能力，不作为生产隔离结论
+- [x] `thread_id` 保持全局唯一前提
+- [x] OIDC 启用时，旧 registry 条目缺失 `user_id` 会 deny
+- [x] 当前结论建立在单进程 / 单 writer 前提上
 
 ## 1. 路径模型
 
-### 1.1 Paths 重构
+### 1.1 Paths 与目录树
 
-- [ ] 更新 [paths.py](/E:/work/deer-flow/backend/src/config/paths.py)
-- [ ] 新增或重构 `tenant/user/thread` 级路径工具
-- [ ] 明确 thread 目录位于 `tenants/{tenant_id}/users/{user_id}/threads/{thread_id}/`
-- [ ] 保留统一 `resolve_virtual_path()` 能力，但底层映射到新目录模型
-- [ ] 禁止继续把生产态 thread 工作目录落在 `threads/{thread_id}/`
+- [x] 路径模型切换到 `tenants/{tenant_id}/users/{user_id}/threads/{thread_id}/`
+- [x] `resolve_virtual_path()` 保持统一能力并映射到新目录模型
+- [x] 新 thread 不再使用 `threads/{thread_id}` 作为生产路径
+- [x] `sandbox_state/{thread_id}/` 独立于用户数据目录
 
-### 1.2 路径调用方对齐
+### 1.2 ThreadContext 与注入链路
 
-- [ ] 更新 [thread_data_middleware.py](/E:/work/deer-flow/backend/src/agents/middlewares/thread_data_middleware.py)
-- [ ] 更新 [uploads_middleware.py](/E:/work/deer-flow/backend/src/agents/middlewares/uploads_middleware.py)
-- [ ] 更新 [path_utils.py](/E:/work/deer-flow/backend/src/gateway/path_utils.py)
-- [ ] 更新 artifacts / uploads / client 中依赖 thread 路径的调用点
+- [x] `ThreadContext` 已落地
+- [x] `resolve_thread_context()` 已作为统一 ownership 校验入口
+- [x] Gateway / runtime 装配链路使用 `ThreadContext`
+- [x] 进入 LangGraph runtime 时将 `ThreadContext` 序列化到 `config.configurable["thread_context"]`
+- [x] `ThreadDataMiddleware` 只认固定 `thread_context` key
+- [x] `SandboxMiddleware` 不再从 `runtime.context` 或零散字段拼身份
+- [x] registry 已避免让弱身份回退值覆盖真实 tenant/user 绑定
 
-Done when:
+### 1.3 路径调用点
 
-- 线程 runtime 注入的 `workspace/uploads/outputs` 均指向 `tenant/user/thread` 路径树。
+- [x] thread data 路径注入已改到基于 `ThreadContext`
+- [x] uploads 路由已改到基于 `ThreadContext`
+- [x] artifacts / runtime / 相关路径解析已走统一 ownership 校验链路
+- [x] upload/list 响应不再暴露物理 `path`
 
-## 2. 沙箱与挂载
+## 2. Sandbox 与挂载
 
-### 2.1 AIO 沙箱挂载
+### 2.1 AIO Sandbox 挂载
 
-- [ ] 更新 [aio_sandbox_provider.py](/E:/work/deer-flow/backend/src/community/aio_sandbox/aio_sandbox_provider.py)
-- [ ] 按新目录模型挂载 `workspace / uploads / outputs`
-- [ ] 保持“同一 thread 可复用同一 sandbox”
-- [ ] 不挂整租户目录
-- [ ] 不挂整用户目录
+- [x] AIO provider 已切到新路径模型
+- [x] 同一 thread 可复用同一 sandbox
+- [x] sandbox state 与 thread 数据目录已解耦
+- [ ] 真实 AIO/container 最小挂载边界已在 Linux/container 环境完成验证
 
 ### 2.2 LocalSandbox 边界
 
-- [ ] 更新 [local_sandbox_provider.py](/E:/work/deer-flow/backend/src/sandbox/local/local_sandbox_provider.py) 的注释、告警或配置门禁
-- [ ] 明确开发态和生产态的隔离结论不能混用
-- [ ] 如配置允许，增加生产环境误用 LocalSandbox 的显式警告或拒绝
-
-Done when:
-
-- 生产态 sandbox 的最小挂载边界只覆盖当前 thread 所需目录。
+- [x] 文档与评估中已明确 LocalSandbox 不能作为生产安全边界
+- [ ] 生产态误用 LocalSandbox 的 hard fail 门禁是否需要落地，仍待决策
 
 ## 3. 持久化与恢复
 
-### 3.1 保留数据
-
-- [ ] 确认以下数据与沙箱生命周期解耦：
-  - [ ] memory
-  - [ ] USER.md
-  - [ ] governance ledger
-  - [ ] uploads
-  - [ ] outputs
-  - [ ] thread checkpoints / state
-
-### 3.2 workspace 语义
-
-- [ ] 明确 workspace 是临时区，不作为长期恢复唯一来源
-- [ ] 如现有逻辑隐式依赖 workspace 恢复状态，补充迁移或收口方案
-- [ ] 避免将依赖安装缓存、临时脚本误判为用户长期资产
-
-Done when:
-
-- sandbox 销毁后，线程仍可在不依赖旧沙箱的情况下恢复关键业务上下文。
+- [x] memory / USER.md / governance ledger 与 sandbox 生命周期解耦
+- [x] uploads / outputs / checkpoints 走持久化路径
+- [x] workspace 默认视为临时区
+- [ ] 真实 container destroy/recover 流程已完成生产态验证
 
 ## 4. 生命周期清理
 
-### 4.1 用户/租户清理
+### 4.1 删除用户 / 租户 / 过期 Thread
 
-- [ ] 更新 [lifecycle_manager.py](/E:/work/deer-flow/backend/src/admin/lifecycle_manager.py)
-- [ ] 删除用户时清理其名下所有 thread 目录
-- [ ] 删除租户时清理该租户下所有用户与 thread 目录
-- [ ] 清理过期 thread 时，同时清理目录与 registry
+- [x] 删除用户会清理其名下 thread 数据
+- [x] 删除租户会清理该租户下全部用户与 thread 数据
+- [x] 清理过期 thread 会同时清理目录与 registry
+- [x] `cleanup_expired_threads()` 会删除 thread 根目录与 legacy 路径残留
 
-### 4.2 registry 协同
+### 4.2 顺序与容错
 
-- [ ] 复用或扩展 [thread_registry.py](/E:/work/deer-flow/backend/src/gateway/thread_registry.py) 的按用户/按租户枚举能力
-- [ ] 确保清理顺序不会留下 orphan files
-- [ ] 对部分失败场景保留可观察的错误记录
+- [x] 先停止 sandbox，再删 `sandbox_state/`
+- [x] 文件删除发生在 registry 删除之前
+- [x] best-effort 失败会记录到 `result.errors`
+- [x] 用户、租户、TTL 三个场景都显式包含 `sandbox_state/` 清理
 
-Done when:
+## 5. 访问控制与安全
 
-- 用户删除、租户注销、TTL 清理三个场景都能完整回收文件型数据。
+### 5.1 Ownership
 
-## 5. 访问控制与安全收口
-
-### 5.1 ownership 校验
-
-- [ ] 复核所有 thread 相关入口统一走 tenant + user 校验
-- [ ] 复核 artifacts / uploads / runtime / interventions / client helper 无漏口
-- [ ] 复核未注册 thread 是否默认拒绝
+- [x] thread 相关入口统一走 tenant + user 校验
+- [x] artifacts / uploads / runtime 入口已收口
+- [x] 未注册 thread 统一拒绝
+- [x] OIDC 启用时缺失 `tenant_id` 或 `user_id` 返回 `401`
 
 ### 5.2 路径安全
 
-- [ ] 补强 prefix confusion、path traversal、软链接逃逸防护
-- [ ] 统一通过路径工具解析 virtual path，避免散落拼接
-- [ ] 禁止通过宿主机绝对路径绕出 thread 根目录
+- [x] prefix confusion 防护已覆盖
+- [x] path traversal 防护已覆盖
+- [x] virtual path 通过统一路径工具解析
+- [ ] 软链接逃逸仍需在支持 symlink 的环境补完实测
 
 ### 5.3 生产态容器约束
 
-- [ ] 梳理 non-root、最小权限、最小环境变量注入要求
-- [ ] 梳理网络出口默认策略
-- [ ] 若当前仓库无法直接落地全部容器配置，至少补文档和配置校验点
+- [ ] non-root / 最小权限 / 最小环境变量注入要求仍需结合真实容器环境复核
+- [ ] 网络出口默认策略仍需结合真实容器环境复核
 
-Done when:
+## 6. 文档与协作
 
-- 普通脚本、普通路径绕过和常见 API 猜测路径都无法越权访问其他用户数据。
+- [x] 主需求文档已更新到当前状态
+- [x] 测试 checklist 已更新到当前状态
+- [x] 测试执行记录已更新到当前状态
+- [x] 当前没有必须新增的前端实现项
 
-## 6. 文档与协作收口
+## 7. 完成判断
 
-- [ ] 如后端落地过程中发现前端依赖，写入 [backend-to-frontend.md](/E:/work/deer-flow/collaboration/handoffs/backend-to-frontend.md)
-- [ ] 不在本轮主需求内扩展新的前端实现项
-- [ ] 将最终后端实现边界补回主需求文档
-
-## 7. 完成判定
-
-- [ ] `tenant/user/thread` 路径模型已成为生产态事实标准
-- [ ] AIO sandbox 已按新路径做 thread 级最小挂载
-- [ ] 沙箱销毁后，关键持久化状态仍可恢复
-- [ ] 生命周期清理可覆盖用户、租户、过期 thread 三个场景
-- [ ] ownership、路径安全、开发态/生产态边界已全部收口
-- [ ] 测试 checklist 所需前置条件已满足
+- [x] `tenant/user/thread` 路径模型已成为当前后端事实标准
+- [x] `ThreadContext` resolver/factory 已落地
+- [x] `sandbox_state/` 已从用户数据目录独立
+- [x] 生命周期清理已覆盖用户、租户、过期 thread 三个场景
+- [x] ownership 和 API 路径安全主链路已收口
+- [ ] 真实 AIO/container 最小挂载验证完成
+- [ ] 真实 container 销毁后恢复验证完成
+- [ ] 生产态容器约束全部复核完成

@@ -29,12 +29,12 @@ def _middleware(tmp_path: Path) -> UploadsMiddleware:
 
 def _runtime(thread_id: str | None = THREAD_ID) -> MagicMock:
     rt = MagicMock()
-    rt.context = {"thread_id": thread_id}
+    rt.context = {"thread_id": thread_id, "tenant_id": "default", "user_id": "anonymous"}
     return rt
 
 
 def _uploads_dir(tmp_path: Path, thread_id: str = THREAD_ID) -> Path:
-    d = Paths(str(tmp_path)).sandbox_uploads_dir(thread_id)
+    d = Paths(str(tmp_path)).tenant_user_sandbox_uploads_dir("default", "anonymous", thread_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
 

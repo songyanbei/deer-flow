@@ -164,10 +164,13 @@ class _TestAppContext:
         from fastapi import FastAPI
 
         from src.gateway.routers import runtime
+        from src.gateway import thread_registry as _tr_mod
 
         self._runtime_mod = runtime
+        self._tr_mod = _tr_mod
         self._original_get_registry = runtime.get_thread_registry
         self._original_resolve_agents_dir = runtime._resolve_agents_dir
+        self._original_tr_get_registry = _tr_mod.get_thread_registry
 
         self.registry = ThreadRegistry(registry_file=tmp_path / "thread_registry.json")
         self.app = FastAPI()
@@ -182,6 +185,8 @@ class _TestAppContext:
 
         _registry = self.registry
         runtime.get_thread_registry = lambda: _registry  # type: ignore
+        # Also patch at the source module so resolve_thread_context() finds the test registry
+        _tr_mod.get_thread_registry = lambda: _registry  # type: ignore
 
         if agents_dir is not None:
             runtime._resolve_agents_dir = lambda tenant_id: agents_dir  # type: ignore
@@ -189,6 +194,7 @@ class _TestAppContext:
     def cleanup(self):
         self._runtime_mod.get_thread_registry = self._original_get_registry  # type: ignore
         self._runtime_mod._resolve_agents_dir = self._original_resolve_agents_dir  # type: ignore
+        self._tr_mod.get_thread_registry = self._original_tr_get_registry  # type: ignore
 
 
 def _create_test_app(
@@ -323,7 +329,7 @@ class TestRuntimeThreadGet:
         try:
             client = TestClient(app)
             resp = client.get("/api/runtime/threads/nonexistent")
-            assert resp.status_code == 404
+            assert resp.status_code == 403  # 403 not 404 to prevent resource enumeration
         finally:
             ctx.cleanup()
 
@@ -429,7 +435,7 @@ class TestRuntimeMessageStream:
                     "allowed_agents": ["agent-a"],
                 },
             )
-            assert resp.status_code == 404
+            assert resp.status_code == 403  # 403 not 404 to prevent resource enumeration
         finally:
             ctx.cleanup()
 

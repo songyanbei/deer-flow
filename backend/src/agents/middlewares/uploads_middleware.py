@@ -116,6 +116,35 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
             )
         return files if files else None
 
+    def _resolve_uploads_dir(self, runtime: Runtime) -> Path | None:
+        """Resolve the uploads directory, preferring ThreadContext if available."""
+        cfg: dict = {}
+        try:
+            from langgraph.config import get_config
+            cfg = get_config().get("configurable", {})
+        except Exception:
+            pass
+
+        # Prefer pre-validated ThreadContext
+        raw_ctx = cfg.get("thread_context")
+        if raw_ctx and isinstance(raw_ctx, dict):
+            from src.gateway.thread_context import ThreadContext
+            ctx = ThreadContext.deserialize(raw_ctx)
+            return self._paths.sandbox_uploads_dir_ctx(ctx)
+
+        # Fallback: individual fields
+        thread_id = None
+        if runtime.context is not None:
+            thread_id = runtime.context.get("thread_id")
+        if thread_id is None:
+            thread_id = cfg.get("thread_id")
+        if thread_id is None:
+            return None
+
+        tenant_id = (runtime.context.get("tenant_id") if runtime.context else None) or cfg.get("tenant_id", "default")
+        user_id = (runtime.context.get("user_id") if runtime.context else None) or cfg.get("user_id", "anonymous")
+        return self._paths.tenant_user_sandbox_uploads_dir(tenant_id, user_id, thread_id)
+
     @override
     def before_agent(self, state: UploadsMiddlewareState, runtime: Runtime) -> dict | None:
         """Inject uploaded files information before agent execution.
@@ -145,18 +174,8 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         if not isinstance(last_message, HumanMessage):
             return None
 
-        # Resolve uploads directory for existence checks
-        # LangGraph Server: runtime.context; direct invocation: get_config() fallback
-        thread_id = None
-        if runtime.context is not None:
-            thread_id = runtime.context.get("thread_id")
-        if thread_id is None:
-            try:
-                from langgraph.config import get_config
-                thread_id = get_config().get("configurable", {}).get("thread_id")
-            except Exception:
-                pass
-        uploads_dir = self._paths.sandbox_uploads_dir(thread_id) if thread_id else None
+        # Resolve uploads directory using ThreadContext if available, else fallback.
+        uploads_dir = self._resolve_uploads_dir(runtime)
 
         # Get newly uploaded files from the current message's additional_kwargs.files
         new_files = self._files_from_kwargs(last_message, uploads_dir) or []

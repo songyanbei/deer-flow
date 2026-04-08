@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from src.config.paths import VIRTUAL_PATH_PREFIX, get_paths
 from src.gateway.dependencies import get_tenant_id, get_user_id
-from src.gateway.thread_registry import get_thread_registry
+from src.gateway.thread_context import ThreadContext, resolve_thread_context
 from src.sandbox.sandbox_provider import get_sandbox_provider
 
 logger = logging.getLogger(__name__)
@@ -35,16 +35,9 @@ class UploadResponse(BaseModel):
     message: str
 
 
-def get_uploads_dir(thread_id: str) -> Path:
-    """Get the uploads directory for a thread.
-
-    Args:
-        thread_id: The thread ID.
-
-    Returns:
-        Path to the uploads directory.
-    """
-    base_dir = get_paths().sandbox_uploads_dir(thread_id)
+def get_uploads_dir_ctx(ctx: ThreadContext) -> Path:
+    """Get the uploads directory for a thread using tenant/user/thread hierarchy."""
+    base_dir = get_paths().sandbox_uploads_dir_ctx(ctx)
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir
 
@@ -94,14 +87,13 @@ async def upload_files(
     Returns:
         Upload response with success status and file information.
     """
-    # Tenant + user access control
-    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Ownership validation — returns 403 for unknown or unauthorized threads
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
 
-    uploads_dir = get_uploads_dir(thread_id)
+    uploads_dir = get_uploads_dir_ctx(ctx)
     paths = get_paths()
     uploaded_files = []
 
@@ -124,8 +116,6 @@ async def upload_files(
             file_path = uploads_dir / safe_filename
             file_path.write_bytes(content)
 
-            # Build relative path from backend root
-            relative_path = str(paths.sandbox_uploads_dir(thread_id) / safe_filename)
             virtual_path = f"{VIRTUAL_PATH_PREFIX}/uploads/{safe_filename}"
 
             # Keep local sandbox source of truth in thread-scoped host storage.
@@ -136,26 +126,23 @@ async def upload_files(
             file_info = {
                 "filename": safe_filename,
                 "size": str(len(content)),
-                "path": relative_path,  # Actual filesystem path (relative to backend/)
-                "virtual_path": virtual_path,  # Path for Agent in sandbox
-                "artifact_url": f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{safe_filename}",  # HTTP URL
+                "virtual_path": virtual_path,
+                "artifact_url": f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{safe_filename}",
             }
 
-            logger.info(f"Saved file: {safe_filename} ({len(content)} bytes) to {relative_path}")
+            logger.info(f"Saved file: {safe_filename} ({len(content)} bytes) to {uploads_dir / safe_filename}")
 
             # Check if file should be converted to markdown
             file_ext = file_path.suffix.lower()
             if file_ext in CONVERTIBLE_EXTENSIONS:
                 md_path = await convert_file_to_markdown(file_path)
                 if md_path:
-                    md_relative_path = str(paths.sandbox_uploads_dir(thread_id) / md_path.name)
                     md_virtual_path = f"{VIRTUAL_PATH_PREFIX}/uploads/{md_path.name}"
 
                     if sandbox_id != "local":
                         sandbox.update_file(md_virtual_path, md_path.read_bytes())
 
                     file_info["markdown_file"] = md_path.name
-                    file_info["markdown_path"] = md_relative_path
                     file_info["markdown_virtual_path"] = md_virtual_path
                     file_info["markdown_artifact_url"] = f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{md_path.name}"
 
@@ -182,11 +169,10 @@ async def list_uploaded_files(thread_id: str, tenant_id: str = Depends(get_tenan
     Returns:
         Dictionary containing list of files with their metadata.
     """
-    # Tenant + user access control
-    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Ownership validation — returns 403 for unknown or unauthorized threads
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
-    uploads_dir = get_uploads_dir(thread_id)
+    uploads_dir = get_uploads_dir_ctx(ctx)
 
     if not uploads_dir.exists():
         return {"files": [], "count": 0}
@@ -195,14 +181,12 @@ async def list_uploaded_files(thread_id: str, tenant_id: str = Depends(get_tenan
     for file_path in sorted(uploads_dir.iterdir()):
         if file_path.is_file():
             stat = file_path.stat()
-            relative_path = str(get_paths().sandbox_uploads_dir(thread_id) / file_path.name)
             files.append(
                 {
                     "filename": file_path.name,
                     "size": stat.st_size,
-                    "path": relative_path,  # Actual filesystem path
-                    "virtual_path": f"{VIRTUAL_PATH_PREFIX}/uploads/{file_path.name}",  # Path for Agent in sandbox
-                    "artifact_url": f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{file_path.name}",  # HTTP URL
+                    "virtual_path": f"{VIRTUAL_PATH_PREFIX}/uploads/{file_path.name}",
+                    "artifact_url": f"/api/threads/{thread_id}/artifacts/mnt/user-data/uploads/{file_path.name}",
                     "extension": file_path.suffix,
                     "modified": stat.st_mtime,
                 }
@@ -222,11 +206,10 @@ async def delete_uploaded_file(thread_id: str, filename: str, tenant_id: str = D
     Returns:
         Success message.
     """
-    # Tenant + user access control
-    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Ownership validation — returns 403 for unknown or unauthorized threads
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
-    uploads_dir = get_uploads_dir(thread_id)
+    uploads_dir = get_uploads_dir_ctx(ctx)
     file_path = uploads_dir / filename
 
     if not file_path.exists():

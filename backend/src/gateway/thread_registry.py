@@ -89,8 +89,18 @@ class ThreadRegistry:
 
     # ── public API (original, backward-compatible) ─────────────────────
 
+    # Placeholder identity values that must never overwrite a real binding.
+    _WEAK_TENANT_IDS = frozenset({"default"})
+    _WEAK_USER_IDS = frozenset({"anonymous"})
+
     def register(self, thread_id: str, tenant_id: str, user_id: str | None = None) -> None:
         """Register or update the owner of a thread.
+
+        Identity protection: if the thread already has a concrete (non-default)
+        tenant_id or user_id, a weaker fallback value (``"default"`` /
+        ``"anonymous"``) will **not** overwrite it.  This prevents middleware
+        fallback paths from degrading an existing binding established by the
+        Gateway layer.
 
         Preserves any existing metadata fields when called on a thread that
         already has a metadata entry.  Skips disk I/O when the entry is
@@ -102,15 +112,27 @@ class ThreadRegistry:
             data = dict(self._load())  # shallow copy
             existing = data.get(thread_id)
             if isinstance(existing, dict):
-                changed = existing.get("tenant_id") != tenant_id
-                if user_id and existing.get("user_id") != user_id:
+                # Guard: don't let weak/fallback identity overwrite a concrete binding
+                existing_tenant = existing.get("tenant_id")
+                existing_user = existing.get("user_id")
+
+                effective_tenant = tenant_id
+                if existing_tenant and existing_tenant not in self._WEAK_TENANT_IDS and tenant_id in self._WEAK_TENANT_IDS:
+                    effective_tenant = existing_tenant  # keep the stronger value
+
+                effective_user = user_id
+                if existing_user and existing_user not in self._WEAK_USER_IDS and user_id in self._WEAK_USER_IDS:
+                    effective_user = existing_user  # keep the stronger value
+
+                changed = existing_tenant != effective_tenant
+                if effective_user and existing_user != effective_user:
                     changed = True
                 if not changed:
                     return  # already registered with same identity → skip write
                 updated = dict(existing)  # copy inner dict to avoid mutating cache
-                updated["tenant_id"] = tenant_id
-                if user_id:
-                    updated["user_id"] = user_id
+                updated["tenant_id"] = effective_tenant
+                if effective_user:
+                    updated["user_id"] = effective_user
                 # Backfill created_at for legacy entries promoted from string format
                 if "created_at" not in updated:
                     updated["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -144,7 +166,12 @@ class ThreadRegistry:
         - Tenant mismatch → False.
         - When *user_id* is provided and the thread has a recorded user_id,
           user mismatch → False.
+        - When OIDC is enabled and *user_id* is provided but the binding
+          has no recorded user_id, access is **denied** (legacy entries
+          without user ownership are not trusted under OIDC).
         """
+        import os
+
         with self._lock:
             entry = self._load().get(thread_id)
         if entry is None:
@@ -157,6 +184,11 @@ class ThreadRegistry:
                 owner_user = entry.get("user_id")
                 if owner_user is not None and owner_user != user_id:
                     return False
+                # OIDC strict mode: deny legacy entries without user_id
+                if owner_user is None:
+                    _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
+                    if _oidc_enabled:
+                        return False
             return True
         # Legacy string entry — tenant only
         return str(entry) == tenant_id

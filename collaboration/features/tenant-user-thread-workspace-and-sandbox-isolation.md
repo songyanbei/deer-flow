@@ -1,97 +1,91 @@
 # Tenant User Thread Workspace And Sandbox Isolation
 
-- Status: `draft`
+- Status: `backend complete, production container validation pending`
+- Last reviewed: `2026-04-08`
 - Owner suggestion: backend + test
 - Related area: multi-tenant / workspace / sandbox / lifecycle / security
 
 ## Goal
 
-在 DeerFlow 当前多租户基础上，落地一套面向生产环境的“用户级强隔离”方案：
+在 DeerFlow 现有多租户基础上，完成面向生产环境的 thread 级隔离方案：
 
-1. 持久化数据按 `tenant_id / user_id / thread_id` 分层落盘。
-2. 运行时继续采用“每线程一个沙箱”模型，不共享 workspace。
-3. 沙箱销毁后，关键业务状态仍可安全恢复。
-4. 普通用户、普通脚本和常见路径绕过手段无法访问其他用户数据。
+1. 持久化线程数据按 `tenant_id / user_id / thread_id` 分层落盘。
+2. 生产态继续坚持“每线程一个 sandbox”，不引入“每用户共享 workspace”。
+3. sandbox 销毁后，关键持久化状态仍可恢复。
+4. 普通用户、普通脚本和常见路径绕过手段无法访问其他用户或其他线程的数据。
 
-本需求的目标是“应用框架层面的强隔离”，不是容器/内核层面的绝对安全隔离。
+本需求关注的是应用框架层的强隔离，不承诺容器或内核层的绝对安全。
 
-## Why This Needs Frontend/Backend Collaboration
+## Current Status
 
-本轮直接执行方主要是后端和测试，前端不是首要改动方。
+截至 `2026-04-08`，代码侧主链路已经落地，当前结论是：
 
-但仍需统一约束：
+- `tenant/user/thread` 路径模型已成为后端事实标准。
+- `ThreadContext` 已作为 thread ownership 校验后的统一上下文对象落地。
+- middleware 身份来源已统一收敛到 `config.configurable["thread_context"]`，不再从 `runtime.context` 或零散字段 fallback 拼身份。
+- uploads API 已不再暴露物理路径，只返回 virtual path 和 artifact URL。
+- `sandbox_state/{thread_id}/` 已从用户数据目录剥离。
+- 生命周期清理已改为“先停 sandbox，再删 sandbox_state，再删文件目录，最后删 registry”。
+- 聚焦回归已在当前快照重跑通过：`43 passed, 1 skipped, 2 warnings`。
 
-- 前端继续以 `thread_id` 作为路由和 artifact URL 的对外主键，不感知底层目录重构。
-- 如果后端实施过程中发现需要前端补充安全态展示、错误提示或交互限制，统一写入 [backend-to-frontend.md](/E:/work/deer-flow/collaboration/handoffs/backend-to-frontend.md)。
+当前尚未完成的发布前验证只有一类：
 
-## 文档分发
-
-- 主需求文档：
-  [tenant-user-thread-workspace-and-sandbox-isolation.md](/E:/work/deer-flow/collaboration/features/tenant-user-thread-workspace-and-sandbox-isolation.md)
-- 后端研发 Checklist：
-  [tenant-user-thread-workspace-and-sandbox-isolation-backend-checklist.md](/E:/work/deer-flow/collaboration/features/tenant-user-thread-workspace-and-sandbox-isolation-backend-checklist.md)
-- 测试 Checklist：
-  [tenant-user-thread-workspace-and-sandbox-isolation-test-checklist.md](/E:/work/deer-flow/collaboration/features/tenant-user-thread-workspace-and-sandbox-isolation-test-checklist.md)
-
-使用方式：
-
-1. 先读本文，确认目标边界、当前现状、目标模型和验收口径。
-2. 后端只按 backend checklist 拆实现任务，不从本文直接反推研发任务。
-3. 测试只按 test checklist 准备环境、设计用例和执行回归，不从本文直接拼测试范围。
-4. 若执行中出现上游平台或前端依赖，再通过 handoff 文档补充，不在本文里堆阻塞项。
+- 真实 Linux / WSL / AIO container 环境下的最小挂载边界验证。
+- 真实 container sandbox 的销毁后恢复链路验证。
 
 ## Current Behavior
 
 ### Backend
 
-当前代码现状已经具备以下基础：
+当前代码已经具备以下行为：
 
-- `thread_id` 已能绑定 `tenant_id / user_id`，并用于 thread ownership 校验。
-- `artifacts`、`uploads`、`runtime` 相关路径已存在 tenant/user 维度访问控制。
-- `memory` 和 `governance ledger` 已支持按 `tenant/user` 目录落盘。
-- AIO 沙箱当前采用 thread 级挂载，挂载对象是 `workspace / uploads / outputs`。
-
-当前还存在以下核心缺口：
-
-- `workspace / uploads / outputs` 的物理路径仍以 `threads/{thread_id}` 为主，不是 `tenant/user/thread` 分层。
-- 生命周期清理没有把用户名下所有 thread 工作目录一并收口。
-- `LocalSandboxProvider` 是开发态单例，不应被视为生产安全边界。
-- 当前隔离更多依赖“访问校验”，目录归属、挂载范围和清理链路尚未完全闭环。
+- 线程文件型数据落盘到 `tenants/{tenant_id}/users/{user_id}/threads/{thread_id}/user-data/`。
+- 对外 API 仍以 `thread_id` 为主键，不要求前端新增身份字段。
+- `resolve_thread_context()` 统一负责 ownership 校验，unknown thread 和 unauthorized thread 均返回 `403`，避免资源枚举。
+- OIDC 启用时，缺失 `tenant_id` 或 `user_id` 的请求返回 `401`。
+- OIDC 启用时，旧 registry 条目若缺失 `user_id`，会被 deny；OIDC 关闭时保留 tenant-only 兼容语义。
+- AIO sandbox 的运行时状态独立存放在 `sandbox_state/{thread_id}/`。
+- 删除用户、删除租户、清理过期 thread 三个生命周期场景都显式包含 sandbox 停止与 `sandbox_state/` 清理。
 
 ### Frontend
 
-当前前端无需直接改动业务主链路，继续保持：
+当前不需要前端改动主链路，仍保持：
 
-- 路由主键仍为 `thread_id`
-- artifact URL 仍为 `/api/threads/{thread_id}/artifacts/...`
-- 上传和展示链路不因为底层目录模型升级而破坏
+- 路由主键为 `thread_id`
+- artifact URL 结构为 `/api/threads/{thread_id}/artifacts/...`
+- 前端不感知底层物理目录重构
 
-## Contract To Confirm First
+若后端后续在生产态容器验证中发现需要新增提示或限制，再通过 [backend-to-frontend.md](/E:/work/deer-flow/collaboration/handoffs/backend-to-frontend.md) 单独交接。
+
+## Contract
 
 - Event/API:
-  - 对外 API 继续以 `thread_id` 为主键，不引入新的前端必传路径主键。
+  - 对外 API 继续以 `thread_id` 为主键。
 - Payload shape:
-  - 请求体中的身份字段不可信，身份仅来自认证上下文。
+  - 身份只来自认证上下文，不信任请求体自带身份字段。
 - Persistence:
-  - 长期记忆、治理账本按 `tenant/user` 持久化。
+  - `memory`、`USER.md`、`governance ledger` 按 `tenant/user` 持久化。
   - `uploads / outputs / checkpoints` 按 `tenant/user/thread` 持久化。
-  - `workspace` 默认视为临时区，不作为长期存储承诺。
+  - `workspace` 默认视为临时区，不承诺长期恢复。
 - Error behavior:
-  - OIDC 启用时，缺失 `tenant_id` 或 `user_id` 返回 `401`。
-  - ownership 不匹配返回 `403`。
-  - thread 不存在或未注册返回 `404` 或显式拒绝，不允许静默降级。
-- Dedup/replacement:
-  - 继续保持“同一 thread 可复用同一沙箱”的能力。
-  - 不引入“同一用户多个 thread 共享一个 workspace”的模型。
+  - `401`：OIDC 启用时缺失 `tenant_id` 或 `user_id`
+  - `403`：ownership 不匹配，或 thread 未注册
+  - `404`：ownership 已确认后，请求的业务对象不存在
+- Identity:
+  - `thread_id` 必须保持全局唯一。
+  - 统一身份链路为：认证上下文 -> `ThreadContext` -> `config.configurable["thread_context"]`
+- Sandbox:
+  - 同一 thread 可复用同一 sandbox。
+  - 不同 thread 不共享 workspace。
 
-## 目标模型
-
-### 1. 目录模型
-
-目标目录结构：
+## Target Model
 
 ```text
 {base_dir}/
+  sandbox_state/
+    {thread_id}/
+      sandbox.json
+      sandbox.lock
   tenants/
     {tenant_id}/
       users/
@@ -108,100 +102,38 @@
                 outputs/
 ```
 
-约束：
+约束如下：
 
-- 所有线程文件型数据必须位于所属 `tenant/user/thread` 目录树下。
-- 不再以 `threads/{thread_id}` 作为生产态主目录模型。
+- 线程文件型数据必须落在所属 `tenant/user/thread` 树下。
+- 不再把生产态 thread 工作目录落在 `threads/{thread_id}`。
+- `sandbox_state/` 是运行时编排状态，不属于用户业务数据。
 
-### 2. 沙箱模型
+## Acceptance Status
 
-- 生产态采用“每线程一个容器沙箱”。
-- 同一 `thread_id` 多轮运行可复用同一沙箱。
-- 不同 `thread_id` 不共享 workspace。
-- 沙箱只挂当前 thread 的最小目录，不挂整个用户目录或租户目录。
+### 已完成
 
-### 3. 数据持久化模型
+- 路径模型切换到 `tenant/user/thread`
+- `ThreadContext` resolver/factory 落地
+- middleware fallback 身份链移除
+- upload/list API 不再暴露物理路径
+- 生命周期清理顺序修正为 file-first / registry-last，并显式 stop sandbox
+- OIDC legacy registry deny 行为落地
+- 聚焦回归在当前快照通过
 
-必须持久化：
+### 待补验证
 
-- `memory`
-- `USER.md`
-- `governance ledger`
-- `uploads`
-- `outputs`
-- thread 状态与 checkpoints
+- 真实 AIO/container sandbox 的 thread 级最小挂载
+- 真实 container 销毁后恢复 memory / ledger / uploads / outputs / checkpoints
+- 生产态误用 `LocalSandboxProvider` 的门禁是否需要从 warning 收紧到 hard fail
 
-默认不持久化：
+## Risks And Release Gate
 
-- workspace 临时脚本
-- 运行进程状态
-- 沙箱内依赖安装结果
-- 沙箱内临时缓存
-
-## Backend Changes
-
-### A. 路径与目录模型重构
-
-- 将 `workspace / uploads / outputs` 从 thread 根目录迁移到 `tenant/user/thread` 路径树。
-- 提供统一的路径生成、路径解析和 virtual path 映射入口。
-- 保证对外 API 不因物理路径变更而破坏。
-
-### B. 线程级沙箱与最小挂载
-
-- 保持 thread 级沙箱复用。
-- AIO 沙箱挂载源目录切换到新的 `tenant/user/thread` 路径。
-- 明确 `LocalSandboxProvider` 仅用于开发，不作为生产方案。
-
-### C. 持久化与恢复
-
-- 让 memory、ledger、uploads、outputs、checkpoints 与沙箱生命周期解耦。
-- 沙箱销毁后，线程仍能基于持久化状态恢复。
-- 不把 workspace 作为长期状态恢复的唯一来源。
-
-### D. 生命周期清理
-
-- 删除用户时，清理其名下所有 thread 目录和相关持久化数据。
-- 删除租户时，清理该租户下所有用户及其 thread 数据。
-- 清理过期 thread 时，连带清理对应工作目录和运行时资源。
-
-### E. 安全收口
-
-- 统一 thread ownership 校验模型。
-- 容器默认 non-root、最小权限、最小挂载。
-- 收紧环境变量注入和网络出口策略。
-- 为路径穿越、软链接逃逸、跨 thread 猜测访问补齐测试门禁。
-
-## Frontend Changes
-
-本轮不要求前端直接改代码。
-
-前端需要默认接受以下后端约束保持不变：
-
-- 路由模型不变
-- artifact URL 结构不变
-- 上传、展示、下载接口主键不变
-
-如果后续要增加隔离态提示、管理员清理反馈或更细粒度错误呈现，另开前端需求，不在本轮主任务内展开。
-
-## Risks
-
-- 旧目录与新目录并存期间可能产生迁移和清理歧义。
-- 生命周期清理若只删 registry 不删物理目录，会留下孤儿数据。
-- 如果误把整个用户目录挂进容器，会破坏 thread 级边界。
-- 本地沙箱若被误用于生产验证，会造成隔离结论失真。
-- 该方案能达到应用框架层面的强隔离，但不能承诺容器/内核层面的绝对安全隔离。
-
-## Acceptance Criteria
-
-- 生产态线程文件数据全部落于 `tenant/user/thread` 路径树。
-- 生产态保持“每线程一个沙箱”，且只挂最小目录。
-- 任一用户无法通过 API、artifact、upload 或普通脚本访问其他用户数据。
-- 删除用户/租户后，不残留对应 thread 工作目录和关键持久化数据。
-- 沙箱销毁后，memory、ledger、uploads、outputs、checkpoints 可恢复。
-- 后端 checklist 与测试 checklist 中的前置项全部闭环。
+- 当前“强隔离”结论仍以真实容器 sandbox 验证为最终放行依据，不能仅凭 Windows 本地回归放行。
+- 当前 `SandboxMiddleware` 在缺失 `thread_context` 时会 warning 后继续，让 provider 可能走 legacy mount 路径；现有入口链路和测试已覆盖正常注入，但生产态仍应把这类 warning 视为异常信号。
+- `thread_registry.json` 仍是单进程 / 单 writer 前提设计；多 worker / 多进程部署不在本轮保证范围内。
 
 ## Open Questions
 
-- 是否需要引入用户级共享只读区或缓存区。
-- 是否需要为生产环境单独定义“禁止 LocalSandboxProvider 启动”的配置门禁。
-- 是否需要在后续阶段补充安全态观测看板或管理员清理可视化。
+- 是否要将生产环境误用 `LocalSandboxProvider` 升级为硬拒绝。
+- 是否需要后续补充更细粒度的隔离观测或管理端告警。
+- 是否要在 Linux/container 验证完成后，把 mount scope 和恢复证据固化进单独执行记录。

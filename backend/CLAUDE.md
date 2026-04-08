@@ -124,7 +124,7 @@ CI runs these regression tests for every pull request via [.github/workflows/bac
 
 Middlewares execute in strict order in `src/agents/lead_agent/agent.py`:
 
-1. **ThreadDataMiddleware** - Creates per-thread directories (`backend/.deer-flow/threads/{thread_id}/user-data/{workspace,uploads,outputs}`)
+1. **ThreadDataMiddleware** - Creates per-thread directories under `tenants/{tenant_id}/users/{user_id}/threads/{thread_id}/user-data/{workspace,uploads,outputs}` using `ThreadContext`
 2. **UploadsMiddleware** - Tracks and injects newly uploaded files into conversation
 3. **SandboxMiddleware** - Acquires sandbox, stores `sandbox_id` in state
 4. **DanglingToolCallMiddleware** - Injects placeholder ToolMessages for AIMessage tool_calls that lack responses (e.g., due to user interruption)
@@ -207,9 +207,11 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 
 **Virtual Path System**:
 - Agent sees: `/mnt/user-data/{workspace,uploads,outputs}`, `/mnt/skills`
-- Physical: `backend/.deer-flow/threads/{thread_id}/user-data/...`, `deer-flow/skills/`
+- Physical: `backend/.deer-flow/tenants/{tenant_id}/users/{user_id}/threads/{thread_id}/user-data/...`, `deer-flow/skills/`
+- Sandbox state: `backend/.deer-flow/sandbox_state/{thread_id}/sandbox.json` (independent of user data)
 - Translation: `replace_virtual_path()` / `replace_virtual_paths_in_command()`
 - Detection: `is_local_sandbox()` checks `sandbox_id == "local"`
+- Identity: `ThreadContext` (frozen dataclass) carries validated `tenant_id`/`user_id`/`thread_id` through the system
 
 **Sandbox Tools** (in `src/sandbox/tools.py`):
 - `bash` - Execute commands with path translation and error handling

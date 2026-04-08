@@ -70,13 +70,16 @@ class _IntegrationAppContext:
     ):
         from src.gateway.routers import agents as agents_mod
         from src.gateway.routers import runtime as runtime_mod
+        from src.gateway import thread_registry as _tr_mod
 
         self._runtime_mod = runtime_mod
         self._agents_mod = agents_mod
+        self._tr_mod = _tr_mod
 
         # Save originals for cleanup
         self._orig_runtime_get_registry = runtime_mod.get_thread_registry
         self._orig_runtime_resolve_agents_dir = runtime_mod._resolve_agents_dir
+        self._orig_tr_get_registry = _tr_mod.get_thread_registry
 
         # Shared registry
         self.registry = ThreadRegistry(registry_file=tmp_path / "thread_registry.json")
@@ -106,6 +109,7 @@ class _IntegrationAppContext:
         # Patch
         _registry = self.registry
         runtime_mod.get_thread_registry = lambda: _registry  # type: ignore
+        _tr_mod.get_thread_registry = lambda: _registry  # type: ignore
         _agents_dir = self.agents_dir
         runtime_mod._resolve_agents_dir = lambda tid: _agents_dir  # type: ignore
 
@@ -120,6 +124,7 @@ class _IntegrationAppContext:
     def cleanup(self):
         self._runtime_mod.get_thread_registry = self._orig_runtime_get_registry  # type: ignore
         self._runtime_mod._resolve_agents_dir = self._orig_runtime_resolve_agents_dir  # type: ignore
+        self._tr_mod.get_thread_registry = self._orig_tr_get_registry  # type: ignore
         for p in self._paths_patches:
             p.stop()
 
@@ -407,6 +412,7 @@ class TestMultiTenantIsolation:
     def test_tenant_a_cannot_access_tenant_b_thread(self, tmp_path):
         """Thread created by tenant-A is inaccessible to tenant-B."""
         from src.gateway.routers import runtime as runtime_mod
+        from src.gateway import thread_registry as _tr_mod
 
         # Tenant A context
         ctx_a = _IntegrationAppContext(tmp_path / "a", tenant_id="tenant-a", user_id="user-a")
@@ -415,6 +421,7 @@ class TestMultiTenantIsolation:
         # Share registry so both tenants see the same thread store
         ctx_b.registry = ctx_a.registry
         runtime_mod.get_thread_registry = lambda: ctx_a.registry  # type: ignore
+        _tr_mod.get_thread_registry = lambda: ctx_a.registry  # type: ignore
 
         try:
             client_a = TestClient(ctx_a.app)
@@ -452,11 +459,13 @@ class TestMultiTenantIsolation:
     def test_cross_owner_same_tenant_denied(self, tmp_path):
         """Two users in the same tenant cannot access each other's threads."""
         from src.gateway.routers import runtime as runtime_mod
+        from src.gateway import thread_registry as _tr_mod
 
         ctx_owner = _IntegrationAppContext(tmp_path / "owner", tenant_id="tenant-x", user_id="owner-1")
         ctx_other = _IntegrationAppContext(tmp_path / "other", tenant_id="tenant-x", user_id="other-2")
         ctx_other.registry = ctx_owner.registry
         runtime_mod.get_thread_registry = lambda: ctx_owner.registry  # type: ignore
+        _tr_mod.get_thread_registry = lambda: ctx_owner.registry  # type: ignore
 
         try:
             client_owner = TestClient(ctx_owner.app)

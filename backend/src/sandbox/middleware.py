@@ -39,8 +39,30 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         super().__init__()
         self._lazy_init = lazy_init
 
-    def _acquire_sandbox(self, thread_id: str) -> str:
+    def _acquire_sandbox(self, thread_id: str, runtime: Runtime) -> str:
+        import logging
+        _logger = logging.getLogger(__name__)
         provider = get_sandbox_provider()
+
+        # Pass ThreadContext to provider exclusively from configurable["thread_context"].
+        # No fallback to runtime.context or individual configurable fields — all callers
+        # (Gateway, DeerFlowClient) must serialize thread_context before invocation.
+        try:
+            from langgraph.config import get_config
+            from src.gateway.thread_context import ThreadContext
+            raw_ctx = get_config().get("configurable", {}).get("thread_context")
+            if raw_ctx and isinstance(raw_ctx, dict):
+                ctx = ThreadContext.deserialize(raw_ctx)
+                provider.set_thread_context(thread_id, ctx)
+            else:
+                _logger.warning(
+                    "SandboxMiddleware: configurable['thread_context'] missing for thread %s — "
+                    "sandbox will use legacy mount paths. This should not happen in production.",
+                    thread_id,
+                )
+        except Exception:
+            _logger.debug("SandboxMiddleware: failed to read thread_context for thread %s", thread_id, exc_info=True)
+
         sandbox_id = provider.acquire(thread_id)
         print(f"Acquiring sandbox {sandbox_id}")
         return sandbox_id
@@ -55,6 +77,6 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         if "sandbox" not in state or state["sandbox"] is None:
             thread_id = runtime.context["thread_id"]
             print(f"Thread ID: {thread_id}")
-            sandbox_id = self._acquire_sandbox(thread_id)
+            sandbox_id = self._acquire_sandbox(thread_id, runtime)
             return {"sandbox": {"sandbox_id": sandbox_id}}
         return super().before_agent(state, runtime)

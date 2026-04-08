@@ -246,13 +246,13 @@ class TestGatewayRouterTenantAccess:
     def test_artifacts_router_imports_thread_registry(self):
         import src.gateway.routers.artifacts as mod
 
-        assert hasattr(mod, "get_thread_registry")
+        assert hasattr(mod, "resolve_thread_context")
         assert hasattr(mod, "get_tenant_id")
 
     def test_uploads_router_imports_thread_registry(self):
         import src.gateway.routers.uploads as mod
 
-        assert hasattr(mod, "get_thread_registry")
+        assert hasattr(mod, "resolve_thread_context")
         assert hasattr(mod, "get_tenant_id")
 
     def test_interventions_router_imports_thread_registry(self):
@@ -268,20 +268,26 @@ class TestGatewayRouterTenantAccess:
 class TestThreadDataMiddlewareRegistration:
     """Verify ThreadDataMiddleware registers thread → tenant in ThreadRegistry."""
 
-    def test_registers_thread_with_tenant(self):
+    def test_registers_thread_with_tenant_via_thread_context(self):
+        """ThreadDataMiddleware reads identity exclusively from configurable['thread_context']."""
         from src.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
 
         with tempfile.TemporaryDirectory() as tmp:
             mw = ThreadDataMiddleware(base_dir=tmp, lazy_init=True)
-            mock_runtime = SimpleNamespace(context={"thread_id": "th-42", "tenant_id": "org-7"})
+            mock_runtime = SimpleNamespace(context={"thread_id": "th-42"})
 
-            with patch("src.agents.middlewares.thread_data_middleware.get_thread_registry") as mock_reg:
+            with (
+                patch("src.agents.middlewares.thread_data_middleware.get_thread_registry") as mock_reg,
+                patch("src.agents.middlewares.thread_data_middleware.get_config") as mock_gc,
+            ):
+                mock_gc.return_value = {"configurable": {"thread_context": {"tenant_id": "org-7", "user_id": "user-1", "thread_id": "th-42"}}}
                 mock_registry = MagicMock()
                 mock_reg.return_value = mock_registry
                 mw.before_agent({}, mock_runtime)
-                mock_registry.register.assert_called_once_with("th-42", "org-7", user_id=None)
+                mock_registry.register.assert_called_once_with("th-42", "org-7", user_id="user-1")
 
-    def test_registers_default_when_no_tenant(self):
+    def test_raises_when_thread_context_missing(self):
+        """ThreadDataMiddleware rejects requests without configurable['thread_context']."""
         from src.agents.middlewares.thread_data_middleware import ThreadDataMiddleware
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,14 +295,11 @@ class TestThreadDataMiddlewareRegistration:
             mock_runtime = SimpleNamespace(context={"thread_id": "th-99"})
 
             with (
-                patch("src.agents.middlewares.thread_data_middleware.get_thread_registry") as mock_reg,
                 patch("src.agents.middlewares.thread_data_middleware.get_config") as mock_gc,
             ):
                 mock_gc.return_value = {"configurable": {}}
-                mock_registry = MagicMock()
-                mock_reg.return_value = mock_registry
-                mw.before_agent({}, mock_runtime)
-                mock_registry.register.assert_called_once_with("th-99", "default", user_id=None)
+                with pytest.raises(ValueError, match="thread_context.*required"):
+                    mw.before_agent({}, mock_runtime)
 
 
 # ── Audit hooks tenant metadata extraction ─────────────────────────────

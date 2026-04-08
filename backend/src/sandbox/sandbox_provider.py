@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from src.config import get_app_config
 from src.reflection import resolve_class
 from src.sandbox.sandbox import Sandbox
+
+if TYPE_CHECKING:
+    from src.gateway.thread_context import ThreadContext
 
 
 class SandboxProvider(ABC):
@@ -34,6 +40,22 @@ class SandboxProvider(ABC):
             sandbox_id: The ID of the sandbox environment to destroy.
         """
         pass
+
+    def release_by_thread(self, thread_id: str) -> None:
+        """Release the sandbox associated with a thread.
+
+        Best-effort: if no sandbox is associated with the thread, this is a no-op.
+        Subclasses that maintain thread→sandbox mappings should override this.
+        The default implementation is a no-op (suitable for LocalSandboxProvider).
+        """
+
+    def set_thread_context(self, thread_id: str, ctx: ThreadContext) -> None:
+        """Store a validated ThreadContext for use during sandbox mounting.
+
+        Called by SandboxMiddleware before ``acquire()``.  The default
+        implementation is a no-op — only providers that need tenant/user
+        paths for mount computation (e.g. AioSandboxProvider) override this.
+        """
 
 
 _default_sandbox_provider: SandboxProvider | None = None

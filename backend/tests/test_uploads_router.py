@@ -8,11 +8,13 @@ from fastapi import UploadFile
 from src.gateway.routers import uploads
 
 
-def _mock_thread_registry():
-    """Create a mock thread registry that always allows access."""
-    registry = MagicMock()
-    registry.check_access.return_value = True
-    return registry
+def _mock_thread_context():
+    """Create a mock ThreadContext returned by resolve_thread_context."""
+    ctx = MagicMock()
+    ctx.thread_id = "mock-thread"
+    ctx.tenant_id = "default"
+    ctx.user_id = "test"
+    return ctx
 
 
 def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_path):
@@ -25,9 +27,9 @@ def test_upload_files_writes_thread_storage_and_skips_local_sandbox_sync(tmp_pat
     provider.get.return_value = sandbox
 
     with (
-        patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "resolve_thread_context", return_value=_mock_thread_context()),
+        patch.object(uploads, "get_uploads_dir_ctx", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
-        patch.object(uploads, "get_thread_registry", return_value=_mock_thread_registry()),
     ):
 
         file = UploadFile(filename="notes.txt", file=BytesIO(b"hello uploads"))
@@ -56,10 +58,10 @@ def test_upload_files_syncs_non_local_sandbox_and_marks_markdown_file(tmp_path):
         return md_path
 
     with (
-        patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "resolve_thread_context", return_value=_mock_thread_context()),
+        patch.object(uploads, "get_uploads_dir_ctx", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
         patch.object(uploads, "convert_file_to_markdown", AsyncMock(side_effect=fake_convert)),
-        patch.object(uploads, "get_thread_registry", return_value=_mock_thread_registry()),
     ):
 
         file = UploadFile(filename="report.pdf", file=BytesIO(b"pdf-bytes"))
@@ -88,9 +90,9 @@ def test_upload_files_rejects_dotdot_and_dot_filenames(tmp_path):
     provider.get.return_value = sandbox
 
     with (
-        patch.object(uploads, "get_uploads_dir", return_value=thread_uploads_dir),
+        patch.object(uploads, "resolve_thread_context", return_value=_mock_thread_context()),
+        patch.object(uploads, "get_uploads_dir_ctx", return_value=thread_uploads_dir),
         patch.object(uploads, "get_sandbox_provider", return_value=provider),
-        patch.object(uploads, "get_thread_registry", return_value=_mock_thread_registry()),
     ):
         # These filenames must be rejected outright
         for bad_name in ["..", "."]:

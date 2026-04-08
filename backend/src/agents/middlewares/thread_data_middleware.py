@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import NotRequired, override
 
 from langchain.agents import AgentState
@@ -9,6 +8,7 @@ from langgraph.runtime import Runtime
 
 from src.agents.thread_state import ThreadDataState
 from src.config.paths import Paths, get_paths
+from src.gateway.thread_context import ThreadContext
 from src.gateway.thread_registry import get_thread_registry
 
 logger = logging.getLogger(__name__)
@@ -30,66 +30,59 @@ class ThreadDataMiddleware(AgentMiddleware[ThreadDataMiddlewareState]):
         self._paths = Paths(base_dir) if base_dir else get_paths()
         self._lazy_init = lazy_init
 
-    def _get_thread_paths(self, thread_id: str) -> dict[str, str]:
+    def _get_thread_paths_ctx(self, ctx: ThreadContext) -> dict[str, str]:
         return {
-            "workspace_path": str(self._paths.sandbox_work_dir(thread_id)),
-            "uploads_path": str(self._paths.sandbox_uploads_dir(thread_id)),
-            "outputs_path": str(self._paths.sandbox_outputs_dir(thread_id)),
+            "workspace_path": str(self._paths.sandbox_work_dir_ctx(ctx)),
+            "uploads_path": str(self._paths.sandbox_uploads_dir_ctx(ctx)),
+            "outputs_path": str(self._paths.sandbox_outputs_dir_ctx(ctx)),
         }
 
-    def _create_thread_directories(self, thread_id: str) -> dict[str, str]:
-        self._paths.ensure_thread_dirs(thread_id)
-        return self._get_thread_paths(thread_id)
+    def _create_thread_directories_ctx(self, ctx: ThreadContext) -> dict[str, str]:
+        self._paths.ensure_thread_dirs_ctx(ctx)
+        return self._get_thread_paths_ctx(ctx)
+
+    def _resolve_context(self, runtime: Runtime) -> ThreadContext:
+        """Extract ThreadContext exclusively from ``config.configurable["thread_context"]``.
+
+        This is the **only** accepted identity source.  Both the Gateway
+        (``stream_runtime_message``) and ``DeerFlowClient._get_runnable_config()``
+        serialize a ``thread_context`` dict into configurable before invoking the
+        agent.  No fallback to ``runtime.context`` or individual configurable
+        fields is allowed — doing so would create a bypass around the validated
+        identity chain.
+
+        Raises:
+            ValueError: If ``thread_context`` is missing or malformed.
+        """
+        cfg: dict = {}
+        try:
+            cfg = get_config().get("configurable", {})
+        except (ImportError, RuntimeError):
+            pass
+
+        raw_ctx = cfg.get("thread_context")
+        if not raw_ctx or not isinstance(raw_ctx, dict):
+            raise ValueError(
+                "ThreadDataMiddleware: configurable['thread_context'] is required but missing. "
+                "All callers (Gateway, DeerFlowClient, tests) must serialize ThreadContext "
+                "into configurable before invoking the agent."
+            )
+        return ThreadContext.deserialize(raw_ctx)
 
     @override
     def before_agent(self, state: ThreadDataMiddlewareState, runtime: Runtime) -> dict | None:
-        # LangGraph Server injects thread_id via runtime.context (HTTP request metadata).
-        # When invoking the graph directly (tests, executor sub-calls), fall back to
-        # get_config() which reads the current LangGraph run config (always available).
-        thread_id = None
-        if runtime.context is not None:
-            thread_id = runtime.context.get("thread_id")
-        if thread_id is None:
-            try:
-                thread_id = get_config().get("configurable", {}).get("thread_id")
-            except (ImportError, RuntimeError):
-                pass
-        if thread_id is None:
-            raise ValueError("Thread ID is required in the context")
+        ctx = self._resolve_context(runtime)
 
         # Register thread → tenant mapping for access control.
-        # Priority: runtime.context (set by Gateway) → configurable (set by
-        # runtime_service / embedded client) → "default" (single-tenant mode).
-        tenant_id = None
-        user_id = None
-        if runtime.context is not None:
-            tenant_id = runtime.context.get("tenant_id")
-            user_id = runtime.context.get("user_id")
-        if not tenant_id:
-            try:
-                cfg = get_config().get("configurable", {})
-                tenant_id = tenant_id or cfg.get("tenant_id", "default")
-                user_id = user_id or cfg.get("user_id")
-            except (ImportError, RuntimeError):
-                tenant_id = "default"
-
-        # Defense-in-depth: warn when OIDC is enabled but identity is missing.
-        _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
-        if _oidc_enabled:
-            if tenant_id == "default":
-                logger.warning("ThreadDataMiddleware: OIDC enabled but tenant_id fell back to 'default' for thread %s", thread_id)
-            if not user_id:
-                logger.warning("ThreadDataMiddleware: OIDC enabled but user_id missing for thread %s", thread_id)
-
         try:
-            get_thread_registry().register(thread_id, tenant_id, user_id=user_id)
+            get_thread_registry().register(ctx.thread_id, ctx.tenant_id, user_id=ctx.user_id)
         except (ValueError, OSError):
             pass  # best-effort; don't block thread execution
 
         if self._lazy_init:
-            paths = self._get_thread_paths(thread_id)
+            paths = self._get_thread_paths_ctx(ctx)
         else:
-            paths = self._create_thread_directories(thread_id)
-            print(f"Created thread data directories for thread {thread_id}")
+            paths = self._create_thread_directories_ctx(ctx)
+            print(f"Created thread data directories for thread {ctx.thread_id}")
 
         return {"thread_data": {**paths}}

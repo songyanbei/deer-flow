@@ -14,7 +14,8 @@ from fastapi import Depends
 
 from src.config.extensions_config import ExtensionsConfig, SkillStateConfig, get_extensions_config, reload_extensions_config
 from src.gateway.dependencies import get_tenant_id, get_user_id, require_role
-from src.gateway.path_utils import resolve_thread_virtual_path
+from src.gateway.path_utils import resolve_thread_virtual_path_ctx
+from src.gateway.thread_context import resolve_thread_context
 from src.skills import Skill, load_skills
 from src.skills.loader import get_skills_root_path
 
@@ -360,12 +361,10 @@ async def install_skill(request: SkillInstallRequest, tenant_id: str = Depends(g
     """
     try:
         # Verify thread ownership before accessing thread files
-        from src.gateway.thread_registry import get_thread_registry
-        if not get_thread_registry().check_access(request.thread_id, tenant_id, user_id=user_id):
-            raise HTTPException(status_code=403, detail="Access denied: thread does not belong to this tenant/user")
+        ctx = resolve_thread_context(request.thread_id, tenant_id, user_id)
 
         # Resolve the virtual path to actual file path
-        skill_file_path = resolve_thread_virtual_path(request.thread_id, request.path)
+        skill_file_path = resolve_thread_virtual_path_ctx(ctx, request.path)
 
         # Check if file exists
         if not skill_file_path.exists():

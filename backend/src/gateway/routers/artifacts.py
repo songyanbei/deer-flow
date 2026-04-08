@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 
 from src.gateway.dependencies import get_tenant_id, get_user_id
-from src.gateway.path_utils import resolve_thread_virtual_path
-from src.gateway.thread_registry import get_thread_registry
+from src.gateway.path_utils import resolve_thread_virtual_path_ctx
+from src.gateway.thread_context import resolve_thread_context
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +95,8 @@ async def get_artifact(thread_id: str, path: str, request: Request, tenant_id: s
         - Get HTML file: `/api/threads/abc123/artifacts/mnt/user-data/outputs/index.html`
         - Download file: `/api/threads/abc123/artifacts/mnt/user-data/outputs/data.csv?download=true`
     """
-    # Tenant + user access control
-    if not get_thread_registry().check_access(thread_id, tenant_id, user_id):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Ownership validation — returns 403 for unknown or unauthorized threads
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
     # Check if this is a request for a file inside a .skill archive (e.g., xxx.skill/SKILL.md)
     if ".skill/" in path:
@@ -107,7 +106,7 @@ async def get_artifact(thread_id: str, path: str, request: Request, tenant_id: s
         skill_file_path = path[: marker_pos + len(".skill")]  # e.g., "mnt/user-data/outputs/my-skill.skill"
         internal_path = path[marker_pos + len(skill_marker) :]  # e.g., "SKILL.md"
 
-        actual_skill_path = resolve_thread_virtual_path(thread_id, skill_file_path)
+        actual_skill_path = resolve_thread_virtual_path_ctx(ctx, skill_file_path)
 
         if not actual_skill_path.exists():
             raise HTTPException(status_code=404, detail=f"Skill file not found: {skill_file_path}")
@@ -133,7 +132,7 @@ async def get_artifact(thread_id: str, path: str, request: Request, tenant_id: s
         except UnicodeDecodeError:
             return Response(content=content, media_type=mime_type or "application/octet-stream", headers=cache_headers)
 
-    actual_path = resolve_thread_virtual_path(thread_id, path)
+    actual_path = resolve_thread_virtual_path_ctx(ctx, path)
 
     logger.info(f"Resolving artifact path: thread_id={thread_id}, requested_path={path}, actual_path={actual_path}")
 

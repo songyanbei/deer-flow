@@ -77,6 +77,7 @@ class AioSandboxProvider(SandboxProvider):
         self._sandbox_infos: dict[str, SandboxInfo] = {}  # sandbox_id -> SandboxInfo (for destroy)
         self._thread_sandboxes: dict[str, str] = {}  # thread_id -> sandbox_id
         self._thread_locks: dict[str, threading.Lock] = {}  # thread_id -> in-process lock
+        self._thread_contexts: dict = {}  # thread_id -> ThreadContext (for mount path computation)
         self._last_activity: dict[str, float] = {}  # sandbox_id -> last activity timestamp
         self._shutdown_called = False
         self._idle_checker_stop = threading.Event()
@@ -179,6 +180,13 @@ class AioSandboxProvider(SandboxProvider):
         """
         return hashlib.sha256(thread_id.encode()).hexdigest()[:8]
 
+    # ── ThreadContext for mount path computation ────────────────────────
+
+    def set_thread_context(self, thread_id: str, ctx) -> None:
+        """Store a validated ThreadContext for tenant-scoped mount paths."""
+        with self._lock:
+            self._thread_contexts[thread_id] = ctx
+
     # ── Mount helpers ────────────────────────────────────────────────────
 
     def _get_extra_mounts(self, thread_id: str | None) -> list[tuple[str, str, bool]]:
@@ -196,20 +204,37 @@ class AioSandboxProvider(SandboxProvider):
 
         return mounts
 
-    @staticmethod
-    def _get_thread_mounts(thread_id: str) -> list[tuple[str, str, bool]]:
+    def _get_thread_mounts(self, thread_id: str) -> list[tuple[str, str, bool]]:
         """Get volume mounts for a thread's data directories.
+
+        Uses ThreadContext (if set via ``set_thread_context``) for tenant-scoped
+        paths.  Falls back to legacy flat paths if no context is available.
 
         Creates directories if they don't exist (lazy initialization).
         """
         paths = get_paths()
-        paths.ensure_thread_dirs(thread_id)
 
-        mounts = [
-            (str(paths.sandbox_work_dir(thread_id)), f"{VIRTUAL_PATH_PREFIX}/workspace", False),
-            (str(paths.sandbox_uploads_dir(thread_id)), f"{VIRTUAL_PATH_PREFIX}/uploads", False),
-            (str(paths.sandbox_outputs_dir(thread_id)), f"{VIRTUAL_PATH_PREFIX}/outputs", False),
-        ]
+        with self._lock:
+            ctx = self._thread_contexts.get(thread_id)
+
+        if ctx is not None:
+            paths.ensure_thread_dirs_ctx(ctx)
+            mounts = [
+                (str(paths.sandbox_work_dir_ctx(ctx)), f"{VIRTUAL_PATH_PREFIX}/workspace", False),
+                (str(paths.sandbox_uploads_dir_ctx(ctx)), f"{VIRTUAL_PATH_PREFIX}/uploads", False),
+                (str(paths.sandbox_outputs_dir_ctx(ctx)), f"{VIRTUAL_PATH_PREFIX}/outputs", False),
+            ]
+        else:
+            # Fallback for backward compatibility (no ThreadContext available).
+            # This path should only be reached during local dev / tests; in
+            # production (OIDC) the gateway always sets ThreadContext.
+            logger.warning("_get_thread_mounts: no ThreadContext for thread %s — falling back to legacy flat paths", thread_id)
+            paths.ensure_thread_dirs(thread_id)
+            mounts = [
+                (str(paths.sandbox_work_dir(thread_id)), f"{VIRTUAL_PATH_PREFIX}/workspace", False),
+                (str(paths.sandbox_uploads_dir(thread_id)), f"{VIRTUAL_PATH_PREFIX}/uploads", False),
+                (str(paths.sandbox_outputs_dir(thread_id)), f"{VIRTUAL_PATH_PREFIX}/outputs", False),
+            ]
 
         return mounts
 
@@ -459,6 +484,7 @@ class AioSandboxProvider(SandboxProvider):
             thread_ids_to_remove = [tid for tid, sid in self._thread_sandboxes.items() if sid == sandbox_id]
             for tid in thread_ids_to_remove:
                 del self._thread_sandboxes[tid]
+                self._thread_contexts.pop(tid, None)
             self._last_activity.pop(sandbox_id, None)
 
         # Clean up persisted state (outside lock, involves file I/O)
@@ -469,6 +495,16 @@ class AioSandboxProvider(SandboxProvider):
         if info:
             self._backend.destroy(info)
             logger.info(f"Released sandbox {sandbox_id}")
+
+    def release_by_thread(self, thread_id: str) -> None:
+        """Release the sandbox associated with a thread.
+
+        Best-effort: if no sandbox is mapped to this thread, this is a no-op.
+        """
+        with self._lock:
+            sandbox_id = self._thread_sandboxes.get(thread_id)
+        if sandbox_id is not None:
+            self.release(sandbox_id)
 
     def shutdown(self) -> None:
         """Shutdown all sandboxes. Thread-safe and idempotent."""

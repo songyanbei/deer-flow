@@ -29,8 +29,10 @@ SANDBOX_LOCK_FILE = "sandbox.lock"
 class FileSandboxStateStore(SandboxStateStore):
     """File-based state store using JSON files and fcntl file locking.
 
-    State is stored at: {base_dir}/threads/{thread_id}/sandbox.json
-    Lock files at:      {base_dir}/threads/{thread_id}/sandbox.lock
+    State is stored at: {base_dir}/sandbox_state/{thread_id}/sandbox.json
+    Lock files at:      {base_dir}/sandbox_state/{thread_id}/sandbox.lock
+
+    Sandbox state is independent of user data — recovery only needs thread_id.
 
     This works across processes on the same machine sharing a filesystem.
     For K8s multi-pod scenarios, requires a shared PVC mount at base_dir.
@@ -45,8 +47,8 @@ class FileSandboxStateStore(SandboxStateStore):
         self._paths = Paths(base_dir)
 
     def _thread_dir(self, thread_id: str) -> Path:
-        """Get the directory for a thread's state files."""
-        return self._paths.thread_dir(thread_id)
+        """Get the directory for a thread's sandbox state files."""
+        return self._paths.sandbox_state_dir(thread_id)
 
     def save(self, thread_id: str, info: SandboxInfo) -> None:
         thread_dir = self._thread_dir(thread_id)

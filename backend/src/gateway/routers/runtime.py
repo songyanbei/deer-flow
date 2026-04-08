@@ -31,6 +31,7 @@ from src.gateway.runtime_service import (
     start_stream,
     stream_message,
 )
+from src.gateway.thread_context import resolve_thread_context
 from src.gateway.thread_registry import get_thread_registry
 
 logger = logging.getLogger(__name__)
@@ -103,16 +104,6 @@ def _resolve_agents_dir(tenant_id: str) -> Path:
     if tenant_id and tenant_id != "default":
         return paths.tenant_agents_dir(tenant_id)
     return paths.agents_dir
-
-
-def _check_thread_ownership(binding: dict[str, Any], tenant_id: str, user_id: str) -> None:
-    """Raise 403 if the caller does not own the thread (tenant + user)."""
-    owner_tenant = binding.get("tenant_id")
-    if owner_tenant is not None and owner_tenant != tenant_id:
-        raise HTTPException(status_code=403, detail="Access denied: thread belongs to another tenant")
-    owner_user = binding.get("user_id")
-    if owner_user is not None and owner_user != user_id:
-        raise HTTPException(status_code=403, detail="Access denied: thread belongs to another user")
 
 
 def _validate_portal_session_id(value: str) -> str:
@@ -246,12 +237,10 @@ async def get_runtime_thread(
     """Return thread binding metadata and current state summary."""
     registry = get_thread_registry()
 
-    binding = registry.get_binding(thread_id)
-    if binding is None:
-        raise HTTPException(status_code=404, detail="Thread not found in registry")
+    # Ownership validation — returns 403 for unknown or unauthorized threads
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
-    # Tenant + owner access control
-    _check_thread_ownership(binding, tenant_id, user_id)
+    binding = registry.get_binding(thread_id)
 
     # Fetch live state summary from LangGraph
     try:
@@ -285,12 +274,8 @@ async def stream_runtime_message(
     """Submit a message to the runtime and stream normalized SSE events."""
     registry = get_thread_registry()
 
-    # Thread existence + ownership check
-    binding = registry.get_binding(thread_id)
-    if binding is None:
-        raise HTTPException(status_code=404, detail="Thread not found in registry")
-
-    _check_thread_ownership(binding, tenant_id, user_id)
+    # Ownership validation — returns 403 for unknown or unauthorized threads
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
     # Validate payload
     message = _validate_message(body.message)
@@ -299,7 +284,7 @@ async def stream_runtime_message(
     entry_agent = _validate_entry_agent(body.entry_agent, allowed_agents)
     _validate_metadata(body.metadata)
 
-    # Build runtime context
+    # Build runtime context with serialized ThreadContext
     context: dict[str, Any] = {
         "thread_id": thread_id,
         "tenant_id": tenant_id,
@@ -307,6 +292,7 @@ async def stream_runtime_message(
         "username": username,
         "allowed_agents": allowed_agents,
         "group_key": group_key,
+        "thread_context": ctx.serialize(),
     }
     if body.requested_orchestration_mode:
         context["requested_orchestration_mode"] = body.requested_orchestration_mode

@@ -204,9 +204,11 @@ def _make_runtime_app(
 ):
     """Create a minimal FastAPI app with runtime router for testing."""
     from src.gateway.routers import runtime
+    from src.gateway import thread_registry as _tr_mod
 
     original_registry = runtime.get_thread_registry
     original_resolve = runtime._resolve_agents_dir
+    original_tr_get_registry = _tr_mod.get_thread_registry
 
     registry = ThreadRegistry(registry_file=tmp_path / "thread_registry.json")
     app = FastAPI()
@@ -221,12 +223,14 @@ def _make_runtime_app(
         return await call_next(request)
 
     runtime.get_thread_registry = lambda: registry
+    _tr_mod.get_thread_registry = lambda: registry
     if agents_dir is not None:
         runtime._resolve_agents_dir = lambda tid: agents_dir
 
     def cleanup():
         runtime.get_thread_registry = original_registry
         runtime._resolve_agents_dir = original_resolve
+        _tr_mod.get_thread_registry = original_tr_get_registry
 
     return app, registry, cleanup
 
