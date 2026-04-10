@@ -277,6 +277,48 @@ class ExtensionsConfig(BaseModel):
             logger.warning("Failed to load tenant overlay for tenant_id=%s, using platform config", tenant_id, exc_info=True)
             return base
 
+    @classmethod
+    def from_user(cls, tenant_id: str | None, user_id: str | None) -> "ExtensionsConfig":
+        """Load extensions config with tenant + user overlay (three layers).
+
+        Merge order: platform < tenant < user.
+        Missing layers are silently skipped.  When *user_id* is anonymous or
+        *tenant_id* is default, falls back to :meth:`from_tenant`.
+        """
+        base = cls.from_tenant(tenant_id)
+        if not tenant_id or tenant_id == "default":
+            return base
+        if not user_id or user_id == "anonymous":
+            return base
+
+        try:
+            from src.config.paths import get_paths
+
+            user_cfg_path = get_paths().tenant_user_extensions_config(tenant_id, user_id)
+            if not user_cfg_path.exists():
+                return base
+
+            with open(user_cfg_path, encoding="utf-8") as f:
+                user_data = json.load(f)
+
+            cls.resolve_env_variables(user_data)
+            user_cfg = cls.model_validate(user_data)
+
+            # Merge: user overrides tenant/platform for same-name entries
+            merged_servers = dict(base.mcp_servers)
+            merged_servers.update(user_cfg.mcp_servers)
+
+            merged_skills = dict(base.skills)
+            merged_skills.update(user_cfg.skills)
+
+            return cls(mcp_servers=merged_servers, skills=merged_skills)
+        except Exception:
+            logger.warning(
+                "Failed to load user overlay for tenant_id=%s user_id=%s, using tenant config",
+                tenant_id, user_id, exc_info=True,
+            )
+            return base
+
 
 _extensions_config: ExtensionsConfig | None = None
 

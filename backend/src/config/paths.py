@@ -170,6 +170,24 @@ class Paths:
         """User governance ledger: ``tenants/{tid}/users/{uid}/governance_ledger.jsonl``."""
         return self.tenant_user_dir(tenant_id, user_id) / "governance_ledger.jsonl"
 
+    # ── User-scoped resource paths (personal agents, skills, extensions) ─
+
+    def tenant_user_agents_dir(self, tenant_id: str, user_id: str) -> Path:
+        """User personal agents directory: ``tenants/{tid}/users/{uid}/agents/``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "agents"
+
+    def tenant_user_agent_dir(self, tenant_id: str, user_id: str, agent_name: str) -> Path:
+        """User personal agent directory: ``tenants/{tid}/users/{uid}/agents/{name}/``."""
+        return self.tenant_user_agents_dir(tenant_id, user_id) / agent_name.lower()
+
+    def tenant_user_skills_dir(self, tenant_id: str, user_id: str) -> Path:
+        """User personal skills directory: ``tenants/{tid}/users/{uid}/skills/``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "skills"
+
+    def tenant_user_extensions_config(self, tenant_id: str, user_id: str) -> Path:
+        """User personal extensions config: ``tenants/{tid}/users/{uid}/extensions_config.json``."""
+        return self.tenant_user_dir(tenant_id, user_id) / "extensions_config.json"
+
     # ── Tenant-scoped thread paths (production model) ───────────────────
 
     def tenant_user_thread_dir(self, tenant_id: str, user_id: str, thread_id: str) -> Path:
@@ -371,3 +389,17 @@ def resolve_tenant_agents_dir(tenant_id: str | None) -> Path | None:
     if not tenant_id or tenant_id == "default":
         return None
     return get_paths().tenant_agents_dir(tenant_id)
+
+
+def resolve_tenant_user_agents_dir(tenant_id: str | None, user_id: str | None) -> Path | None:
+    """Resolve user-scoped agents directory.
+
+    Returns ``None`` for the default tenant or anonymous user so callers
+    skip the personal layer.  For identified users returns the
+    ``tenants/{tenant_id}/users/{user_id}/agents/`` path.
+    """
+    if not tenant_id or tenant_id == "default":
+        return None
+    if not user_id or user_id == "anonymous":
+        return None
+    return get_paths().tenant_user_agents_dir(tenant_id, user_id)

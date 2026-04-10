@@ -248,18 +248,24 @@ def test_make_lead_agent_disables_global_mcp_for_domain_agents(monkeypatch):
     monkeypatch.setattr(tools_module, "get_available_tools", _fake_get_available_tools)
     monkeypatch.setattr(lead_agent_module, "_build_middlewares", lambda config, model_name, agent_name=None: [])
     monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
+    _fake_cfg_no_engine = lambda _name, **_kw: SimpleNamespace(
+        model=None,
+        tool_groups=[],
+        max_tool_calls=20,
+        available_skills=None,
+        engine_type=None,
+    )
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_cfg_no_engine)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_cfg_no_engine)
+    monkeypatch.setattr("src.execution.mcp_pool.mcp_pool", SimpleNamespace(get_agent_tools_sync=lambda _name: []))
     monkeypatch.setattr(
-        lead_agent_module,
-        "load_agent_config",
-        lambda _name, **_kw: SimpleNamespace(
-            model=None,
-            tool_groups=[],
-            max_tool_calls=20,
-            available_skills=None,
-            engine_type=None,
+        "src.mcp.runtime_manager.mcp_runtime",
+        SimpleNamespace(
+            scope_key_for_agent=lambda name, tenant_id=None: f"domain:{name}",
+            scope_key_for_user_agent=lambda name, tenant_id=None, user_id=None: f"domain:{name}",
+            get_tools_sync=lambda _scope: [],
         ),
     )
-    monkeypatch.setattr("src.execution.mcp_pool.mcp_pool", SimpleNamespace(get_agent_tools_sync=lambda _name: []))
     monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)
 
     result = lead_agent_module.make_lead_agent(
@@ -291,21 +297,20 @@ def test_make_lead_agent_filters_write_like_tools_for_read_only_explorer(monkeyp
     monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
     monkeypatch.setattr(lead_agent_module, "_build_middlewares", lambda config, model_name, agent_name=None: [])
     monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
-    monkeypatch.setattr(
-        lead_agent_module,
-        "load_agent_config",
-        lambda _name, **_kw: SimpleNamespace(
-            model=None,
-            tool_groups=[],
-            max_tool_calls=20,
-            available_skills=None,
-            engine_type="ReadOnly_Explorer",
-        ),
+    _fake_cfg_read_only = lambda _name, **_kw: SimpleNamespace(
+        model=None,
+        tool_groups=[],
+        max_tool_calls=20,
+        available_skills=None,
+        engine_type="ReadOnly_Explorer",
     )
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_cfg_read_only)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_cfg_read_only)
     monkeypatch.setattr(
         "src.mcp.runtime_manager.mcp_runtime",
         SimpleNamespace(
             scope_key_for_agent=lambda name, tenant_id=None: f"domain:{name}",
+            scope_key_for_user_agent=lambda name, tenant_id=None, user_id=None: f"domain:{name}",
             get_tools_sync=lambda _scope: [
                 DummyTool("lookup_employee"),
                 DummyTool("create_contact"),
@@ -352,18 +357,16 @@ def test_make_lead_agent_resolves_engine_mode_from_config(monkeypatch, configure
     monkeypatch.setattr(tools_module, "get_available_tools", lambda **kwargs: [])
     monkeypatch.setattr(lead_agent_module, "_build_middlewares", lambda config, model_name, agent_name=None: [])
     monkeypatch.setattr(lead_agent_module, "create_chat_model", lambda **kwargs: object())
-    monkeypatch.setattr(
-        lead_agent_module,
-        "load_agent_config",
-        lambda _name, **_kw: SimpleNamespace(
-            model=None,
-            tool_groups=[],
-            max_tool_calls=20,
-            available_skills=None,
-            engine_type=configured_engine_type,
-            name="meeting-agent",
-        ),
+    _fake_cfg_engine = lambda _name, **_kw: SimpleNamespace(
+        model=None,
+        tool_groups=[],
+        max_tool_calls=20,
+        available_skills=None,
+        engine_type=configured_engine_type,
+        name="meeting-agent",
     )
+    monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_cfg_engine)
+    monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_cfg_engine)
     monkeypatch.setattr("src.execution.mcp_pool.mcp_pool", SimpleNamespace(get_agent_tools_sync=lambda _name: []))
     monkeypatch.setattr(lead_agent_module, "apply_prompt_template", _fake_apply_prompt_template)
     monkeypatch.setattr(lead_agent_module, "create_agent", lambda **kwargs: kwargs)

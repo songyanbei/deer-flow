@@ -224,13 +224,25 @@ def _make_runtime_app(
 
     runtime.get_thread_registry = lambda: registry
     _tr_mod.get_thread_registry = lambda: registry
+    original_load_layered = None
     if agents_dir is not None:
         runtime._resolve_agents_dir = lambda tid: agents_dir
+        # Also patch load_agent_config_layered to use the test agents_dir
+        from src.config.agents_config import load_agent_config as _load_cfg
+        original_load_layered = runtime.load_agent_config_layered
+        def _test_layered(name, *, tenant_id=None, user_id=None):
+            try:
+                return _load_cfg(name, agents_dir=agents_dir)
+            except Exception:
+                return None
+        runtime.load_agent_config_layered = _test_layered
 
     def cleanup():
         runtime.get_thread_registry = original_registry
         runtime._resolve_agents_dir = original_resolve
         _tr_mod.get_thread_registry = original_tr_get_registry
+        if original_load_layered is not None:
+            runtime.load_agent_config_layered = original_load_layered
 
     return app, registry, cleanup
 
@@ -1178,6 +1190,7 @@ class TestAllowedAgentsContract:
     def test_validate_allowed_agents_normalizes_case(self, tmp_path):
         """_validate_allowed_agents should normalize to lowercase."""
         from src.gateway.routers import runtime as runtime_mod
+        from src.config.agents_config import load_agent_config as _load_cfg
 
         agents_dir = tmp_path / "agents"
         agent_dir = agents_dir / "my-agent"
@@ -1185,30 +1198,51 @@ class TestAllowedAgentsContract:
         (agent_dir / "config.yaml").write_text("name: my-agent\ndescription: test", encoding="utf-8")
 
         original = runtime_mod._resolve_agents_dir
+        original_layered = runtime_mod.load_agent_config_layered
         runtime_mod._resolve_agents_dir = lambda tid: agents_dir
+
+        def _layered(name, *, tenant_id=None, user_id=None):
+            try:
+                return _load_cfg(name, agents_dir=agents_dir)
+            except Exception:
+                return None
+
+        runtime_mod.load_agent_config_layered = _layered
         try:
             result = runtime_mod._validate_allowed_agents(["My-Agent", "MY-AGENT"], "default")
             # Deduplicated to single lowercase entry
             assert result == ["my-agent"]
         finally:
             runtime_mod._resolve_agents_dir = original
+            runtime_mod.load_agent_config_layered = original_layered
 
     def test_validate_allowed_agents_rejects_nonexistent(self, tmp_path):
         """Unknown agent directories should cause 422."""
         from fastapi import HTTPException
         from src.gateway.routers import runtime as runtime_mod
+        from src.config.agents_config import load_agent_config as _load_cfg
 
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
 
         original = runtime_mod._resolve_agents_dir
+        original_layered = runtime_mod.load_agent_config_layered
         runtime_mod._resolve_agents_dir = lambda tid: agents_dir
+
+        def _layered(name, *, tenant_id=None, user_id=None):
+            try:
+                return _load_cfg(name, agents_dir=agents_dir)
+            except Exception:
+                return None
+
+        runtime_mod.load_agent_config_layered = _layered
         try:
             with pytest.raises(HTTPException) as exc_info:
                 runtime_mod._validate_allowed_agents(["ghost-agent"], "default")
             assert exc_info.value.status_code == 422
         finally:
             runtime_mod._resolve_agents_dir = original
+            runtime_mod.load_agent_config_layered = original_layered
 
     def test_validate_allowed_agents_rejects_bare_directory_without_config(self, tmp_path):
         """BUG REGRESSION: A directory without config.yaml should NOT be treated as a valid agent.
@@ -1219,6 +1253,7 @@ class TestAllowedAgentsContract:
         """
         from fastapi import HTTPException
         from src.gateway.routers import runtime as runtime_mod
+        from src.config.agents_config import load_agent_config as _load_cfg
 
         agents_dir = tmp_path / "agents"
         # Create a bare directory — no config.yaml
@@ -1226,7 +1261,16 @@ class TestAllowedAgentsContract:
         ghost_dir.mkdir(parents=True)
 
         original = runtime_mod._resolve_agents_dir
+        original_layered = runtime_mod.load_agent_config_layered
         runtime_mod._resolve_agents_dir = lambda tid: agents_dir
+
+        def _layered(name, *, tenant_id=None, user_id=None):
+            try:
+                return _load_cfg(name, agents_dir=agents_dir)
+            except Exception:
+                return None
+
+        runtime_mod.load_agent_config_layered = _layered
         try:
             with pytest.raises(HTTPException) as exc_info:
                 runtime_mod._validate_allowed_agents(["ghost-agent"], "default")
@@ -1234,6 +1278,7 @@ class TestAllowedAgentsContract:
             assert "ghost-agent" in exc_info.value.detail.lower()
         finally:
             runtime_mod._resolve_agents_dir = original
+            runtime_mod.load_agent_config_layered = original_layered
 
 
 class TestThreadCreateEndToEnd:

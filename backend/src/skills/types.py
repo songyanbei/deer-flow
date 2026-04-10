@@ -14,6 +14,7 @@ class Skill:
     relative_path: Path  # Relative path from category root to skill directory
     category: str  # 'public' or 'custom'
     enabled: bool = False  # Whether this skill is enabled
+    source: str = "platform"  # "platform", "tenant", or "personal"
 
     @property
     def skill_path(self) -> str:

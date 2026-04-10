@@ -486,9 +486,9 @@ def _content_to_text(content) -> str:
 async def planner_node(state: ThreadState, config: RunnableConfig) -> dict:
     _cfg = config.get("configurable", {})
     tenant_id = _cfg.get("tenant_id", "default")
-    agents_dir = resolve_tenant_agents_dir(tenant_id)
+    user_id = _cfg.get("user_id")
     allowed_agents = _cfg.get("allowed_agents")
-    domain_agents = list_domain_agents(agents_dir=agents_dir, allowed_agents=allowed_agents)
+    domain_agents = list_domain_agents(tenant_id=tenant_id, user_id=user_id, allowed_agents=allowed_agents)
     agent_descriptions = _build_agent_descriptions(domain_agents)
 
     task_pool: list[TaskStatus] = state.get("task_pool") or []

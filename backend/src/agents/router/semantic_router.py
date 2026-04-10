@@ -265,8 +265,11 @@ def _append_candidate_hints(task_description: str, hinted_agents: list[str]) -> 
     return f"{task_description}\nPreferred helper candidates (hint only): {hinted}"
 
 
-def _get_helper_candidates(help_request: HelpRequestPayload, requester: str | None, *, agents_dir=None, allowed_agents=None) -> tuple[list, list[str], list[str]]:
-    domain_agents = list_domain_agents(agents_dir=agents_dir, allowed_agents=allowed_agents)
+def _get_helper_candidates(help_request: HelpRequestPayload, requester: str | None, *, agents_dir=None, allowed_agents=None, tenant_id=None, user_id=None) -> tuple[list, list[str], list[str]]:
+    if tenant_id is not None:
+        domain_agents = list_domain_agents(tenant_id=tenant_id, user_id=user_id, allowed_agents=allowed_agents)
+    else:
+        domain_agents = list_domain_agents(agents_dir=agents_dir, allowed_agents=allowed_agents)
     candidate_names = [agent.name for agent in domain_agents if agent.name != requester]
     hinted = [name for name in (help_request.get("candidate_agents") or []) if name in candidate_names]
     filtered_agents = [agent for agent in domain_agents if agent.name in candidate_names]
@@ -1117,9 +1120,9 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
     requester = parent_task.get("requested_by_agent")
     _cfg_help = config.get("configurable", {})
     _tenant_id = _cfg_help.get("tenant_id", "default")
-    _agents_dir = resolve_tenant_agents_dir(_tenant_id)
+    _user_id = _cfg_help.get("user_id")
     _allowed_agents = _cfg_help.get("allowed_agents")
-    domain_agents, candidate_names, hinted = _get_helper_candidates(help_request, requester, agents_dir=_agents_dir, allowed_agents=_allowed_agents)
+    domain_agents, candidate_names, hinted = _get_helper_candidates(help_request, requester, tenant_id=_tenant_id, user_id=_user_id, allowed_agents=_allowed_agents)
     direct_candidate = _pick_direct_helper_candidate(candidate_names, hinted)
     helper_retry_count = int(parent_task.get("helper_retry_count") or 0)
 
@@ -1249,6 +1252,7 @@ async def _route_help_request(parent_task: TaskStatus, state: ThreadState, confi
 async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
     _cfg = config.get("configurable", {})
     tenant_id = _cfg.get("tenant_id", "default")
+    user_id = _cfg.get("user_id")
     agents_dir = resolve_tenant_agents_dir(tenant_id)
     allowed_agents = _cfg.get("allowed_agents")
     route_count = (state.get("route_count") or 0) + 1
@@ -1489,7 +1493,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
                 help_request = waiting_task.get("request_help")
                 if help_request:
                     requester = waiting_task.get("requested_by_agent")
-                    _, candidate_names, hinted = _get_helper_candidates(help_request, requester, agents_dir=agents_dir, allowed_agents=allowed_agents)
+                    _, candidate_names, hinted = _get_helper_candidates(help_request, requester, tenant_id=tenant_id, user_id=user_id, allowed_agents=allowed_agents)
                     direct_candidate = _pick_direct_helper_candidate(candidate_names, hinted)
                     helper_retry_count = int(waiting_task.get("helper_retry_count") or 0)
                     if direct_candidate and _can_retry_helper(waiting_task):
@@ -1608,7 +1612,7 @@ async def router_node(state: ThreadState, config: RunnableConfig) -> dict:
         logger.info("[Router] No runnable tasks and no active tasks, signaling planner.")
         return {"execution_state": "PLANNING_NEEDED", "route_count": route_count}
 
-    domain_agents = list_domain_agents(agents_dir=agents_dir, allowed_agents=allowed_agents)
+    domain_agents = list_domain_agents(tenant_id=tenant_id, user_id=user_id, allowed_agents=allowed_agents)
     valid_names = [a.name for a in domain_agents]
     agent_profiles = _build_agent_profiles(domain_agents)
     updated_tasks: list[TaskStatus] = []

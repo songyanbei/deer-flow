@@ -19,7 +19,7 @@ from src.agents.workflow_resume import (
     extract_latest_user_input,
     latest_user_message_is_clarification_answer,
 )
-from src.config.agents_config import load_agent_config
+from src.config.agents_config import load_agent_config, load_agent_config_layered
 from src.config.paths import resolve_tenant_agents_dir
 from src.observability import record_decision
 
@@ -135,10 +135,12 @@ def _load_agent_default_mode(
     if not isinstance(agent_name, str) or not agent_name:
         return None
     tenant_id = config.get("configurable", {}).get("tenant_id", "default")
-    agents_dir = resolve_tenant_agents_dir(tenant_id)
+    user_id = config.get("configurable", {}).get("user_id")
     try:
-        agent_config = load_agent_config(agent_name, agents_dir=agents_dir)
+        agent_config = load_agent_config_layered(agent_name, tenant_id=tenant_id, user_id=user_id)
     except Exception:
+        return None
+    if agent_config is None:
         return None
     if agent_config.requested_orchestration_mode in _VALID_REQUESTED:
         return agent_config.requested_orchestration_mode

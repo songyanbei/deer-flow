@@ -41,13 +41,13 @@ from src.agents.workflow_resume import (
     extract_latest_clarification_answer,
     normalize_intervention_clarification_answer,
 )
-from src.config.agents_config import load_agent_config
+from src.config.agents_config import load_agent_config, load_agent_config_layered
 from src.config.paths import resolve_tenant_agents_dir
 from src.observability import record_decision
 
 logger = logging.getLogger(__name__)
 
-_mcp_initialized: set[str] = set()
+_mcp_initialized: set[tuple] = set()
 _NULLISH_TEXT_VALUES = {"none", "null", "undefined"}
 SYSTEM_FALLBACK_FINAL_MESSAGE = "当前系统暂时无法处理该类问题，后续可按需扩展相关能力。"
 
@@ -130,10 +130,11 @@ def _build_context(
     return context
 
 
-async def _ensure_mcp_ready(agent_name: str, *, agents_dir=None, tenant_id: str | None = None) -> None:
-    if agent_name in _mcp_initialized:
+async def _ensure_mcp_ready(agent_name: str, *, agents_dir=None, tenant_id: str | None = None, user_id: str | None = None) -> None:
+    cache_key = (agent_name, tenant_id, user_id)
+    if cache_key in _mcp_initialized:
         return
-    agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir)
+    agent_cfg = load_agent_config_layered(agent_name, tenant_id=tenant_id, user_id=user_id)
     if agent_cfg and getattr(agent_cfg, "mcp_binding", None):
         try:
             from src.config.extensions_config import ExtensionsConfig
@@ -141,11 +142,11 @@ async def _ensure_mcp_ready(agent_name: str, *, agents_dir=None, tenant_id: str 
             from src.mcp.runtime_manager import mcp_runtime
 
             binding = agent_cfg.get_effective_mcp_binding()
-            extensions_config = ExtensionsConfig.from_tenant(tenant_id)
+            extensions_config = ExtensionsConfig.from_user(tenant_id, user_id)
             resolved_servers = resolve_binding(binding, extensions_config)
 
             if resolved_servers:
-                scope_key = mcp_runtime.scope_key_for_agent(agent_name, tenant_id=tenant_id)
+                scope_key = mcp_runtime.scope_key_for_user_agent(agent_name, tenant_id=tenant_id, user_id=user_id)
                 success = await mcp_runtime.load_scope(scope_key, resolved_servers)
                 if not success:
                     error = mcp_runtime.get_scope_error(scope_key) or "unknown MCP connection error"
@@ -154,7 +155,7 @@ async def _ensure_mcp_ready(agent_name: str, *, agents_dir=None, tenant_id: str 
         except Exception as e:
             logger.error("[Executor] MCP init failed for agent '%s': %s", agent_name, e)
             raise
-    _mcp_initialized.add(agent_name)
+    _mcp_initialized.add(cache_key)
 
 
 def _get_latest_fact_text(state: ThreadState) -> str:
@@ -651,6 +652,7 @@ async def _execute_intercepted_tool_call(
 
     agent_name = agent_config.get("configurable", {}).get("agent_name", "")
     tenant_id = agent_config.get("configurable", {}).get("tenant_id")
+    user_id = agent_config.get("configurable", {}).get("user_id")
 
     if idempotency_key:
         logger.info(
@@ -664,7 +666,7 @@ async def _execute_intercepted_tool_call(
         try:
             from src.mcp.runtime_manager import mcp_runtime
 
-            scope_key = mcp_runtime.scope_key_for_agent(agent_name, tenant_id=tenant_id)
+            scope_key = mcp_runtime.scope_key_for_user_agent(agent_name, tenant_id=tenant_id, user_id=user_id)
             tools = await mcp_runtime.get_tools(scope_key)
         except Exception:
             pass
@@ -796,7 +798,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 "intervention_cache": intervention_cache,
             }
 
-        await _ensure_mcp_ready(agent_name, agents_dir=agents_dir, tenant_id=tenant_id)
+        await _ensure_mcp_ready(agent_name, agents_dir=agents_dir, tenant_id=tenant_id, user_id=user_id)
 
         # Collect resolved fingerprints for dedup in InterventionMiddleware
         task_pool: list[TaskStatus] = state.get("task_pool") or []
@@ -804,7 +806,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
 
         # Load agent config for intervention policies
         try:
-            agent_cfg = load_agent_config(agent_name, agents_dir=agents_dir)
+            agent_cfg = load_agent_config_layered(agent_name, tenant_id=tenant_id, user_id=user_id)
         except Exception:
             agent_cfg = None
         intervention_policies = {}
@@ -960,7 +962,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 fingerprint=resolved_fingerprint or pending_fingerprint,
                 tool_name=stored_tool_call["tool_name"],
             )
-            await _ensure_mcp_ready(agent_name, agents_dir=agents_dir, tenant_id=tenant_id)
+            await _ensure_mcp_ready(agent_name, agents_dir=agents_dir, tenant_id=tenant_id, user_id=user_id)
             tool_result_message = await _execute_intercepted_tool_call(stored_tool_call, agent_config_override)
 
             # Mark intervention as consumed to prevent duplicate execution
@@ -1739,6 +1741,7 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 verified_fact=verified_fact,
                 thread_id=config.get("configurable", {}).get("thread_id"),
                 tenant_id=tenant_id,
+                user_id=user_id,
                 agents_dir=agents_dir,
             )
 

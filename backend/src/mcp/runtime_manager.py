@@ -29,6 +29,7 @@ Usage
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -50,6 +51,7 @@ class _ScopedMCPClient:
         self._client: Any = None
         self._lock = asyncio.Lock()
         self._last_error: str | None = None
+        self._last_used: float = time.monotonic()
 
     @property
     def last_error(self) -> str | None:
@@ -137,11 +139,17 @@ class _ScopedMCPClient:
             success = await self.connect()
             if not success:
                 return []
+        self._last_used = time.monotonic()
         return self._tools or []
 
     def get_tools_sync(self) -> list[BaseTool]:
         """Return cached tools synchronously (avoids serialization issues during checkpointing)."""
+        self._last_used = time.monotonic()
         return self._tools or []
+
+    def is_idle(self, max_idle_seconds: float) -> bool:
+        """Check if this scope has been idle for longer than the threshold."""
+        return (time.monotonic() - self._last_used) > max_idle_seconds
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -240,6 +248,44 @@ class McpRuntimeManager:
             return f"tenant:{tenant_id}:global"
         return "global"
 
+    @staticmethod
+    def scope_key_for_user(tenant_id: str | None, user_id: str | None) -> str:
+        """User-level global scope key (personal MCP servers).
+
+        Falls back to tenant scope key when user is anonymous or tenant is default.
+        """
+        if tenant_id and tenant_id != "default" and user_id and user_id != "anonymous":
+            return f"tenant:{tenant_id}:user:{user_id}:global"
+        return McpRuntimeManager.scope_key_for_tenant(tenant_id)
+
+    @staticmethod
+    def scope_key_for_user_agent(agent_name: str, tenant_id: str | None, user_id: str | None) -> str:
+        """User-level domain agent scope key.
+
+        Falls back to tenant-level agent scope key when user is anonymous.
+        """
+        if tenant_id and tenant_id != "default" and user_id and user_id != "anonymous":
+            return f"tenant:{tenant_id}:user:{user_id}:domain:{agent_name}"
+        return McpRuntimeManager.scope_key_for_agent(agent_name, tenant_id)
+
+    async def evict_idle_user_scopes(self, max_idle_seconds: float = 1800) -> int:
+        """Unload user-scoped entries that have been idle beyond the threshold.
+
+        Only evicts scopes whose key contains ``:user:``.
+        Returns the number of evicted scopes.
+        """
+        async with self._lock:
+            idle_keys = [
+                k for k, v in self._scopes.items()
+                if ":user:" in k and v.is_idle(max_idle_seconds)
+            ]
+        evicted = 0
+        for key in idle_keys:
+            await self.unload_scope(key)
+            evicted += 1
+        if evicted:
+            logger.info("[McpRuntime] Evicted %d idle user scope(s).", evicted)
+        return evicted
 
 
 # Process-level singleton
@@ -253,7 +299,7 @@ async def _unload_tenant_scopes_async(tenant_id: str) -> int:
     async with mcp_runtime._lock:
         keys_to_remove = [k for k in list(mcp_runtime._scopes.keys()) if k.startswith(prefix)]
     for key in keys_to_remove:
-        await mcp_runtime.disconnect_scope(key)
+        await mcp_runtime.unload_scope(key)
         removed += 1
     if removed:
         logger.info("[McpRuntime] Unloaded %d scope(s) for tenant=%s", removed, tenant_id)
@@ -278,3 +324,37 @@ def unload_tenant_scopes(tenant_id: str) -> int:
             return loop.run_until_complete(_unload_tenant_scopes_async(tenant_id))
     except RuntimeError:
         return asyncio.run(_unload_tenant_scopes_async(tenant_id))
+
+
+async def _unload_user_scopes_async(tenant_id: str, user_id: str) -> int:
+    """Disconnect and remove all MCP scopes belonging to a specific user."""
+    prefix = f"tenant:{tenant_id}:user:{user_id}:"
+    removed = 0
+    async with mcp_runtime._lock:
+        keys_to_remove = [k for k in list(mcp_runtime._scopes.keys()) if k.startswith(prefix)]
+    for key in keys_to_remove:
+        await mcp_runtime.unload_scope(key)
+        removed += 1
+    if removed:
+        logger.info("[McpRuntime] Unloaded %d scope(s) for tenant=%s user=%s", removed, tenant_id, user_id)
+    return removed
+
+
+def unload_user_scopes(tenant_id: str, user_id: str) -> int:
+    """Synchronous wrapper: disconnect all MCP scopes for a user.
+
+    Used by lifecycle operations (user deletion).
+    """
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _unload_user_scopes_async(tenant_id, user_id))
+                return future.result()
+        else:
+            return loop.run_until_complete(_unload_user_scopes_async(tenant_id, user_id))
+    except RuntimeError:
+        return asyncio.run(_unload_user_scopes_async(tenant_id, user_id))

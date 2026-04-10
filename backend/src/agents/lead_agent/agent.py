@@ -19,8 +19,8 @@ from src.agents.middlewares.tool_call_limit_middleware import ToolCallLimitMiddl
 from src.agents.middlewares.uploads_middleware import UploadsMiddleware
 from src.agents.middlewares.view_image_middleware import ViewImageMiddleware
 from src.agents.thread_state import ThreadState
-from src.config.agents_config import load_agent_config
-from src.config.paths import resolve_tenant_agents_dir
+from src.config.agents_config import load_agent_config, load_agent_config_layered
+from src.config.paths import resolve_tenant_agents_dir, resolve_tenant_user_agents_dir
 from src.config.app_config import get_app_config
 from src.config.summarization_config import get_summarization_config
 from src.models import create_chat_model
@@ -314,9 +314,9 @@ def make_lead_agent(config: RunnableConfig):
     agent_name = cfg.get("agent_name")
     tenant_id = cfg.get("tenant_id", "default")
     user_id = cfg.get("user_id")
-    agents_dir = resolve_tenant_agents_dir(tenant_id)
+    agents_dir = resolve_tenant_user_agents_dir(tenant_id, user_id) or resolve_tenant_agents_dir(tenant_id)
 
-    agent_config = load_agent_config(agent_name, agents_dir=agents_dir) if not is_bootstrap else None
+    agent_config = load_agent_config_layered(agent_name, tenant_id=tenant_id, user_id=user_id) if not is_bootstrap else None
     engine_builder = get_engine_builder(agent_config.engine_type if agent_config else None)
     engine_prompt_kwargs = engine_builder.build_prompt_kwargs()
 
@@ -406,7 +406,7 @@ def make_lead_agent(config: RunnableConfig):
         try:
             from src.mcp.runtime_manager import mcp_runtime
 
-            scope_key = mcp_runtime.scope_key_for_agent(agent_name, tenant_id=tenant_id)
+            scope_key = mcp_runtime.scope_key_for_user_agent(agent_name, tenant_id=tenant_id, user_id=user_id)
             mcp_tools = mcp_runtime.get_tools_sync(scope_key)
 
             mcp_tools = engine_builder.prepare_extra_tools(mcp_tools)
@@ -426,6 +426,7 @@ def make_lead_agent(config: RunnableConfig):
             subagent_enabled=subagent_enabled,
             is_domain_agent=bool(cfg.get("is_domain_agent", False)),
             tenant_id=tenant_id,
+            user_id=user_id,
         )
         + extra_tools,
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),

@@ -1944,6 +1944,9 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
         def scope_key_for_agent(self, name, tenant_id=None):
             return f"domain:{name}"
 
+        def scope_key_for_user_agent(self, name, tenant_id=None, user_id=None):
+            return f"domain:{name}"
+
         async def load_scope(self, scope_key, servers):
             nonlocal call_count
             call_count += 1
@@ -1955,13 +1958,12 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
     dummy_runtime = DummyRuntime()
     dummy_binding = McpBindingConfig(domain=["contacts"])
 
-    monkeypatch.setattr(
-        "src.agents.executor.executor.load_agent_config",
-        lambda _name, **_kw: SimpleNamespace(
-            mcp_binding=dummy_binding,
-            get_effective_mcp_binding=lambda: dummy_binding,
-        ),
+    _fake_cfg = lambda _name, **_kw: SimpleNamespace(
+        mcp_binding=dummy_binding,
+        get_effective_mcp_binding=lambda: dummy_binding,
     )
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config", _fake_cfg)
+    monkeypatch.setattr("src.agents.executor.executor.load_agent_config_layered", _fake_cfg)
     monkeypatch.setattr("src.mcp.runtime_manager.mcp_runtime", dummy_runtime)
     monkeypatch.setattr(
         "src.mcp.binding_resolver.resolve_binding",
@@ -1970,6 +1972,10 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
     monkeypatch.setattr(
         "src.config.extensions_config.ExtensionsConfig.from_file",
         classmethod(lambda cls: SimpleNamespace(mcp_servers={})),
+    )
+    monkeypatch.setattr(
+        "src.config.extensions_config.ExtensionsConfig.from_user",
+        classmethod(lambda cls, tid, uid: SimpleNamespace(mcp_servers={})),
     )
     _mcp_initialized.clear()
 
@@ -1981,10 +1987,10 @@ def test_ensure_mcp_ready_retries_after_failure(monkeypatch):
         else:
             raise AssertionError("Expected the first MCP init to fail.")
 
-        assert "contacts-agent" not in _mcp_initialized
+        assert ("contacts-agent", None, None) not in _mcp_initialized
 
         await _ensure_mcp_ready("contacts-agent")
-        assert "contacts-agent" in _mcp_initialized
+        assert ("contacts-agent", None, None) in _mcp_initialized
         assert call_count == 2
 
     asyncio.run(_run())

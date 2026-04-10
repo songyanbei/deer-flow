@@ -8,7 +8,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from src.config.paths import get_paths
+from src.config.paths import get_paths, resolve_tenant_agents_dir, resolve_tenant_user_agents_dir
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,9 @@ class AgentConfig(BaseModel):
     mcp_binding: McpBindingConfig | None = None    # Declarative MCP binding (references servers in extensions_config.json)
     available_skills: list[str] | None = None      # Skill names to expose; None = all enabled skills
     requested_orchestration_mode: Literal["auto", "leader", "workflow"] | None = None
+
+    # Runtime-only metadata (not persisted to config.yaml)
+    source: Literal["platform", "tenant", "personal"] | None = Field(default=None, exclude=True)
 
     # Output guardrail settings
     guardrail_structured_completion: bool = True    # Enforce terminal tool calling via nudge retry
@@ -229,17 +232,133 @@ def list_domain_agents(
     *,
     agents_dir: "Path | None" = None,
     allowed_agents: list[str] | None = None,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[AgentConfig]:
     """Return all agents that have a ``domain`` field set.
 
     Args:
-        agents_dir: Optional override for the base agents directory (tenant scope).
+        agents_dir: Optional override for the base agents directory (legacy single-layer).
         allowed_agents: When provided, only agents whose *name* (case-insensitive)
             appears in this list are returned.  This implements the runtime
             allowlist contract: the platform declares which agents may participate
             in a given execution, and planner/router honour that constraint.
+        tenant_id: When provided (and ``agents_dir`` is not), perform a three-layer
+            (platform + tenant + personal) merge via :func:`list_domain_agents_layered`.
+        user_id: User scope for the personal layer (only used with ``tenant_id``).
     """
+    # Three-layer mode: caller provided tenant_id (and optionally user_id)
+    if agents_dir is None and tenant_id is not None:
+        return list_domain_agents_layered(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            allowed_agents=allowed_agents,
+        )
+
     candidates = [a for a in list_custom_agents(agents_dir=agents_dir) if a.domain]
+    if allowed_agents is not None:
+        allowed_set = {name.lower() for name in allowed_agents}
+        candidates = [a for a in candidates if a.name.lower() in allowed_set]
+    return candidates
+
+
+def _load_agent_config_quiet(name: str, agents_dir: "Path") -> AgentConfig | None:
+    """Load agent config from a specific directory, returning None if not found."""
+    agent_dir = agents_dir / name.lower()
+    config_file = agent_dir / "config.yaml"
+    if not agent_dir.exists() or not config_file.exists():
+        return None
+    try:
+        return load_agent_config(name, agents_dir=agents_dir)
+    except Exception:
+        logger.debug("Failed to load agent '%s' from %s", name, agents_dir, exc_info=True)
+        return None
+
+
+def load_agent_config_layered(
+    name: str,
+    *,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+) -> AgentConfig | None:
+    """Load agent config with three-layer priority: personal > tenant > platform.
+
+    Looks up the agent in each layer and returns the first match found.
+    The returned config has ``source`` set to indicate which layer it came from.
+    """
+    if name is None:
+        return None
+
+    # Layer 1: personal (highest priority)
+    user_agents_dir = resolve_tenant_user_agents_dir(tenant_id, user_id)
+    if user_agents_dir:
+        cfg = _load_agent_config_quiet(name, user_agents_dir)
+        if cfg:
+            cfg.source = "personal"
+            return cfg
+
+    # Layer 2: tenant
+    tenant_agents_dir = resolve_tenant_agents_dir(tenant_id)
+    if tenant_agents_dir:
+        cfg = _load_agent_config_quiet(name, tenant_agents_dir)
+        if cfg:
+            cfg.source = "tenant"
+            return cfg
+
+    # Layer 3: platform (lowest priority)
+    cfg = _load_agent_config_quiet(name, get_paths().agents_dir)
+    if cfg:
+        cfg.source = "platform"
+        return cfg
+
+    return None
+
+
+def list_all_agents(
+    *,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+) -> list[AgentConfig]:
+    """List agents merged across three layers: platform + tenant + personal.
+
+    Same-name agents are resolved by priority (personal > tenant > platform).
+    Each returned config has ``source`` set.
+    """
+    seen: dict[str, AgentConfig] = {}
+
+    # Layer 3 (lowest): platform
+    for cfg in list_custom_agents(agents_dir=get_paths().agents_dir):
+        cfg.source = "platform"
+        seen[cfg.name.lower()] = cfg
+
+    # Layer 2: tenant (overrides platform)
+    tenant_agents_dir = resolve_tenant_agents_dir(tenant_id)
+    if tenant_agents_dir:
+        for cfg in list_custom_agents(agents_dir=tenant_agents_dir):
+            cfg.source = "tenant"
+            seen[cfg.name.lower()] = cfg
+
+    # Layer 1 (highest): personal (overrides tenant & platform)
+    user_agents_dir = resolve_tenant_user_agents_dir(tenant_id, user_id)
+    if user_agents_dir:
+        for cfg in list_custom_agents(agents_dir=user_agents_dir):
+            cfg.source = "personal"
+            seen[cfg.name.lower()] = cfg
+
+    return sorted(seen.values(), key=lambda a: a.name.lower())
+
+
+def list_domain_agents_layered(
+    *,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
+    allowed_agents: list[str] | None = None,
+) -> list[AgentConfig]:
+    """Return all agents with a ``domain`` field, merged across three layers.
+
+    This is the three-layer equivalent of :func:`list_domain_agents`.
+    """
+    candidates = [a for a in list_all_agents(tenant_id=tenant_id, user_id=user_id) if a.domain]
     if allowed_agents is not None:
         allowed_set = {name.lower() for name in allowed_agents}
         candidates = [a for a in candidates if a.name.lower() in allowed_set]

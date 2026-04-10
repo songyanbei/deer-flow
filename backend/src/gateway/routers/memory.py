@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from src.agents.memory.updater import get_memory_data, reload_memory_data
 from src.config.memory_config import get_memory_config
-from src.gateway.dependencies import get_tenant_id
+from src.gateway.dependencies import get_tenant_id, get_user_id
 
 router = APIRouter(prefix="/api", tags=["memory"])
 
@@ -87,13 +87,14 @@ class MemoryStatusResponse(BaseModel):
 async def get_memory(
     request: Request,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> MemoryResponse:
-    """Get the current memory data for the requesting tenant.
+    """Get the current memory data for the requesting tenant and user.
 
     Returns:
         The current memory data with user context, history, and facts.
     """
-    memory_data = get_memory_data(tenant_id=tenant_id)
+    memory_data = get_memory_data(tenant_id=tenant_id, user_id=user_id)
     return MemoryResponse(**memory_data)
 
 
@@ -106,8 +107,9 @@ async def get_memory(
 async def reload_memory(
     request: Request,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> MemoryResponse:
-    """Reload memory data from file for the requesting tenant.
+    """Reload memory data from file for the requesting tenant and user.
 
     This forces a reload of the memory data from the storage file,
     useful when the file has been modified externally.
@@ -115,7 +117,7 @@ async def reload_memory(
     Returns:
         The reloaded memory data.
     """
-    memory_data = reload_memory_data(tenant_id=tenant_id)
+    memory_data = reload_memory_data(tenant_id=tenant_id, user_id=user_id)
     return MemoryResponse(**memory_data)
 
 
@@ -165,6 +167,7 @@ async def get_memory_config_endpoint() -> MemoryConfigResponse:
 async def get_memory_status(
     request: Request,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
 ) -> MemoryStatusResponse:
     """Get the memory system status including configuration and data.
 
@@ -172,7 +175,7 @@ async def get_memory_status(
         Combined memory configuration and current data.
     """
     config = get_memory_config()
-    memory_data = get_memory_data(tenant_id=tenant_id)
+    memory_data = get_memory_data(tenant_id=tenant_id, user_id=user_id)
 
     return MemoryStatusResponse(
         config=MemoryConfigResponse(

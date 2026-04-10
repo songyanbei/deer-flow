@@ -71,6 +71,7 @@ ONBOARDING_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("guardrail_structured_completion", FieldCategory.PLATFORM_INTERNAL, "Platform guardrail default"),
     FieldSpec("guardrail_max_retries", FieldCategory.PLATFORM_INTERNAL, "Platform guardrail default"),
     FieldSpec("guardrail_safe_default", FieldCategory.PLATFORM_INTERNAL, "Platform guardrail default"),
+    FieldSpec("source", FieldCategory.PLATFORM_INTERNAL, "Runtime layer marker (platform/tenant/personal); set by loader"),
 )
 
 

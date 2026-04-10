@@ -422,7 +422,7 @@ def _get_runbook_context(agent_name: str | None = None, *, is_domain_agent: bool
 """
 
 
-def get_skills_prompt_section(available_skills: set[str] | None = None, *, tenant_id: str | None = None) -> str:
+def get_skills_prompt_section(available_skills: set[str] | None = None, *, tenant_id: str | None = None, user_id: str | None = None) -> str:
     """Generate the skills prompt section with available skills list.
 
     Returns the <skill_system>...</skill_system> block listing all enabled skills,
@@ -431,8 +431,9 @@ def get_skills_prompt_section(available_skills: set[str] | None = None, *, tenan
     Args:
         available_skills: If provided, filter to only these skill names.
         tenant_id: If provided, also load tenant-scoped skills.
+        user_id: If provided, also load user-scoped skills.
     """
-    skills = load_skills(enabled_only=True, tenant_id=tenant_id)
+    skills = load_skills(enabled_only=True, tenant_id=tenant_id, user_id=user_id)
 
     try:
         from src.config import get_app_config
@@ -566,7 +567,7 @@ def apply_prompt_template(
     )
 
     # Get skills section
-    skills_section = get_skills_prompt_section(available_skills, tenant_id=tenant_id)
+    skills_section = get_skills_prompt_section(available_skills, tenant_id=tenant_id, user_id=user_id)
     if is_domain_agent:
         clarification_rules = DOMAIN_AGENT_HELP_RULES
         if agent_name == "meeting-agent":

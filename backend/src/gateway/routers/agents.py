@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from src.agents.lead_agent.engine_registry import normalize_engine_type
-from src.config.agents_config import AgentConfig, McpBindingConfig, list_custom_agents, load_agent_config, load_agent_soul
+from src.config.agents_config import AgentConfig, McpBindingConfig, list_all_agents, list_custom_agents, load_agent_config, load_agent_soul
 from src.config.paths import get_paths
 from src.gateway.dependencies import get_tenant_id, get_user_id, require_role
 
@@ -45,6 +45,7 @@ class AgentResponse(BaseModel):
     available_skills: list[str] | None = Field(default=None, description="Optional skill allowlist for this agent")
     requested_orchestration_mode: RequestedOrchestrationMode | None = Field(default=None, description="Default orchestration mode for the agent")
     soul: str | None = Field(default=None, description="System prompt content (included on GET /{name})")
+    source: str | None = Field(default=None, description="Resource source layer (platform, tenant, personal) — only in merged view")
 
 
 class AgentsListResponse(BaseModel):
@@ -232,6 +233,7 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
         available_skills=agent_cfg.available_skills,
         requested_orchestration_mode=agent_cfg.requested_orchestration_mode,
         soul=soul,
+        source=getattr(agent_cfg, "source", None),
     )
 
 
@@ -244,8 +246,13 @@ def _agent_config_to_response(agent_cfg: AgentConfig, include_soul: bool = False
 async def list_agents(
     request: Request,
     tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    view: str | None = None,
 ) -> AgentsListResponse:
     try:
+        if view == "merged":
+            agents = list_all_agents(tenant_id=tenant_id, user_id=user_id)
+            return AgentsListResponse(agents=[_agent_config_to_response(a) for a in agents])
         agents_dir = _resolve_agents_dir(tenant_id)
         agents = list_custom_agents(agents_dir=agents_dir)
         return AgentsListResponse(agents=[_agent_config_to_response(a) for a in agents])

@@ -185,10 +185,12 @@ class TestPersistentDomainMemoryTenant:
 
         with (
             patch("src.agents.persistent_domain_memory.load_agent_config") as mock_load,
+            patch("src.agents.persistent_domain_memory.load_agent_config_layered") as mock_load_layered,
             patch("src.agents.persistent_domain_memory.get_memory_data") as mock_mem,
             patch("src.agents.persistent_domain_memory.format_memory_for_injection") as mock_fmt,
         ):
             mock_load.return_value = SimpleNamespace(persistent_memory_enabled=True)
+            mock_load_layered.return_value = SimpleNamespace(persistent_memory_enabled=True, domain=None)
             mock_mem.return_value = {"user": {"workContext": {"summary": "test"}}}
             mock_fmt.return_value = "formatted"
             get_persistent_domain_memory_context("agent-c", tenant_id="tid-x", agents_dir=Path("/custom"))

@@ -188,13 +188,25 @@ class _TestAppContext:
         # Also patch at the source module so resolve_thread_context() finds the test registry
         _tr_mod.get_thread_registry = lambda: _registry  # type: ignore
 
+        self._original_load_layered = None
         if agents_dir is not None:
             runtime._resolve_agents_dir = lambda tenant_id: agents_dir  # type: ignore
+            # Also patch load_agent_config_layered to load from the test agents_dir
+            from src.config.agents_config import load_agent_config as _load_cfg
+            self._original_load_layered = runtime.load_agent_config_layered
+            def _test_layered(name, *, tenant_id=None, user_id=None):
+                try:
+                    return _load_cfg(name, agents_dir=agents_dir)
+                except Exception:
+                    return None
+            runtime.load_agent_config_layered = _test_layered  # type: ignore
 
     def cleanup(self):
         self._runtime_mod.get_thread_registry = self._original_get_registry  # type: ignore
         self._runtime_mod._resolve_agents_dir = self._original_resolve_agents_dir  # type: ignore
         self._tr_mod.get_thread_registry = self._original_tr_get_registry  # type: ignore
+        if self._original_load_layered is not None:
+            self._runtime_mod.load_agent_config_layered = self._original_load_layered  # type: ignore
 
 
 def _create_test_app(

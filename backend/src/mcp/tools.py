@@ -11,12 +11,14 @@ from src.mcp.oauth import build_oauth_tool_interceptor, get_initial_oauth_header
 logger = logging.getLogger(__name__)
 
 
-async def get_mcp_tools(tenant_id: str | None = None) -> list[BaseTool]:
+async def get_mcp_tools(tenant_id: str | None = None, user_id: str | None = None) -> list[BaseTool]:
     """Get all tools from enabled MCP servers.
 
     Args:
         tenant_id: When provided and not "default", loads the tenant-overlay
                    extensions config (merged on top of the platform config).
+        user_id: When provided and not "anonymous", loads the user-overlay
+                 extensions config (merged on top of the tenant config).
 
     Returns:
         List of LangChain tools from all enabled MCP servers.
@@ -31,8 +33,8 @@ async def get_mcp_tools(tenant_id: str | None = None) -> list[BaseTool]:
         logger.warning("langchain-mcp-adapters not installed. Install it to enable MCP tools: pip install langchain-mcp-adapters")
         return []
 
-    # Load config with tenant overlay when applicable.
-    extensions_config = ExtensionsConfig.from_tenant(tenant_id)
+    # Load config with tenant + user overlay when applicable.
+    extensions_config = ExtensionsConfig.from_user(tenant_id, user_id)
     servers_config = build_servers_config(extensions_config)
 
     if not servers_config:

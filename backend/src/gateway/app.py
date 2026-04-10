@@ -11,7 +11,7 @@ from src.gateway.config import get_gateway_config
 from src.gateway.middleware.oidc import OIDCAuthMiddleware
 from src.gateway.middleware.oidc_config import load_oidc_config
 from src.admin.router import router as admin_router
-from src.gateway.routers import agents, artifacts, governance, interventions, mcp, memory, models, runtime, skills, uploads
+from src.gateway.routers import agents, artifacts, governance, interventions, mcp, me, memory, models, promotions, runtime, skills, uploads
 from src.observability import WorkflowMetrics, init_observability
 
 # Configure logging
@@ -169,6 +169,15 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Governance API is mounted at /api/governance
     app.include_router(governance.router)
+
+    # Personal resource API is mounted at /api/me
+    app.include_router(me.router)
+
+    # Promotion submit endpoints are mounted at /api/me (agents/skills :promote)
+    app.include_router(promotions.me_router)
+
+    # Promotion admin endpoints are mounted at /api/promotions
+    app.include_router(promotions.router)
 
     # Runtime API is mounted at /api/runtime
     app.include_router(runtime.router)

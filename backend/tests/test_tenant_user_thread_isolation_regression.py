@@ -171,8 +171,18 @@ class TestIdentityPropagation:
         )
         app = _make_identity_app(runtime.router, tenant_id="tenant-a", user_id="user-1")
 
+        from src.config.agents_config import load_agent_config as _load_cfg
+
+        def _layered(name, *, tenant_id=None, user_id=None):
+            try:
+                return _load_cfg(name, agents_dir=agents_dir)
+            except Exception:
+                return None
+
         patch_a, patch_b = _runtime_registry_patches(registry)
-        with patch_a, patch_b, patch("src.gateway.routers.runtime._resolve_agents_dir", return_value=agents_dir):
+        with patch_a, patch_b, \
+             patch("src.gateway.routers.runtime._resolve_agents_dir", return_value=agents_dir), \
+             patch("src.gateway.routers.runtime.load_agent_config_layered", side_effect=_layered):
             client = TestClient(app)
             response = client.post(
                 "/api/runtime/threads/thread-a1/messages:stream",

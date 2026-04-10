@@ -26,6 +26,7 @@ def get_available_tools(
     subagent_enabled: bool = False,
     is_domain_agent: bool = False,
     tenant_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[BaseTool]:
     """Get all available tools from config.
 
@@ -55,11 +56,11 @@ def get_available_tools(
             from src.config.extensions_config import ExtensionsConfig
             from src.mcp.cache import get_cached_mcp_tools
 
-            extensions_config = ExtensionsConfig.from_tenant(tenant_id)
+            extensions_config = ExtensionsConfig.from_user(tenant_id, user_id)
             # Only consider global-category servers for the main agent
             global_servers = extensions_config.get_servers_by_category("global")
             if global_servers:
-                mcp_tools = get_cached_mcp_tools(tenant_id=tenant_id)
+                mcp_tools = get_cached_mcp_tools(tenant_id=tenant_id, user_id=user_id)
                 if mcp_tools:
                     logger.info(f"Using {len(mcp_tools)} cached MCP tool(s) (global scope)")
             elif extensions_config.get_enabled_mcp_servers():
@@ -67,7 +68,7 @@ def get_available_tools(
                 # fall back to loading all enabled servers (old behavior).
                 has_any_categorized = any(s.category != "global" for s in extensions_config.mcp_servers.values())
                 if not has_any_categorized:
-                    mcp_tools = get_cached_mcp_tools(tenant_id=tenant_id)
+                    mcp_tools = get_cached_mcp_tools(tenant_id=tenant_id, user_id=user_id)
                     if mcp_tools:
                         logger.info(f"Using {len(mcp_tools)} cached MCP tool(s) (legacy, no categories)")
         except ImportError:

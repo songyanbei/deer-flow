@@ -114,8 +114,9 @@ class LifecycleManager:
         2. Stop sandboxes → delete sandbox_state dirs
         3. Cancel pending memory updates
         4. Archive governance ledger entries
-        5. Delete user filesystem directory (thread data lives here)
-        6. Delete threads from registry (only after files are gone)
+        5. Unload user MCP scopes + reset MCP tools cache
+        6. Delete user filesystem directory (thread data lives here)
+        7. Delete threads from registry (only after files are gone)
 
         Individual step failures are recorded in ``result.errors`` so the
         caller can inspect and retry.  Later steps still execute even if
@@ -148,7 +149,23 @@ class LifecycleManager:
             result.add_error("archive_by_user", exc)
             logger.exception("delete_user: failed to archive ledger for %s/%s", tenant_id, user_id)
 
-        # 5. Delete user filesystem directory (contains all thread data)
+        # 5. Unload user MCP scopes + reset MCP tools cache (best-effort)
+        try:
+            from src.mcp.runtime_manager import unload_user_scopes
+            unload_user_scopes(tenant_id, user_id)
+            result.mcp_scopes_unloaded = True
+        except Exception as exc:
+            result.add_error("mcp_user_scope_unload", exc)
+            logger.debug("MCP scope unload skipped for user %s/%s: %s", tenant_id, user_id, exc)
+
+        try:
+            from src.mcp.cache import reset_mcp_tools_cache
+            reset_mcp_tools_cache(tenant_id=tenant_id, user_id=user_id)
+        except Exception as exc:
+            result.add_error("mcp_cache_reset", exc)
+            logger.debug("MCP cache reset skipped for user %s/%s: %s", tenant_id, user_id, exc)
+
+        # 6. Delete user filesystem directory (contains all thread data)
         from src.config.paths import get_paths
         paths = get_paths()
         user_dir = paths.tenant_user_dir(tenant_id, user_id)
@@ -160,7 +177,7 @@ class LifecycleManager:
                 result.add_error("filesystem_cleanup", exc)
                 logger.warning("Failed to remove user directory: %s", user_dir)
 
-        # 6. Registry deletion LAST — only after files are cleaned
+        # 7. Registry deletion LAST — only after files are cleaned
         try:
             result.threads_removed = self._registry.delete_threads_by_user(tenant_id, user_id)
         except Exception as exc:

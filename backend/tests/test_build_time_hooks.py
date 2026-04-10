@@ -288,17 +288,15 @@ class TestMakeLeadAgentHooksIntegration:
         """All 4 hooks fire in order during a normal (non-bootstrap) make_lead_agent call."""
         lead_agent_module = self._setup_monkeypatches(monkeypatch)
         monkeypatch.setattr(lead_agent_module, "apply_prompt_template", lambda **kwargs: "prompt")
-        monkeypatch.setattr(
-            lead_agent_module,
-            "load_agent_config",
-            lambda _name, **_kw: SimpleNamespace(
-                model=None,
-                tool_groups=[],
-                max_tool_calls=20,
-                available_skills=["skill-a"],
-                engine_type="react",
-            ),
+        _fake_agent_config = lambda _name, **_kw: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=["skill-a"],
+            engine_type="react",
         )
+        monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_agent_config)
+        monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_agent_config)
 
         call_log = []
 
@@ -344,17 +342,15 @@ class TestMakeLeadAgentHooksIntegration:
             return "prompt"
 
         monkeypatch.setattr(lead_agent_module, "apply_prompt_template", _fake_apply_prompt_template)
-        monkeypatch.setattr(
-            lead_agent_module,
-            "load_agent_config",
-            lambda _name, **_kw: SimpleNamespace(
-                model=None,
-                tool_groups=[],
-                max_tool_calls=20,
-                available_skills=["skill-a"],
-                engine_type="sop",
-            ),
+        _fake_sop_config = lambda _name, **_kw: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=["skill-a"],
+            engine_type="sop",
         )
+        monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_sop_config)
+        monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_sop_config)
 
         set_build_time_hooks(None)
         lead_agent_module.make_lead_agent(
@@ -381,17 +377,15 @@ class TestMakeLeadAgentHooksIntegration:
             return "prompt"
 
         monkeypatch.setattr(lead_agent_module, "apply_prompt_template", _fake_apply_prompt_template)
-        monkeypatch.setattr(
-            lead_agent_module,
-            "load_agent_config",
-            lambda _name, **_kw: SimpleNamespace(
-                model=None,
-                tool_groups=[],
-                max_tool_calls=20,
-                available_skills=["skill-a"],
-                engine_type=None,
-            ),
+        _fake_none_engine = lambda _name, **_kw: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=["skill-a"],
+            engine_type=None,
         )
+        monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_none_engine)
+        monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_none_engine)
 
         class SkillInjector(BuildTimeHooks):
             def before_skill_resolve(self, ctx):
@@ -418,17 +412,15 @@ class TestMakeLeadAgentHooksIntegration:
         """A custom hook can inject extra tools before the final agent is created."""
         lead_agent_module = self._setup_monkeypatches(monkeypatch)
         monkeypatch.setattr(lead_agent_module, "apply_prompt_template", lambda **kwargs: "prompt")
-        monkeypatch.setattr(
-            lead_agent_module,
-            "load_agent_config",
-            lambda _name, **_kw: SimpleNamespace(
-                model=None,
-                tool_groups=[],
-                max_tool_calls=20,
-                available_skills=None,
-                engine_type="react",
-            ),
+        _fake_no_skills = lambda _name, **_kw: SimpleNamespace(
+            model=None,
+            tool_groups=[],
+            max_tool_calls=20,
+            available_skills=None,
+            engine_type="react",
         )
+        monkeypatch.setattr(lead_agent_module, "load_agent_config", _fake_no_skills)
+        monkeypatch.setattr(lead_agent_module, "load_agent_config_layered", _fake_no_skills)
         monkeypatch.setattr(
             "src.mcp.runtime_manager.mcp_runtime",
             SimpleNamespace(

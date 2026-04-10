@@ -32,6 +32,7 @@ class SkillResponse(BaseModel):
     license: str | None = Field(None, description="License information")
     category: str = Field(..., description="Category of the skill (public or custom)")
     enabled: bool = Field(default=True, description="Whether this skill is enabled")
+    source: str | None = Field(default=None, description="Resource source layer (platform, tenant, personal) — only in merged view")
 
 
 class SkillsListResponse(BaseModel):
@@ -146,6 +147,7 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
         license=skill.license,
         category=skill.category,
         enabled=skill.enabled,
+        source=getattr(skill, "source", None),
     )
 
 
@@ -155,8 +157,14 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
     summary="List All Skills",
     description="Retrieve a list of all available skills from both public and custom directories.",
 )
-async def list_skills(tenant_id: str = Depends(get_tenant_id)) -> SkillsListResponse:
-    """List all available skills (platform + tenant-scoped).
+async def list_skills(
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    view: str | None = None,
+) -> SkillsListResponse:
+    """List all available skills (platform + tenant-scoped, optionally merged with personal).
+
+    When ``view=merged``, includes personal user skills with ``source`` field set.
 
     Returns all skills regardless of their enabled status.
 
@@ -164,8 +172,9 @@ async def list_skills(tenant_id: str = Depends(get_tenant_id)) -> SkillsListResp
         A list of all skills with their metadata.
     """
     try:
-        # Load all skills (including disabled ones) with tenant overlay
-        skills = load_skills(enabled_only=False, tenant_id=tenant_id)
+        # Load all skills (including disabled ones) with tenant + optional user overlay
+        uid = user_id if view == "merged" else None
+        skills = load_skills(enabled_only=False, tenant_id=tenant_id, user_id=uid)
         return SkillsListResponse(skills=[_skill_to_response(skill) for skill in skills])
     except Exception as e:
         logger.error(f"Failed to load skills: {e}", exc_info=True)

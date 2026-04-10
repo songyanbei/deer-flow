@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from src.config.agents_config import load_agent_config
+from src.config.agents_config import load_agent_config, load_agent_config_layered
 from src.config.paths import get_paths
 from src.gateway.dependencies import get_tenant_id, get_user_id, get_username
 from src.gateway.runtime_service import (
@@ -129,17 +129,16 @@ def _validate_group_key(value: str) -> str:
     return trimmed
 
 
-def _validate_allowed_agents(agents: list[str], tenant_id: str) -> list[str]:
-    """Validate and deduplicate allowed_agents against tenant-scoped agent storage.
+def _validate_allowed_agents(agents: list[str], tenant_id: str, user_id: str | None = None) -> list[str]:
+    """Validate and deduplicate allowed_agents using three-layer agent resolution.
 
     An agent is considered valid only if it can actually be loaded via
-    ``load_agent_config`` — the same code path the planner/router uses.
+    ``load_agent_config_layered`` — the same code path the planner/router uses.
     This catches bare directories, missing ``config.yaml``, and malformed YAML.
     """
     if not agents:
         raise HTTPException(status_code=422, detail="allowed_agents must be a non-empty array")
 
-    agents_dir = _resolve_agents_dir(tenant_id)
     seen: set[str] = set()
     normalized: list[str] = []
 
@@ -152,9 +151,11 @@ def _validate_allowed_agents(agents: list[str], tenant_id: str) -> list[str]:
             continue
         seen.add(lower)
 
-        # Verify the agent is fully loadable — same path as planner/router
+        # Verify the agent is fully loadable — same three-layer path as planner/router
         try:
-            load_agent_config(lower, agents_dir=agents_dir)
+            cfg = load_agent_config_layered(lower, tenant_id=tenant_id, user_id=user_id)
+            if cfg is None:
+                raise FileNotFoundError(f"Agent '{lower}' not found in any layer")
         except Exception:
             raise HTTPException(
                 status_code=422,
@@ -280,7 +281,7 @@ async def stream_runtime_message(
     # Validate payload
     message = _validate_message(body.message)
     group_key = _validate_group_key(body.group_key)
-    allowed_agents = _validate_allowed_agents(body.allowed_agents, tenant_id)
+    allowed_agents = _validate_allowed_agents(body.allowed_agents, tenant_id, user_id=user_id)
     entry_agent = _validate_entry_agent(body.entry_agent, allowed_agents)
     _validate_metadata(body.metadata)
 

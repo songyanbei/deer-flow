@@ -88,7 +88,7 @@ def task_tool(
     # Build config overrides (after runtime extraction so tenant_id is available)
     overrides: dict = {}
 
-    skills_section = get_skills_prompt_section(tenant_id=tenant_id)
+    skills_section = get_skills_prompt_section(tenant_id=tenant_id, user_id=user_id)
     if skills_section:
         overrides["system_prompt"] = config.system_prompt + "\n\n" + skills_section
 
@@ -103,7 +103,7 @@ def task_tool(
     from src.tools import get_available_tools
 
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
-    tools = get_available_tools(model_name=parent_model, subagent_enabled=False, tenant_id=tenant_id)
+    tools = get_available_tools(model_name=parent_model, subagent_enabled=False, tenant_id=tenant_id, user_id=user_id)
 
     # Create executor
     executor = SubagentExecutor(
