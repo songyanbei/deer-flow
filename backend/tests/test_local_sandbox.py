@@ -1,4 +1,23 @@
+import pytest
+
 from src.sandbox.local.local_sandbox import LocalSandbox
+from src.sandbox.local.local_sandbox_provider import LocalSandboxProvider
+
+
+def test_local_sandbox_provider_blocks_when_oidc_enabled(monkeypatch):
+    """LocalSandboxProvider must refuse to acquire when OIDC is enabled."""
+    monkeypatch.setenv("OIDC_ENABLED", "true")
+    provider = LocalSandboxProvider()
+    with pytest.raises(RuntimeError, match="cannot be used when OIDC is enabled"):
+        provider.acquire("thread-1")
+
+
+def test_local_sandbox_provider_allows_when_oidc_disabled(monkeypatch):
+    """LocalSandboxProvider works normally when OIDC is disabled."""
+    monkeypatch.setenv("OIDC_ENABLED", "false")
+    provider = LocalSandboxProvider()
+    sandbox_id = provider.acquire("thread-1")
+    assert sandbox_id == "local"
 
 
 def test_windows_shell_command_prefers_pwsh(monkeypatch):

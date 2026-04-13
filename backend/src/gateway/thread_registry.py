@@ -1,29 +1,31 @@
-"""Thread-to-tenant ownership registry.
+"""Thread-to-tenant ownership registry (SQLite backend).
 
 Maintains a persistent mapping of ``thread_id → metadata`` so that access
 control can verify a request's tenant against the thread's owner and store
 platform binding information.
 
-The registry is stored as a flat JSON file at
-``{base_dir}/thread_registry.json``.  All mutations are guarded by a
-threading lock to prevent interleaved writes from concurrent requests.
+The registry is stored as a SQLite database at
+``{base_dir}/thread_registry.db``.  SQLite provides multi-process safety
+via its built-in file-level locking (WAL mode for concurrent readers).
 
 Design constraints:
-- JSON file is small (one entry per thread), acceptable for O(100k) threads
-- Thread-safe within a single process via ``threading.Lock``
-- File-based locking not implemented — upgrade to SQLite or Redis if needed
-- Unregistered threads are treated as accessible (backward compatibility)
+- WAL journal mode for concurrent read performance across gunicorn workers
+- ``check_same_thread=False`` so the connection can be shared within a process
+- An in-process ``threading.Lock`` guards write operations to avoid interleaved
+  transactions from concurrent coroutines within the same process
+- Unregistered threads are treated as denied (security: deny by default)
 
-Backward compatibility:
-- Old format stored ``thread_id → tenant_id`` (plain string).
-- New format stores ``thread_id → {tenant_id, ...metadata}``.
-- On load, plain-string entries are transparently promoted to ``{"tenant_id": value}``.
+Migration:
+- On first instantiation, if a legacy ``thread_registry.json`` exists alongside
+  the DB path, all entries are imported and the JSON file is renamed to ``.json.bak``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +38,33 @@ logger = logging.getLogger(__name__)
 # Re-use the same validation pattern as paths.py.
 _SAFE_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_\-]+$")
 
+# Columns that map 1:1 to the ``threads`` table (excluding JSON-serialized ones).
+_SCALAR_COLUMNS = (
+    "thread_id", "tenant_id", "user_id", "portal_session_id",
+    "group_key", "entry_agent", "requested_orchestration_mode",
+    "created_at", "updated_at",
+)
+# Columns stored as JSON text in the DB.
+_JSON_COLUMNS = ("allowed_agents", "metadata")
+
+_INIT_SQL = """\
+CREATE TABLE IF NOT EXISTS threads (
+    thread_id   TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    user_id     TEXT,
+    portal_session_id TEXT,
+    group_key   TEXT,
+    allowed_agents TEXT,
+    entry_agent TEXT,
+    requested_orchestration_mode TEXT,
+    metadata    TEXT,
+    created_at  TEXT,
+    updated_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_threads_tenant ON threads(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_threads_tenant_user ON threads(tenant_id, user_id);
+"""
+
 
 class ThreadRegistry:
     """Persistent thread → tenant mapping with access-control checks."""
@@ -43,49 +72,115 @@ class ThreadRegistry:
     def __init__(self, registry_file: Path | None = None) -> None:
         self._file = registry_file  # resolved lazily if None
         self._lock = threading.Lock()
-        self._cache: dict[str, Any] | None = None
+        self._conn: sqlite3.Connection | None = None
+
+    # ── connection management ─────────────────────────────────────────
 
     @property
-    def _registry_file(self) -> Path:
+    def _db_path(self) -> Path:
         if self._file is not None:
-            return self._file
-        return get_paths().base_dir / "thread_registry.json"
+            # Accept both .json (legacy tests) and .db paths — normalise to .db
+            p = self._file
+            if p.suffix == ".json":
+                p = p.with_suffix(".db")
+            return p
+        return get_paths().base_dir / "thread_registry.db"
 
-    # ── read / write helpers ───────────────────────────────────────────
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is not None:
+            return self._conn
+        db_path = self._db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _load(self) -> dict[str, Any]:
-        """Load the registry from disk, with in-memory caching.
+        # Migrate legacy JSON if present
+        self._maybe_migrate_json(db_path)
 
-        Transparently promotes old-format string values to metadata dicts.
-        """
-        if self._cache is not None:
-            return self._cache
-        path = self._registry_file
-        if not path.exists():
-            self._cache = {}
-            return self._cache
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.executescript(_INIT_SQL)
+        self._conn = conn
+        return conn
+
+    def _maybe_migrate_json(self, db_path: Path) -> None:
+        """Import entries from legacy JSON file if the DB is brand new."""
+        json_path = db_path.with_suffix(".json")
+        if not json_path.exists():
+            return
+        if db_path.exists():
+            # DB already exists — skip migration, leave JSON alone
+            return
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(json_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
-                raw = {}
-            # Promote old string entries → metadata dicts (safe copy)
-            data = {}
+                return
+            # Create the DB and import
+            conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(_INIT_SQL)
             for tid, val in raw.items():
-                data[tid] = {"tenant_id": val} if isinstance(val, str) else val
-            self._cache = data
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to read thread registry %s: %s", path, exc)
-            self._cache = {}
-        return self._cache
+                entry = {"tenant_id": val} if isinstance(val, str) else val
+                self._upsert_entry(conn, tid, entry)
+            conn.commit()
+            conn.close()
+            # Rename JSON to .bak
+            bak_path = json_path.with_suffix(".json.bak")
+            json_path.rename(bak_path)
+            logger.info("Migrated %d entries from %s → %s", len(raw), json_path, db_path)
+        except Exception:
+            logger.warning("Failed to migrate legacy JSON registry", exc_info=True)
 
-    def _save(self, data: dict[str, Any]) -> None:
-        """Atomic write to the registry file."""
-        path = self._registry_file
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-        self._cache = data
+    @staticmethod
+    def _upsert_entry(conn: sqlite3.Connection, thread_id: str, entry: dict[str, Any]) -> None:
+        """Insert or replace a single entry into the threads table."""
+        conn.execute(
+            """INSERT OR REPLACE INTO threads
+               (thread_id, tenant_id, user_id, portal_session_id,
+                group_key, allowed_agents, entry_agent,
+                requested_orchestration_mode, metadata, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                thread_id,
+                entry.get("tenant_id"),
+                entry.get("user_id"),
+                entry.get("portal_session_id"),
+                entry.get("group_key"),
+                json.dumps(entry["allowed_agents"]) if entry.get("allowed_agents") is not None else None,
+                entry.get("entry_agent"),
+                entry.get("requested_orchestration_mode"),
+                json.dumps(entry["metadata"]) if entry.get("metadata") is not None else None,
+                entry.get("created_at"),
+                entry.get("updated_at"),
+            ),
+        )
+
+    def _row_to_dict(self, row: sqlite3.Row | tuple, columns: list[str]) -> dict[str, Any]:
+        """Convert a DB row to a metadata dict, deserializing JSON columns.
+
+        Keys with NULL values are included so that callers can distinguish
+        "field is None" from "field was never set" — matches the behaviour
+        of the legacy JSON backend.
+        """
+        d: dict[str, Any] = {}
+        for i, col in enumerate(columns):
+            val = row[i]
+            if col in _JSON_COLUMNS and val is not None:
+                try:
+                    val = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            d[col] = val
+        return d
+
+    def _fetch_entry(self, thread_id: str) -> dict[str, Any] | None:
+        """Fetch a single thread entry as a dict, or None."""
+        conn = self._get_conn()
+        cur = conn.execute("SELECT * FROM threads WHERE thread_id = ?", (thread_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cur.description]
+        return self._row_to_dict(row, columns)
 
     # ── public API (original, backward-compatible) ─────────────────────
 
@@ -102,41 +197,38 @@ class ThreadRegistry:
         fallback paths from degrading an existing binding established by the
         Gateway layer.
 
-        Preserves any existing metadata fields when called on a thread that
-        already has a metadata entry.  Skips disk I/O when the entry is
-        unchanged (eliminates ~95% of redundant writes during agent execution).
+        Skips disk I/O when the entry is unchanged.
         """
         if not _SAFE_ID_RE.match(thread_id):
             raise ValueError(f"Invalid thread_id: {thread_id!r}")
         with self._lock:
-            data = dict(self._load())  # shallow copy
-            existing = data.get(thread_id)
-            if isinstance(existing, dict):
-                # Guard: don't let weak/fallback identity overwrite a concrete binding
+            existing = self._fetch_entry(thread_id)
+            if existing is not None:
                 existing_tenant = existing.get("tenant_id")
                 existing_user = existing.get("user_id")
 
                 effective_tenant = tenant_id
                 if existing_tenant and existing_tenant not in self._WEAK_TENANT_IDS and tenant_id in self._WEAK_TENANT_IDS:
-                    effective_tenant = existing_tenant  # keep the stronger value
+                    effective_tenant = existing_tenant
 
                 effective_user = user_id
-                if existing_user and existing_user not in self._WEAK_USER_IDS and user_id in self._WEAK_USER_IDS:
-                    effective_user = existing_user  # keep the stronger value
+                if existing_user and existing_user not in self._WEAK_USER_IDS and (user_id is not None and user_id in self._WEAK_USER_IDS):
+                    effective_user = existing_user
 
                 changed = existing_tenant != effective_tenant
                 if effective_user and existing_user != effective_user:
                     changed = True
                 if not changed:
-                    return  # already registered with same identity → skip write
-                updated = dict(existing)  # copy inner dict to avoid mutating cache
+                    return
+
+                updated = dict(existing)
                 updated["tenant_id"] = effective_tenant
                 if effective_user:
                     updated["user_id"] = effective_user
-                # Backfill created_at for legacy entries promoted from string format
-                if "created_at" not in updated:
+                if "created_at" not in updated or updated.get("created_at") is None:
                     updated["created_at"] = datetime.now(timezone.utc).isoformat()
-                data[thread_id] = updated
+                self._upsert_entry(self._get_conn(), thread_id, updated)
+                self._get_conn().commit()
             else:
                 entry: dict[str, Any] = {
                     "tenant_id": tenant_id,
@@ -144,19 +236,16 @@ class ThreadRegistry:
                 }
                 if user_id:
                     entry["user_id"] = user_id
-                data[thread_id] = entry
-            self._save(data)
+                self._upsert_entry(self._get_conn(), thread_id, entry)
+                self._get_conn().commit()
 
     def get_tenant(self, thread_id: str) -> str | None:
         """Return the owning tenant, or ``None`` if unregistered."""
         with self._lock:
-            entry = self._load().get(thread_id)
+            entry = self._fetch_entry(thread_id)
             if entry is None:
                 return None
-            if isinstance(entry, dict):
-                return entry.get("tenant_id")
-            # Shouldn't happen after _load promotion, but be safe
-            return str(entry)
+            return entry.get("tenant_id")
 
     def check_access(self, thread_id: str, tenant_id: str, user_id: str | None = None) -> bool:
         """Return ``True`` if the caller may access the thread.
@@ -170,64 +259,51 @@ class ThreadRegistry:
           has no recorded user_id, access is **denied** (legacy entries
           without user ownership are not trusted under OIDC).
         """
-        import os
-
         with self._lock:
-            entry = self._load().get(thread_id)
+            entry = self._fetch_entry(thread_id)
         if entry is None:
-            return False  # unregistered thread → deny
-        if isinstance(entry, dict):
-            owner_tenant = entry.get("tenant_id")
-            if owner_tenant is not None and owner_tenant != tenant_id:
+            return False
+        owner_tenant = entry.get("tenant_id")
+        if owner_tenant is not None and owner_tenant != tenant_id:
+            return False
+        if user_id is not None:
+            owner_user = entry.get("user_id")
+            if owner_user is not None and owner_user != user_id:
                 return False
-            if user_id is not None:
-                owner_user = entry.get("user_id")
-                if owner_user is not None and owner_user != user_id:
+            if owner_user is None:
+                _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
+                if _oidc_enabled:
                     return False
-                # OIDC strict mode: deny legacy entries without user_id
-                if owner_user is None:
-                    _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
-                    if _oidc_enabled:
-                        return False
-            return True
-        # Legacy string entry — tenant only
-        return str(entry) == tenant_id
+        return True
 
     def list_threads(self, tenant_id: str) -> list[str]:
         """Return all thread IDs belonging to a tenant."""
         with self._lock:
-            result = []
-            for tid, entry in self._load().items():
-                owner = entry.get("tenant_id") if isinstance(entry, dict) else entry
-                if owner == tenant_id:
-                    result.append(tid)
-            return result
+            conn = self._get_conn()
+            cur = conn.execute("SELECT thread_id FROM threads WHERE tenant_id = ?", (tenant_id,))
+            return [row[0] for row in cur.fetchall()]
 
     def unregister(self, thread_id: str) -> bool:
         """Remove a thread from the registry.  Returns ``True`` if it existed."""
         with self._lock:
-            data = dict(self._load())
-            existed = data.pop(thread_id, None) is not None
-            if existed:
-                self._save(data)
-            return existed
+            conn = self._get_conn()
+            cur = conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
+            conn.commit()
+            return cur.rowcount > 0
 
     def invalidate_cache(self) -> None:
-        """Force next read to reload from disk."""
-        with self._lock:
-            self._cache = None
+        """No-op for SQLite backend (no in-memory cache).
+
+        Kept for backward compatibility with callers that may invoke this.
+        """
+        pass
 
     # ── extended API for platform binding metadata ─────────────────────
 
     def get_binding(self, thread_id: str) -> dict[str, Any] | None:
         """Return the full metadata dict for a thread, or ``None``."""
         with self._lock:
-            entry = self._load().get(thread_id)
-            if entry is None:
-                return None
-            if isinstance(entry, dict):
-                return dict(entry)
-            return {"tenant_id": str(entry)}
+            return self._fetch_entry(thread_id)
 
     def register_binding(
         self,
@@ -264,9 +340,8 @@ class ThreadRegistry:
         if requested_orchestration_mode is not None:
             binding["requested_orchestration_mode"] = requested_orchestration_mode
         with self._lock:
-            data = dict(self._load())
-            data[thread_id] = binding
-            self._save(data)
+            self._upsert_entry(self._get_conn(), thread_id, binding)
+            self._get_conn().commit()
         return dict(binding)
 
     # Fields that callers are allowed to update via ``update_binding``.
@@ -297,16 +372,13 @@ class ThreadRegistry:
                 f"Allowed: {', '.join(sorted(self._UPDATABLE_FIELDS))}"
             )
         with self._lock:
-            data = dict(self._load())
-            entry = data.get(thread_id)
+            entry = self._fetch_entry(thread_id)
             if entry is None:
                 return None
-            # Copy inner dict to avoid mutating cache before save
-            entry = dict(entry) if isinstance(entry, dict) else {"tenant_id": str(entry)}
             entry.update(fields)
             entry["updated_at"] = datetime.now(timezone.utc).isoformat()
-            data[thread_id] = entry
-            self._save(data)
+            self._upsert_entry(self._get_conn(), thread_id, entry)
+            self._get_conn().commit()
             return dict(entry)
 
     # ── lifecycle API (for admin / cleanup operations) ──────────────────
@@ -314,13 +386,12 @@ class ThreadRegistry:
     def list_threads_by_user(self, tenant_id: str, user_id: str) -> list[str]:
         """Return all thread IDs belonging to a specific user within a tenant."""
         with self._lock:
-            result = []
-            for tid, entry in self._load().items():
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("tenant_id") == tenant_id and entry.get("user_id") == user_id:
-                    result.append(tid)
-            return result
+            conn = self._get_conn()
+            cur = conn.execute(
+                "SELECT thread_id FROM threads WHERE tenant_id = ? AND user_id = ?",
+                (tenant_id, user_id),
+            )
+            return [row[0] for row in cur.fetchall()]
 
     def delete_threads_by_user(self, tenant_id: str, user_id: str) -> int:
         """Remove all threads belonging to a specific user within a tenant.
@@ -328,18 +399,13 @@ class ThreadRegistry:
         Returns the number of threads removed.
         """
         with self._lock:
-            data = dict(self._load())
-            to_remove = [
-                tid for tid, entry in data.items()
-                if isinstance(entry, dict)
-                and entry.get("tenant_id") == tenant_id
-                and entry.get("user_id") == user_id
-            ]
-            for tid in to_remove:
-                del data[tid]
-            if to_remove:
-                self._save(data)
-            return len(to_remove)
+            conn = self._get_conn()
+            cur = conn.execute(
+                "DELETE FROM threads WHERE tenant_id = ? AND user_id = ?",
+                (tenant_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount
 
     def delete_threads_by_tenant(self, tenant_id: str) -> int:
         """Remove all threads belonging to a tenant.
@@ -347,40 +413,29 @@ class ThreadRegistry:
         Returns the number of threads removed.
         """
         with self._lock:
-            data = dict(self._load())
-            to_remove = [
-                tid for tid, entry in data.items()
-                if (entry.get("tenant_id") if isinstance(entry, dict) else entry) == tenant_id
-            ]
-            for tid in to_remove:
-                del data[tid]
-            if to_remove:
-                self._save(data)
-            return len(to_remove)
+            conn = self._get_conn()
+            cur = conn.execute("DELETE FROM threads WHERE tenant_id = ?", (tenant_id,))
+            conn.commit()
+            return cur.rowcount
 
     def list_expired_threads(self, max_age_seconds: int, tenant_id: str | None = None) -> list[str]:
         """Return thread IDs whose ``created_at`` is older than *max_age_seconds*.
-
-        Args:
-            max_age_seconds: Threads older than this are considered expired.
-            tenant_id: If provided, only return threads belonging to this tenant.
 
         Threads without a ``created_at`` field are treated as expired.
         """
         cutoff = datetime.now(timezone.utc).timestamp() - max_age_seconds
         with self._lock:
+            conn = self._get_conn()
+            if tenant_id is not None:
+                cur = conn.execute(
+                    "SELECT thread_id, created_at FROM threads WHERE tenant_id = ?",
+                    (tenant_id,),
+                )
+            else:
+                cur = conn.execute("SELECT thread_id, created_at FROM threads")
             result = []
-            for tid, entry in self._load().items():
-                # Tenant filter: skip threads not belonging to the specified tenant
-                if tenant_id is not None:
-                    owner = entry.get("tenant_id") if isinstance(entry, dict) else entry
-                    if owner != tenant_id:
-                        continue
-
-                if not isinstance(entry, dict):
-                    result.append(tid)  # legacy entry, no timestamp → treat as expired
-                    continue
-                created = entry.get("created_at")
+            for row in cur.fetchall():
+                tid, created = row
                 if created is None:
                     result.append(tid)
                     continue

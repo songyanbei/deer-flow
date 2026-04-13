@@ -39,13 +39,13 @@ class LocalSandboxProvider(SandboxProvider):
         return mappings
 
     def acquire(self, thread_id: str | None = None) -> str:
-        import logging
         import os
         _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
         if _oidc_enabled:
-            logging.getLogger(__name__).warning(
+            raise RuntimeError(
                 "LocalSandboxProvider is a development-only provider with no per-thread "
-                "isolation. It should NOT be used in production (OIDC is enabled)."
+                "isolation. It cannot be used when OIDC is enabled. "
+                "Configure AioSandboxProvider for production deployments."
             )
         global _singleton
         if _singleton is None:

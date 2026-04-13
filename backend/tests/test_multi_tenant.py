@@ -94,22 +94,49 @@ class TestThreadRegistry:
         reg.register("thread-1", "tenant-b")
         assert reg.get_tenant("thread-1") == "tenant-b"
 
-    def test_invalidate_cache_forces_reload(self, tmp_path):
-        file = tmp_path / "thread_registry.json"
-        reg = ThreadRegistry(registry_file=file)
+    def test_cross_instance_visibility(self, tmp_path):
+        """Two ThreadRegistry instances sharing the same DB see each other's writes."""
+        file = tmp_path / "thread_registry.db"
+        reg1 = ThreadRegistry(registry_file=file)
+        reg1.register("thread-1", "tenant-a")
+
+        # A second instance pointing to the same DB sees the write immediately
+        reg2 = ThreadRegistry(registry_file=file)
+        assert reg2.get_tenant("thread-1") == "tenant-a"
+
+        # Write from reg2 is visible to reg1
+        reg2.register("thread-2", "tenant-b")
+        assert reg1.get_tenant("thread-2") == "tenant-b"
+
+    def test_json_to_sqlite_migration(self, tmp_path):
+        """Legacy JSON registry is auto-migrated to SQLite on first access."""
+        json_file = tmp_path / "thread_registry.json"
+        legacy_data = {
+            "thread-old": "tenant-legacy",
+            "thread-new": {"tenant_id": "tenant-x", "user_id": "user-y", "created_at": "2025-01-01T00:00:00+00:00"},
+        }
+        json_file.write_text(json.dumps(legacy_data), encoding="utf-8")
+
+        # Point at the .json path — constructor normalises to .db
+        reg = ThreadRegistry(registry_file=json_file)
+
+        # Both entries should be accessible
+        assert reg.get_tenant("thread-old") == "tenant-legacy"
+        assert reg.get_tenant("thread-new") == "tenant-x"
+
+        binding = reg.get_binding("thread-new")
+        assert binding["user_id"] == "user-y"
+
+        # JSON file should be renamed to .bak
+        assert not json_file.exists()
+        assert (tmp_path / "thread_registry.json.bak").exists()
+
+    def test_invalidate_cache_is_noop(self, tmp_path):
+        """invalidate_cache() is a no-op but should not raise."""
+        reg = self._make_registry(tmp_path)
         reg.register("thread-1", "tenant-a")
-
-        # Externally modify the file
-        data = json.loads(file.read_text())
-        data["thread-2"] = "tenant-b"
-        file.write_text(json.dumps(data))
-
-        # Without invalidation, cache still has old data
-        assert reg.get_tenant("thread-2") is None
-
-        # After invalidation, reloads from disk
-        reg.invalidate_cache()
-        assert reg.get_tenant("thread-2") == "tenant-b"
+        reg.invalidate_cache()  # should not raise
+        assert reg.get_tenant("thread-1") == "tenant-a"
 
 
 # ── Tenant-scoped paths tests ────────────────────────────────────────
