@@ -39,30 +39,14 @@ class TestThreadRegistryEdgeCases:
     def _make(self, tmp_path: Path) -> ThreadRegistry:
         return ThreadRegistry(registry_file=tmp_path / "thread_registry.json")
 
-    # ── Corrupted / malformed file ──
+    # ── Fresh database ──
 
-    def test_corrupted_json_file_does_not_crash(self, tmp_path):
-        """Registry should gracefully handle corrupted JSON on disk."""
-        file = tmp_path / "thread_registry.json"
-        file.write_text("{invalid json!!!", encoding="utf-8")
-        reg = ThreadRegistry(registry_file=file)
+    def test_fresh_db_returns_none_for_unknown(self, tmp_path):
+        """Registry should return None for unknown threads in a fresh DB."""
+        reg = self._make(tmp_path)
         assert reg.get_binding("any") is None
         assert reg.get_tenant("any") is None
         assert reg.list_threads("default") == []
-
-    def test_non_dict_json_treated_as_empty(self, tmp_path):
-        """If the JSON file contains a non-dict (e.g., array), treat as empty."""
-        file = tmp_path / "thread_registry.json"
-        file.write_text('[1, 2, 3]', encoding="utf-8")
-        reg = ThreadRegistry(registry_file=file)
-        assert reg.get_binding("any") is None
-
-    def test_empty_file_treated_as_empty(self, tmp_path):
-        """Empty file should be handled gracefully."""
-        file = tmp_path / "thread_registry.json"
-        file.write_text("", encoding="utf-8")
-        reg = ThreadRegistry(registry_file=file)
-        assert reg.get_binding("any") is None
 
     # ── ID validation ──
 
@@ -118,23 +102,24 @@ class TestThreadRegistryEdgeCases:
 
     # ── Cache invalidation ──
 
-    def test_invalidate_cache_forces_reload(self, tmp_path):
-        file = tmp_path / "thread_registry.json"
-        reg = ThreadRegistry(registry_file=file)
-        reg.register_binding("thread-1", tenant_id="t", user_id="u", portal_session_id="s")
+    def test_cross_instance_visibility_with_bindings(self, tmp_path):
+        """Two registry instances sharing the same DB see each other's writes."""
+        file = tmp_path / "thread_registry.db"
+        reg1 = ThreadRegistry(registry_file=file)
+        reg1.register_binding("thread-1", tenant_id="t", user_id="u", portal_session_id="s")
 
-        # Externally modify the file
-        data = json.loads(file.read_text(encoding="utf-8"))
-        data["thread-external"] = {"tenant_id": "ext"}
-        file.write_text(json.dumps(data), encoding="utf-8")
-
-        # Before invalidation, cache is stale
-        assert reg.get_binding("thread-external") is None
-
-        reg.invalidate_cache()
-        binding = reg.get_binding("thread-external")
+        # Second instance sees the binding immediately
+        reg2 = ThreadRegistry(registry_file=file)
+        binding = reg2.get_binding("thread-1")
         assert binding is not None
-        assert binding["tenant_id"] == "ext"
+        assert binding["tenant_id"] == "t"
+
+    def test_invalidate_cache_is_noop(self, tmp_path):
+        """invalidate_cache() should be a safe no-op for SQLite backend."""
+        reg = self._make(tmp_path)
+        reg.register_binding("thread-1", tenant_id="t", user_id="u", portal_session_id="s")
+        reg.invalidate_cache()
+        assert reg.get_binding("thread-1") is not None
 
     # ── Concurrency ──
 
@@ -170,7 +155,7 @@ class TestThreadRegistryEdgeCases:
     # ── Atomic write safety ──
 
     def test_register_binding_creates_parent_dirs(self, tmp_path):
-        deep_path = tmp_path / "deep" / "nested" / "thread_registry.json"
+        deep_path = tmp_path / "deep" / "nested" / "thread_registry.db"
         reg = ThreadRegistry(registry_file=deep_path)
         binding = reg.register_binding("thread-1", tenant_id="t", user_id="u", portal_session_id="s")
         assert binding is not None

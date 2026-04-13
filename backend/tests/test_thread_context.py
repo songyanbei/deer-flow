@@ -108,17 +108,15 @@ class TestResolveThreadContext:
             ctx = resolve_thread_context("th-1", "tenant-a", "user-1")
             assert ctx.thread_id == "th-1"
 
-    def test_binding_without_tenant_id_still_succeeds(self, registry):
-        """Edge case: binding has no tenant_id field (very old entry)."""
+    def test_tenant_id_always_present_in_sqlite(self, registry):
+        """SQLite schema enforces NOT NULL on tenant_id — edge case structurally prevented."""
+        import sqlite3
         registry.register("th-1", "tenant-a", user_id="user-1")
-        # Manually remove tenant_id from binding to simulate edge case
         with registry._lock:
-            data = registry._load()
-            data["th-1"].pop("tenant_id", None)
-            registry._save(data)
-        with patch(REGISTRY_PATCH, return_value=registry):
-            ctx = resolve_thread_context("th-1", "tenant-a", "user-1")
-            assert ctx.tenant_id == "tenant-a"
+            conn = registry._get_conn()
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute("UPDATE threads SET tenant_id = NULL WHERE thread_id = ?", ("th-1",))
+            conn.rollback()
 
 
 # ── resolve_thread_context_lenient (non-HTTP layer) ──────────────────

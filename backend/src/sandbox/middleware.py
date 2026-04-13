@@ -48,6 +48,7 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         # No fallback to runtime.context or individual configurable fields — all callers
         # (Gateway, DeerFlowClient) must serialize thread_context before invocation.
         try:
+            import os
             from langgraph.config import get_config
             from src.gateway.thread_context import ThreadContext
             raw_ctx = get_config().get("configurable", {}).get("thread_context")
@@ -55,11 +56,20 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
                 ctx = ThreadContext.deserialize(raw_ctx)
                 provider.set_thread_context(thread_id, ctx)
             else:
+                _oidc_enabled = os.getenv("OIDC_ENABLED", "false").lower() in ("true", "1", "yes")
+                if _oidc_enabled:
+                    raise RuntimeError(
+                        f"SandboxMiddleware: configurable['thread_context'] is required when "
+                        f"OIDC is enabled, but missing for thread {thread_id}. All callers "
+                        f"must serialize ThreadContext into configurable before invocation."
+                    )
                 _logger.warning(
                     "SandboxMiddleware: configurable['thread_context'] missing for thread %s — "
-                    "sandbox will use legacy mount paths. This should not happen in production.",
+                    "sandbox will use legacy mount paths (OIDC disabled, dev mode).",
                     thread_id,
                 )
+        except RuntimeError:
+            raise  # re-raise OIDC enforcement errors
         except Exception:
             _logger.debug("SandboxMiddleware: failed to read thread_context for thread %s", thread_id, exc_info=True)
 

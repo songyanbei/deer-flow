@@ -385,9 +385,10 @@ class TestLifecycleCleanup:
         registry.register("thread-b1", "tenant-b", user_id="user-3")
 
         old_created_at = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        data = registry._load()
-        data["thread-a1"]["created_at"] = old_created_at
-        registry._save(data)
+        # Directly update created_at in the SQLite database
+        conn = registry._get_conn()
+        conn.execute("UPDATE threads SET created_at = ? WHERE thread_id = ?", (old_created_at, "thread-a1"))
+        conn.commit()
 
         expired_ctx = ThreadContext("tenant-a", "user-1", "thread-a1")
         survivor_ctx = ThreadContext("tenant-b", "user-3", "thread-b1")

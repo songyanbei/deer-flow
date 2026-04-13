@@ -135,12 +135,11 @@ class TestCleanupExpiredThreads:
         tmp_registry.register("old-2", "tenant-a")
 
         # Manually backdate created_at for testing
-        data = tmp_registry._load()
         from datetime import datetime, timezone, timedelta
         old_time = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
-        data["old-1"]["created_at"] = old_time
-        data["old-2"]["created_at"] = old_time
-        tmp_registry._save(data)
+        conn = tmp_registry._get_conn()
+        conn.execute("UPDATE threads SET created_at = ? WHERE thread_id IN (?, ?)", (old_time, "old-1", "old-2"))
+        conn.commit()
 
         # Register a fresh thread
         tmp_registry.register("new-1", "tenant-a")
