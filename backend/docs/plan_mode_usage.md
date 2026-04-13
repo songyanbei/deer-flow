@@ -1,6 +1,8 @@
 # Plan Mode with TodoList Middleware
 
-This document describes how to enable and use the Plan Mode feature with TodoList middleware in DeerFlow 2.0.
+> **Last updated**: 2026-04-10
+
+This document describes how to enable and use the Plan Mode feature with TodoList middleware.
 
 ## Overview
 
@@ -143,12 +145,20 @@ make_lead_agent(config)
   │
   └─> _build_middlewares(config)
         │
-        ├─> ThreadDataMiddleware
-        ├─> SandboxMiddleware
-        ├─> SummarizationMiddleware (if enabled via global config)
-        ├─> TodoListMiddleware (if is_plan_mode=True) ← NEW
-        ├─> TitleMiddleware
-        └─> ClarificationMiddleware
+        ├─>  1. ThreadDataMiddleware
+        ├─>  2. UploadsMiddleware
+        ├─>  3. SandboxMiddleware
+        ├─>  4. DanglingToolCallMiddleware
+        ├─>  5. SummarizationMiddleware (if enabled)
+        ├─>  6. TodoListMiddleware (if is_plan_mode=True)
+        ├─>  7. TitleMiddleware (non-domain agents)
+        ├─>  8. MemoryMiddleware (non-domain agents)
+        ├─>  9. ToolCallLimitMiddleware (if configured)
+        ├─> 10. ViewImageMiddleware (if model supports vision)
+        ├─> 11. SubagentLimitMiddleware (if subagent enabled)
+        ├─> 12. InterventionMiddleware (domain agents only)
+        ├─> 13. HelpRequestMiddleware (domain agents only)
+        └─> 14. ClarificationMiddleware (always last)
 ```
 
 ## Implementation Details
@@ -194,7 +204,7 @@ DeerFlow uses custom `system_prompt` and `tool_description` for the TodoListMidd
 - Comprehensive best practices section
 - Task completion requirements to prevent premature marking
 
-The custom prompts are defined in `_create_todo_list_middleware()` in `/Users/hetao/workspace/deer-flow/backend/src/agents/lead_agent/agent.py:57`.
+The custom prompts are defined in `_create_todo_list_middleware()` in `src/agents/lead_agent/agent.py`.
 
 ## Notes
 

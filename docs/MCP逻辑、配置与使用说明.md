@@ -1,5 +1,7 @@
 # DeerFlow MCP 逻辑、配置与使用说明
 
+> **最后更新**: 2026-04-10 | 完整索引见 [MCP_INDEX.md](MCP_INDEX.md)
+
 ## 1. 文档目的
 
 本文档基于 DeerFlow 当前已经完成的 MCP 改造代码，说明以下内容：
@@ -7,9 +9,10 @@
 1. DeerFlow 当前如何接入和使用 MCP
 2. MCP 在主 Agent 与 Domain Agent 中分别如何生效
 3. 平台级 `extensions_config.json` 和 Agent 级 `config.yaml` 应该如何配置
-4. 常见使用方式、加载时机和排障方式
+4. 多租户模式下 MCP 的 scope 隔离
+5. 常见使用方式、加载时机和排障方式
 
-本文档描述的是“当前代码真实行为”，不是纯设计目标。
+本文档描述的是”当前代码真实行为”，不是纯设计目标。
 
 ---
 
@@ -88,11 +91,19 @@ MCP 绑定解析逻辑在：
 
 - [runtime_manager.py](/E:/work/deer-flow/backend/src/mcp/runtime_manager.py)
 
-它按 scope 管理 MCP 连接和工具缓存。当前定义了三类 scope key：
+它按 scope 管理 MCP 连接和工具缓存。当前定义了六类 scope key（含多租户扩展）：
 
-- `global`
-- `domain:<agent_name>`
-- `run:<run_id>`（预留）
+| Scope Key | 生成方法 | 说明 |
+|-----------|---------|------|
+| `global` | `scope_key_for_tenant()` | 平台级全局 MCP |
+| `domain:<agent_name>` | `scope_key_for_agent(name)` | Domain Agent 专属 MCP |
+| `tenant:<tid>:global` | `scope_key_for_tenant(tid)` | 租户级全局 MCP |
+| `tenant:<tid>:domain:<agent>` | `scope_key_for_agent(name, tid)` | 租户+Agent 组合 |
+| `tenant:<tid>:user:<uid>:global` | `scope_key_for_user(tid, uid)` | 用户个人 MCP |
+| `tenant:<tid>:user:<uid>:domain:<agent>` | `scope_key_for_user_agent(name, tid, uid)` | 用户+Agent 组合 |
+| `run:<run_id>` | `scope_key_for_run(rid)` | 运行时临时 MCP（预留） |
+
+当 `tenant_id` 为 `"default"` 或 `user_id` 为 `"anonymous"` 时，自动降级到上一层 scope。
 
 统一运行时会负责：
 

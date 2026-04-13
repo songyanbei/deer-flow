@@ -2,6 +2,8 @@
 
 This guide explains how to configure DeerFlow for your environment.
 
+> **Last updated**: 2026-04-10
+
 ## Configuration Sections
 
 ### Models
@@ -93,10 +95,12 @@ tools:
 
 DeerFlow supports multiple sandbox execution modes. Configure your preferred mode in `config.yaml`:
 
-**Local Execution** (runs sandbox code directly on the host machine):
+**Local Execution** (runs sandbox code directly on the host machine, development only):
+> **Note**: `LocalSandboxProvider` raises `RuntimeError` when OIDC is enabled. Production deployments must use `AioSandboxProvider`.
+
 ```yaml
 sandbox:
-   use: src.sandbox.local:LocalSandboxProvider # Local execution
+   use: src.sandbox.local:LocalSandboxProvider # Local execution (dev only)
 ```
 
 **Docker Execution** (runs sandbox code in isolated Docker containers):
@@ -121,7 +125,7 @@ See [Provisioner Setup Guide](docker/provisioner/README.md) for detailed configu
 
 Choose between local execution or Docker-based isolation:
 
-**Option 1: Local Sandbox** (default, simpler setup):
+**Option 1: Local Sandbox** (default, development only — incompatible with OIDC):
 ```yaml
 sandbox:
   use: src.sandbox.local:LocalSandboxProvider
@@ -202,6 +206,80 @@ DeerFlow searches for configuration in this order:
 2. Path from `DEER_FLOW_CONFIG_PATH` environment variable
 3. `config.yaml` in current working directory (typically `backend/` when running)
 4. `config.yaml` in parent directory (project root: `deer-flow/`)
+
+### Memory
+
+Configure the persistent memory system for fact extraction and context injection:
+
+```yaml
+memory:
+  enabled: true                    # Master switch
+  injection_enabled: true          # Inject memory into system prompt
+  storage_path: null               # Path to memory.json (default: auto-resolved per tenant/user)
+  debounce_seconds: 30             # Wait time before processing updates
+  model_name: null                 # LLM for extraction (null = default model)
+  max_facts: 100                   # Max stored facts
+  fact_confidence_threshold: 0.7   # Minimum confidence for fact storage
+  max_injection_tokens: 2000       # Token limit for prompt injection
+```
+
+### Subagents
+
+Configure subagent delegation for the `task` tool:
+
+```yaml
+subagents:
+  enabled: true                    # Master switch for subagent delegation
+  timeout_seconds: 900             # Default timeout (15 minutes)
+```
+
+### Summarization
+
+Context compression when approaching token limits:
+
+```yaml
+summarization:
+  enabled: false
+  model_name: null
+  trigger:
+    - type: tokens
+      value: 100000
+  keep:
+    type: messages
+    value: 20
+```
+
+### Extensions Configuration (`extensions_config.json`)
+
+MCP servers and skills are configured in `extensions_config.json`. Each MCP server now supports additional fields for multi-tenant scope-based management:
+
+```json
+{
+  "mcpServers": {
+    "server-name": {
+      "enabled": true,
+      "type": "stdio",
+      "command": "npx",
+      "args": ["..."],
+      "category": "global",
+      "domain": null,
+      "readonly": false,
+      "description": "...",
+      "connect_timeout_seconds": 30,
+      "call_timeout_seconds": 60
+    }
+  },
+  "skills": {
+    "skill-name": { "enabled": true }
+  }
+}
+```
+
+**MCP Server Categories**:
+- `global` — Platform-wide, available to all agents
+- `domain` — Bound to a specific domain agent (requires `domain` field)
+- `shared` — Shared across multiple agents
+- `ephemeral` — Per-run lifecycle (reserved for future use)
 
 ## Best Practices
 
