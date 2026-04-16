@@ -126,7 +126,7 @@ Middlewares execute in strict order in `src/agents/lead_agent/agent.py`:
 
 1. **ThreadDataMiddleware** - Creates per-thread directories under `tenants/{tenant_id}/users/{user_id}/threads/{thread_id}/user-data/{workspace,uploads,outputs}` using `ThreadContext`
 2. **UploadsMiddleware** - Tracks and injects newly uploaded files into conversation
-3. **SandboxMiddleware** - Acquires sandbox, stores `sandbox_id` in state
+3. **SandboxMiddleware** - Acquires sandbox, stores `sandbox_id` in state. When OIDC is enabled and `configurable["thread_context"]` is missing, raises `RuntimeError` (no silent degradation in production)
 4. **DanglingToolCallMiddleware** - Injects placeholder ToolMessages for AIMessage tool_calls that lack responses (e.g., due to user interruption)
 5. **SummarizationMiddleware** - Context reduction when approaching token limits (optional, if enabled)
 6. **TodoListMiddleware** - Task tracking with `write_todos` tool (optional, if plan_mode)
@@ -189,8 +189,8 @@ FastAPI application on port 8001 with health check at `GET /health`.
 | Router | Endpoints |
 |--------|-----------|
 | **Models** (`/api/models`) | `GET /` - list models; `GET /{name}` - model details |
-| **MCP** (`/api/mcp`) | `GET /config` - get config; `PUT /config` - update config (saves to extensions_config.json) |
-| **Skills** (`/api/skills`) | `GET /` - list skills; `GET /{name}` - details; `PUT /{name}` - update enabled; `POST /install` - install from .skill archive |
+| **MCP** (`/api/mcp`) | `GET /config` - get config; `PUT /config` - full replace; `PUT /config/{name}` - single-item upsert (source gating); `DELETE /config/{name}` - single-item delete (source gating) |
+| **Skills** (`/api/skills`) | `GET /` - list skills; `GET /{name}` - details; `PUT /{name}` - update enabled; `POST /install` - install from thread; `POST /install_from_payload` - direct upload; `POST /install_from_url` - download from URL |
 | **Memory** (`/api/memory`) | `GET /` - memory data; `POST /reload` - force reload; `GET /config` - config; `GET /status` - config + data |
 | **Uploads** (`/api/threads/{id}/uploads`) | `POST /` - upload files (auto-converts PDF/PPT/Excel/Word); `GET /list` - list; `DELETE /{filename}` - delete |
 | **Artifacts** (`/api/threads/{id}/artifacts`) | `GET /{path}` - serve artifacts; `?download=true` for file download |
@@ -202,8 +202,8 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 **Interface**: Abstract `Sandbox` with `execute_command`, `read_file`, `write_file`, `list_dir`
 **Provider Pattern**: `SandboxProvider` with `acquire`, `get`, `release` lifecycle
 **Implementations**:
-- `LocalSandboxProvider` - Singleton local filesystem execution with path mappings
-- `AioSandboxProvider` (`src/community/`) - Docker-based isolation
+- `LocalSandboxProvider` - Singleton local filesystem execution with path mappings (development only; raises `RuntimeError` when OIDC is enabled)
+- `AioSandboxProvider` (`src/community/`) - Docker-based isolation (production)
 
 **Virtual Path System**:
 - Agent sees: `/mnt/user-data/{workspace,uploads,outputs}`, `/mnt/skills`
@@ -212,6 +212,7 @@ Proxied through nginx: `/api/langgraph/*` → LangGraph, all other `/api/*` → 
 - Translation: `replace_virtual_path()` / `replace_virtual_paths_in_command()`
 - Detection: `is_local_sandbox()` checks `sandbox_id == "local"`
 - Identity: `ThreadContext` (frozen dataclass) carries validated `tenant_id`/`user_id`/`thread_id` through the system
+- Thread ownership: `ThreadRegistry` stores thread→tenant/user mappings in SQLite (`thread_registry.db`, WAL mode) for multi-process safety across gunicorn workers. Legacy JSON registries are auto-migrated on first access
 
 **Sandbox Tools** (in `src/sandbox/tools.py`):
 - `bash` - Execute commands with path translation and error handling

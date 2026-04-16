@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -384,6 +385,8 @@ def test_mcp_router_put_persists_mcp_servers_and_preserves_skills(monkeypatch, t
     from src.gateway.routers import mcp as mcp_router
 
     config_path = tmp_path / "extensions_config.json"
+    # Pre-populate the config file with existing skills so the PUT preserves them
+    config_path.write_text(json.dumps({"mcpServers": {}, "skills": {"skill-a": {"enabled": True}}}))
     current_config = ExtensionsConfig(
         mcp_servers={},
         skills={"skill-a": SkillStateConfig(enabled=True)},

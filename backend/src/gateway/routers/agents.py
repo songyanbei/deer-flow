@@ -551,6 +551,10 @@ class AgentSyncRequest(BaseModel):
         default="upsert",
         description="upsert: create/update listed agents only. replace: additionally delete agents not in the list.",
     )
+    validate_dependencies: bool = Field(
+        default=True,
+        description="When True, verify mcp_binding and available_skills references exist before writing. Set False for out-of-order push.",
+    )
 
 
 class AgentSyncItemResult(BaseModel):
@@ -570,13 +574,57 @@ class AgentSyncResponse(BaseModel):
     errors: list[AgentSyncItemResult] = Field(default_factory=list)
 
 
+def _validate_agent_dependencies(
+    item: AgentSyncItem,
+    tenant_id: str,
+    registered_mcp: set[str] | None = None,
+    registered_skills: set[str] | None = None,
+) -> list[str]:
+    """Check that mcp_binding and available_skills references exist.
+
+    *registered_mcp* and *registered_skills* are optional pre-computed
+    sets to avoid repeated disk scans during batch sync.
+
+    Returns a list of human-readable error strings (empty = all OK).
+    """
+    errors: list[str] = []
+
+    if item.mcp_binding:
+        if registered_mcp is None:
+            from src.config.extensions_config import ExtensionsConfig
+            registered_mcp = set(ExtensionsConfig.from_tenant(tenant_id).mcp_servers.keys())
+        for field_name in ("domain", "shared", "ephemeral"):
+            for server_name in getattr(item.mcp_binding, field_name, []):
+                if server_name not in registered_mcp:
+                    errors.append(f"MCP server '{server_name}' not registered for tenant '{tenant_id}'")
+
+    if item.available_skills:
+        if registered_skills is None:
+            from src.skills import load_skills
+            registered_skills = {s.name for s in load_skills(enabled_only=False, tenant_id=tenant_id)}
+        for sk in item.available_skills:
+            if sk not in registered_skills:
+                errors.append(f"Skill '{sk}' not found for tenant '{tenant_id}'")
+
+    return errors
+
+
 def _sync_upsert_agent(
     agents_dir: Path,
     name: str,
     item: AgentSyncItem,
     existing_names: set[str],
+    validate: bool = True,
+    tenant_id: str = "default",
+    registered_mcp: set[str] | None = None,
+    registered_skills: set[str] | None = None,
 ) -> AgentSyncItemResult:
     """Create or update a single agent on disk. Returns the outcome."""
+    if validate:
+        dep_errors = _validate_agent_dependencies(item, tenant_id, registered_mcp=registered_mcp, registered_skills=registered_skills)
+        if dep_errors:
+            return AgentSyncItemResult(name=name, action="failed", error="; ".join(dep_errors))
+
     agent_dir = agents_dir / name
     try:
         config_data = _build_config_data(
@@ -642,10 +690,19 @@ async def sync_agents(
     deleted: list[str] = []
     errors: list[AgentSyncItemResult] = []
 
+    # Pre-compute dependency sets once (avoid N disk scans for N agents)
+    registered_mcp: set[str] | None = None
+    registered_skills: set[str] | None = None
+    if body.validate_dependencies:
+        from src.config.extensions_config import ExtensionsConfig
+        from src.skills import load_skills
+        registered_mcp = set(ExtensionsConfig.from_tenant(tenant_id).mcp_servers.keys())
+        registered_skills = {s.name for s in load_skills(enabled_only=False, tenant_id=tenant_id)}
+
     for item in body.agents:
         name = _normalize_agent_name(item.name)
         incoming_names.add(name)
-        result = _sync_upsert_agent(agents_dir, name, item, existing_names)
+        result = _sync_upsert_agent(agents_dir, name, item, existing_names, validate=body.validate_dependencies, tenant_id=tenant_id, registered_mcp=registered_mcp, registered_skills=registered_skills)
         if result.action == "created":
             created.append(name)
         elif result.action == "updated":

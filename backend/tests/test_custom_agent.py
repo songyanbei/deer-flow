@@ -1027,6 +1027,7 @@ class TestAgentSyncAPI:
                     "soul": "You are an HR expert.",
                 },
             ],
+            "validate_dependencies": False,
         }
         response = agent_client.post("/api/agents/sync", json=payload)
         assert response.status_code == 200

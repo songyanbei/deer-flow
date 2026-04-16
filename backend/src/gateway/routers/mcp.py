@@ -1,12 +1,14 @@
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from src.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
+from src.config._config_lock import atomic_write_json, tenant_config_lock
+from src.config.extensions_config import ExtensionsConfig, reload_extensions_config
 from src.gateway.dependencies import get_tenant_id, require_role
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,8 @@ class McpServerConfigResponse(BaseModel):
     category: str = Field(default="global", description="MCP server category: global, domain, shared, or ephemeral")
     domain: str | None = Field(default=None, description="Domain label when category='domain'")
     readonly: bool = Field(default=False, description="If True, write-like tools are filtered for read-only agents")
+    source: str | None = Field(default=None, description="Origin that provisioned this entry (e.g. 'moss-portal')")
+    mcp_kind: str | None = Field(default=None, description="'local' or 'remote' — transparent pass-through for platform filtering")
 
 
 class McpConfigResponse(BaseModel):
@@ -75,6 +79,62 @@ class McpConfigUpdateRequest(BaseModel):
     )
 
 
+class McpSingleItemUpdateResponse(BaseModel):
+    """Response for single-item PUT."""
+
+    name: str
+    source: str | None = None
+    updated_at: str
+
+
+# ── Internal helpers ──────────────────────────────────────────────────
+
+
+def _resolve_mcp_config_path(tenant_id: str) -> Path:
+    """Return the extensions_config.json path for the given tenant."""
+    if tenant_id and tenant_id != "default":
+        from src.config.paths import get_paths
+        return get_paths().tenant_dir(tenant_id) / "extensions_config.json"
+    config_path = ExtensionsConfig.resolve_config_path()
+    if config_path is None:
+        config_path = Path.cwd().parent / "extensions_config.json"
+    return config_path
+
+
+def _mcp_lockfile(tenant_id: str) -> Path:
+    """Return the advisory lock file for MCP config writes."""
+    return _resolve_mcp_config_path(tenant_id).parent / ".mcp.lock"
+
+
+def _load_raw_config(config_path: Path) -> dict:
+    """Load the raw JSON config dict from disk (or empty dict if absent)."""
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_and_invalidate(config_path: Path, config_data: dict, tenant_id: str) -> None:
+    """Atomically write config and invalidate caches."""
+    atomic_write_json(config_path, config_data)
+    logger.info("MCP configuration saved to: %s", config_path)
+
+    from src.mcp.cache import reset_mcp_tools_cache
+    reset_mcp_tools_cache(tenant_id=tenant_id)
+
+    if not tenant_id or tenant_id == "default":
+        reload_extensions_config()
+
+
+def _merged_response(tenant_id: str) -> McpConfigResponse:
+    """Build a McpConfigResponse from the freshly merged config."""
+    config = ExtensionsConfig.from_tenant(tenant_id)
+    return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in config.mcp_servers.items()})
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────
+
+
 @router.get(
     "/mcp/config",
     response_model=McpConfigResponse,
@@ -83,90 +143,146 @@ class McpConfigUpdateRequest(BaseModel):
 )
 async def get_mcp_configuration(tenant_id: str = Depends(get_tenant_id)) -> McpConfigResponse:
     """Get the current MCP configuration (platform + tenant overlay)."""
-    config = ExtensionsConfig.from_tenant(tenant_id)
-
-    return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in config.mcp_servers.items()})
+    return _merged_response(tenant_id)
 
 
 @router.put(
     "/mcp/config",
     response_model=McpConfigResponse,
-    summary="Update MCP Configuration",
+    summary="Update MCP Configuration (full replace)",
     description="Update Model Context Protocol (MCP) server configurations and save to file.",
     dependencies=[require_role("admin", "owner")],
 )
 async def update_mcp_configuration(request: McpConfigUpdateRequest, tenant_id: str = Depends(get_tenant_id)) -> McpConfigResponse:
-    """Update the MCP configuration.
+    """Replace the entire MCP server table (preserving skills section)."""
+    try:
+        config_path = _resolve_mcp_config_path(tenant_id)
 
-    This will:
-    1. Save the new configuration to the mcp_config.json file
-    2. Reload the configuration cache
-    3. Reset MCP tools cache to trigger reinitialization
+        async with tenant_config_lock(tenant_id, "mcp", lockfile=_mcp_lockfile(tenant_id)):
+            raw = _load_raw_config(config_path)
 
-    Args:
-        request: The new MCP configuration to save.
-
-    Returns:
-        The updated MCP configuration.
-
-    Raises:
-        HTTPException: 500 if the configuration file cannot be written.
-
-    Example Request:
-        ```json
-        {
-            "mcp_servers": {
-                "github": {
-                    "enabled": true,
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-github"],
-                    "env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"},
-                    "description": "GitHub MCP server for repository operations"
-                }
+            config_data = {
+                "mcpServers": {name: server.model_dump() for name, server in request.mcp_servers.items()},
+                "skills": raw.get("skills", {}),
             }
-        }
-        ```
+
+            _save_and_invalidate(config_path, config_data, tenant_id)
+
+        return _merged_response(tenant_id)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to update MCP configuration: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update MCP configuration: {str(e)}")
+
+
+@router.put(
+    "/mcp/config/{name}",
+    response_model=McpSingleItemUpdateResponse,
+    summary="Update Single MCP Server",
+    description="Create or update a single MCP server entry by name.",
+    dependencies=[require_role("admin", "owner")],
+)
+async def update_mcp_server(
+    name: str,
+    body: McpServerConfigResponse,
+    tenant_id: str = Depends(get_tenant_id),
+) -> McpSingleItemUpdateResponse:
+    """Single-item upsert for one MCP server.
+
+    If an entry with *name* already exists and its ``source`` differs from
+    the request body's ``source``, the request is rejected with 409 to
+    prevent cross-owner overwrites.
     """
     try:
-        # Determine write target: tenant overlay or platform-level
-        if tenant_id and tenant_id != "default":
-            from src.config.paths import get_paths
-            tenant_dir = get_paths().tenant_dir(tenant_id)
-            tenant_dir.mkdir(parents=True, exist_ok=True)
-            config_path = tenant_dir / "extensions_config.json"
-        else:
-            config_path = ExtensionsConfig.resolve_config_path()
-            if config_path is None:
-                config_path = Path.cwd().parent / "extensions_config.json"
-                logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
+        config_path = _resolve_mcp_config_path(tenant_id)
 
-        # Load current config to preserve skills configuration
-        current_config = ExtensionsConfig.from_tenant(tenant_id)
+        async with tenant_config_lock(tenant_id, "mcp", lockfile=_mcp_lockfile(tenant_id)):
+            raw = _load_raw_config(config_path)
+            servers = raw.get("mcpServers", {})
 
-        # Convert request to dict format for JSON serialization
-        config_data = {
-            "mcpServers": {name: server.model_dump() for name, server in request.mcp_servers.items()},
-            "skills": {name: {"enabled": skill.enabled} for name, skill in current_config.skills.items()},
-        }
+            existing = servers.get(name)
+            if existing is not None:
+                existing_source = existing.get("source")
+                incoming_source = body.source
+                if existing_source:
+                    if not incoming_source:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"MCP '{name}' is managed by '{existing_source}'; must provide matching source to update",
+                        )
+                    if existing_source != incoming_source:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"MCP '{name}' is managed by '{existing_source}'; cannot override with source '{incoming_source}'",
+                        )
 
-        # Write the configuration to file
-        with open(config_path, "w") as f:
-            json.dump(config_data, f, indent=2)
+            servers[name] = body.model_dump()
+            raw["mcpServers"] = servers
+            _save_and_invalidate(config_path, raw, tenant_id)
 
-        logger.info(f"MCP configuration updated and saved to: {config_path}")
+        now = datetime.now(UTC).isoformat()
+        return McpSingleItemUpdateResponse(name=name, source=body.source, updated_at=now)
 
-        # Reset MCP tools cache so next tool load picks up new config
-        from src.mcp.cache import reset_mcp_tools_cache
-        reset_mcp_tools_cache(tenant_id=tenant_id)
-
-        # Reload platform-level config cache when updating default tenant
-        if not tenant_id or tenant_id == "default":
-            reload_extensions_config()
-
-        # Reload the merged config for the response
-        reloaded_config = ExtensionsConfig.from_tenant(tenant_id)
-        return McpConfigResponse(mcp_servers={name: McpServerConfigResponse(**server.model_dump()) for name, server in reloaded_config.mcp_servers.items()})
-
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to update MCP configuration: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to update MCP configuration: {str(e)}")
+        logger.error("Failed to update MCP server '%s': %s", name, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update MCP server: {str(e)}")
+
+
+@router.delete(
+    "/mcp/config/{name}",
+    status_code=200,
+    summary="Delete Single MCP Server",
+    description="Delete a single MCP server entry by name. Source ownership is enforced.",
+    dependencies=[require_role("admin", "owner")],
+)
+async def delete_mcp_server(
+    name: str,
+    tenant_id: str = Depends(get_tenant_id),
+    source: str | None = Query(default=None, description="Source tag to match against the existing entry"),
+) -> dict:
+    """Delete one MCP server entry.
+
+    When *source* is provided, the existing entry's ``source`` must match.
+    When *source* is omitted, deletion is allowed only for entries with
+    ``source=None`` (i.e. manually created).
+    """
+    try:
+        config_path = _resolve_mcp_config_path(tenant_id)
+
+        async with tenant_config_lock(tenant_id, "mcp", lockfile=_mcp_lockfile(tenant_id)):
+            raw = _load_raw_config(config_path)
+            servers = raw.get("mcpServers", {})
+
+            if name not in servers:
+                raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
+
+            existing_source = servers[name].get("source")
+
+            if source is not None:
+                if existing_source and existing_source != source:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"MCP '{name}' is managed by '{existing_source}'; cannot delete with source '{source}'",
+                    )
+            else:
+                if existing_source:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"MCP '{name}' is managed by '{existing_source}'; provide matching source or admin scope to delete",
+                    )
+
+            del servers[name]
+            raw["mcpServers"] = servers
+            _save_and_invalidate(config_path, raw, tenant_id)
+
+        return {"deleted": name}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to delete MCP server '%s': %s", name, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete MCP server: {str(e)}")

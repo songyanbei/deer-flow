@@ -56,6 +56,8 @@ class McpServerConfig(BaseModel):
     category: Literal["global", "domain", "shared", "ephemeral"] = Field(default="global", description="MCP server category for scoping and isolation")
     domain: str | None = Field(default=None, description="Domain label when category='domain' (e.g. 'contacts', 'meeting')")
     readonly: bool = Field(default=False, description="If True, write-like tools from this server will be filtered for read-only agents")
+    source: str | None = Field(default=None, description="Origin that provisioned this entry (e.g. 'moss-portal', 'manual'). Used for ownership gating on update/delete.")
+    mcp_kind: Literal["local", "remote"] | None = Field(default=None, description="Whether the server runs locally or remotely. Transparent pass-through for platform filtering.")
     model_config = ConfigDict(extra="allow")
 
 
