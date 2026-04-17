@@ -146,6 +146,21 @@ async def get_mcp_configuration(tenant_id: str = Depends(get_tenant_id)) -> McpC
     return _merged_response(tenant_id)
 
 
+@router.get(
+    "/mcp/config/{name}",
+    response_model=McpServerConfigResponse,
+    summary="Get Single MCP Server",
+    description="Retrieve configuration for a single MCP server by name.",
+)
+async def get_mcp_server(name: str, tenant_id: str = Depends(get_tenant_id)) -> McpServerConfigResponse:
+    """Get a single MCP server configuration by name."""
+    config = ExtensionsConfig.from_tenant(tenant_id)
+    server = config.mcp_servers.get(name)
+    if server is None:
+        raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
+    return McpServerConfigResponse(**server.model_dump())
+
+
 @router.put(
     "/mcp/config",
     response_model=McpConfigResponse,
