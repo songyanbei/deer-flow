@@ -178,7 +178,7 @@ describe("SsoCallbackPage", () => {
     unmount();
   });
 
-  it("falls back to /chat when redirect missing", async () => {
+  it("falls back to /workspace/chats/new when redirect missing", async () => {
     setQuery({ ticket: "abc" });
     fetchMock.mockResolvedValue(
       makeResponse({ ok: true, json: () => Promise.resolve({}) }),
@@ -187,7 +187,7 @@ describe("SsoCallbackPage", () => {
     const { unmount } = mountPage();
     await flush();
 
-    expect(replaceMock).toHaveBeenCalledWith("/chat");
+    expect(replaceMock).toHaveBeenCalledWith("/workspace/chats/new");
     unmount();
   });
 
@@ -239,16 +239,34 @@ describe("SsoCallbackPage", () => {
     unmount();
   });
 
-  it("posts only once under StrictMode double-invoke", async () => {
+  it("posts only once and still redirects under StrictMode double-invoke", async () => {
     setQuery({ ticket: "abc" });
     fetchMock.mockResolvedValue(
-      makeResponse({ ok: true, json: () => Promise.resolve({ redirect: "/chat" }) }),
+      makeResponse({
+        ok: true,
+        json: () => Promise.resolve({ redirect: "/workspace/chats/new" }),
+      }),
     );
 
     const { unmount } = mountPage({ strict: true });
     await flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    expect(replaceMock).toHaveBeenCalledWith("/workspace/chats/new");
+    unmount();
+  });
+
+  it("still renders error under StrictMode when response is 401", async () => {
+    setQuery({ ticket: "abc" });
+    fetchMock.mockResolvedValue(makeResponse({ ok: false, status: 401 }));
+
+    const { container, unmount } = mountPage({ strict: true });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("EXPIRED_TITLE");
     unmount();
   });
 

@@ -13,7 +13,7 @@ type CallbackState =
   | "network";
 
 const SSO_CALLBACK_ENDPOINT = "/api/sso/callback";
-const DEFAULT_REDIRECT = "/chat";
+const DEFAULT_REDIRECT = "/workspace/chats/new";
 
 export default function SsoCallbackPage() {
   const router = useRouter();
@@ -22,9 +22,17 @@ export default function SsoCallbackPage() {
 
   const [state, setState] = useState<CallbackState>("pending");
   const sentRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const ticket = searchParams?.get("ticket") ?? null;
   const targetSystem = searchParams?.get("targetSystem");
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (sentRef.current) {
@@ -44,8 +52,6 @@ export default function SsoCallbackPage() {
       body.targetSystem = targetSystem;
     }
 
-    let cancelled = false;
-
     void (async () => {
       let res: Response;
       try {
@@ -56,11 +62,9 @@ export default function SsoCallbackPage() {
           body: JSON.stringify(body),
         });
       } catch {
-        if (!cancelled) setState("network");
+        if (mountedRef.current) setState("network");
         return;
       }
-
-      if (cancelled) return;
 
       if (res.ok) {
         let redirect: string | undefined;
@@ -72,10 +76,12 @@ export default function SsoCallbackPage() {
         } catch {
           redirect = undefined;
         }
-        if (cancelled) return;
+        if (!mountedRef.current) return;
         router.replace(redirect ?? DEFAULT_REDIRECT);
         return;
       }
+
+      if (!mountedRef.current) return;
 
       if (res.status === 401) {
         setState("expired");
@@ -84,10 +90,6 @@ export default function SsoCallbackPage() {
 
       setState("unavailable");
     })();
-
-    return () => {
-      cancelled = true;
-    };
   }, [ticket, targetSystem, router]);
 
   return (
