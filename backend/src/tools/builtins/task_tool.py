@@ -70,6 +70,7 @@ def task_tool(
     parent_model = None
     trace_id = None
 
+    auth_user = None
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
         thread_data = runtime.state.get("thread_data")
@@ -77,6 +78,11 @@ def task_tool(
             thread_id = runtime.context.get("thread_id")
             tenant_id = runtime.context.get("tenant_id")
             user_id = runtime.context.get("user_id")
+
+        # Propagate the authenticated principal down to subagent tool wrapping
+        # so identity guards stay intact across the parent/subagent boundary.
+        configurable = runtime.config.get("configurable", {}) if runtime.config else {}
+        auth_user = configurable.get("auth_user") if isinstance(configurable, dict) else None
 
         # Try to get parent model from configurable
         metadata = runtime.config.get("metadata", {})
@@ -104,6 +110,11 @@ def task_tool(
 
     # Subagents should not have subagent tools enabled (prevent recursive nesting)
     tools = get_available_tools(model_name=parent_model, subagent_enabled=False, tenant_id=tenant_id, user_id=user_id)
+
+    # Wrap subagent tools with the identity guard so social-engineering via
+    # the delegated prompt cannot rewrite identity fields on tool calls.
+    from src.agents.security.identity_guard import wrap_tools as _wrap_identity_tools
+    tools = _wrap_identity_tools(tools, auth_user)
 
     # Create executor
     executor = SubagentExecutor(

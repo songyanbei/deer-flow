@@ -120,6 +120,14 @@ class _ScopedMCPClient:
             try:
                 self._client = MultiServerMCPClient(server_params, tool_interceptors=tool_interceptors)
                 self._tools = await self._client.get_tools()
+                # Strip identity fields from MCP tool schemas; runtime
+                # identity_guard remains the authoritative enforcement layer.
+                try:
+                    from src.agents.security.identity_guard import filter_mcp_schemas
+
+                    self._tools = filter_mcp_schemas(self._tools)
+                except Exception as exc:  # pragma: no cover
+                    logger.debug("[McpRuntime] schema filter failed: %s", exc)
                 self._last_error = None
                 logger.info(
                     "[McpRuntime] Scope '%s': connected %d server(s), loaded %d tool(s).",

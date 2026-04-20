@@ -477,4 +477,22 @@ export interface Translations {
       emptyDescription: string;
     };
   };
+
+  // SSO
+  sso: {
+    callback: {
+      pageTitle: string;
+      pending: string;
+      pendingHint: string;
+      invalidEntryTitle: string;
+      invalidEntryDescription: string;
+      expiredTitle: string;
+      expiredDescription: string;
+      unavailableTitle: string;
+      unavailableDescription: string;
+      networkTitle: string;
+      networkDescription: string;
+      backToMossHubHint: string;
+    };
+  };
 }

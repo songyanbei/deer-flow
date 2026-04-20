@@ -10,8 +10,10 @@ from src.config.app_config import get_app_config
 from src.gateway.config import get_gateway_config
 from src.gateway.middleware.oidc import OIDCAuthMiddleware
 from src.gateway.middleware.oidc_config import load_oidc_config
+from src.gateway.sso.config import get_sso_config, reset_sso_config_cache
 from src.admin.router import router as admin_router
 from src.gateway.routers import agents, artifacts, governance, interventions, mcp, me, memory, models, promotions, runtime, skills, uploads
+from src.gateway.routers import sso as sso_router
 from src.observability import WorkflowMetrics, init_observability
 
 # Configure logging
@@ -31,6 +33,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Load config and check necessary environment variables at startup
     try:
         get_app_config()
+        # Validate SSO config eagerly so bad env values fail-fast instead of
+        # surfacing on first /api/sso/callback request.  ``get_sso_config``
+        # caches the result so ``create_app`` below reuses the same instance.
+        reset_sso_config_cache()
+        get_sso_config()
         logger.info("Configuration loaded successfully")
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
@@ -132,17 +139,32 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
         allow_headers=["*"],
     )
 
-    # OIDC authentication middleware (Resource Server role).
-    # Only mounted when OIDC_ENABLED=true. When disabled, all endpoints
-    # remain open — matching the existing development workflow.
+    # Auth middleware — covers both OIDC bearer tokens and moss-hub SSO
+    # cookies. Mounted whenever either auth mode is enabled; the middleware
+    # routes by JWT ``kid`` internally.
     oidc_config = load_oidc_config()
-    if oidc_config.enabled:
-        app.add_middleware(OIDCAuthMiddleware, config=oidc_config)
-        logger.info("OIDC authentication enabled (issuer=%s, audience=%s)", oidc_config.issuer, oidc_config.audience)
+    sso_config = get_sso_config()
+    if oidc_config.enabled or sso_config.enabled:
+        app.add_middleware(
+            OIDCAuthMiddleware,
+            config=oidc_config,
+            sso_config=sso_config if sso_config.enabled else None,
+        )
+        logger.info(
+            "Auth middleware enabled (oidc=%s, sso=%s, tenant=%s)",
+            oidc_config.enabled,
+            sso_config.enabled,
+            sso_config.tenant_id if sso_config.enabled else None,
+        )
     else:
-        logger.info("OIDC authentication disabled (set OIDC_ENABLED=true to enable)")
+        logger.info(
+            "Auth middleware disabled (set OIDC_ENABLED=true or SSO_ENABLED=true to enable)"
+        )
 
     # Include routers
+    # SSO callback is mounted at /api/sso/callback (exempt from auth)
+    app.include_router(sso_router.router)
+
     # Models API is mounted at /api/models
     app.include_router(models.router)
 

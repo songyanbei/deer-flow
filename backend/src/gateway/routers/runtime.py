@@ -22,7 +22,13 @@ from pydantic import BaseModel, Field
 
 from src.config.agents_config import load_agent_config, load_agent_config_layered
 from src.config.paths import get_paths
-from src.gateway.dependencies import get_tenant_id, get_user_id, get_username
+from src.gateway.dependencies import (
+    AuthenticatedUser,
+    get_tenant_id,
+    get_user_id,
+    get_user_profile,
+    get_username,
+)
 from src.gateway.runtime_service import (
     RuntimeServiceError,
     create_thread,
@@ -271,6 +277,7 @@ async def stream_runtime_message(
     tenant_id: str = Depends(get_tenant_id),
     user_id: str = Depends(get_user_id),
     username: str = Depends(get_username),
+    auth_user: AuthenticatedUser = Depends(get_user_profile),
 ):
     """Submit a message to the runtime and stream normalized SSE events."""
     registry = get_thread_registry()
@@ -294,6 +301,17 @@ async def stream_runtime_message(
         "allowed_agents": allowed_agents,
         "group_key": group_key,
         "thread_context": ctx.serialize(),
+        # Authenticated principal snapshot — downstream identity guard
+        # reads this from ``config.configurable["auth_user"]`` to enforce
+        # tool-arg identity fields fail-closed.
+        "auth_user": {
+            "tenant_id": auth_user.tenant_id,
+            "user_id": auth_user.user_id,
+            "name": auth_user.name,
+            "employee_no": auth_user.employee_no,
+            "target_system": auth_user.target_system,
+            "role": auth_user.role,
+        },
     }
     if body.requested_orchestration_mode:
         context["requested_orchestration_mode"] = body.requested_orchestration_mode

@@ -573,4 +573,27 @@ export const enUS: Translations = {
       emptyDescription: "Credits and acknowledgements will show here.",
     },
   },
+
+  // SSO
+  sso: {
+    callback: {
+      pageTitle: "Signing in via SSO",
+      pending: "Signing you in…",
+      pendingHint: "Verifying your login ticket, please wait.",
+      invalidEntryTitle: "Invalid login entry",
+      invalidEntryDescription:
+        "Missing login parameters. Please re-enter from moss-hub.",
+      expiredTitle: "Login link expired",
+      expiredDescription:
+        "This login link has expired or has already been used. Please re-enter from moss-hub.",
+      unavailableTitle: "SSO service unavailable",
+      unavailableDescription:
+        "The login service is temporarily unavailable. Please try again from moss-hub later.",
+      networkTitle: "Network error",
+      networkDescription:
+        "Unable to reach the login service. Check your connection and re-enter from moss-hub.",
+      backToMossHubHint:
+        "Please re-open the entry from moss-hub instead of refreshing this page.",
+    },
+  },
 };
