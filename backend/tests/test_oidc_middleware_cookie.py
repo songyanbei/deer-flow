@@ -238,6 +238,26 @@ def test_external_kid_without_jwks_rejected(sandboxed_paths):
     assert any("external_token_but_oidc_disabled" in e["reason"] for e in recorded)
 
 
+def test_missing_token_audited(sandboxed_paths):
+    """P1 regression: a protected request with no Bearer and no cookie must
+    still emit ``sso_token_invalid`` so operators can spot scraping /
+    enumeration. Previously it returned a bare 401 with no audit trail."""
+    sso_cfg = _sso_config()
+    app = _build_app(sso_cfg, _oidc_config(enabled=False))
+
+    recorded: list[dict] = []
+
+    def _spy(self, *, reason, tenant_id=None, user_id=None, client_ip=None, user_agent=None, kid=None):
+        recorded.append({"reason": reason, "kid": kid})
+
+    with patch.object(audit_mod.AuthAuditLedger, "record_token_invalid", _spy):
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/api/me")  # no Bearer, no cookie
+
+    assert resp.status_code == 401
+    assert any("missing_token" in e["reason"] for e in recorded)
+
+
 def test_missing_kid_rejected(sandboxed_paths):
     sso_cfg = _sso_config()
     app = _build_app(sso_cfg, _oidc_config(enabled=False))

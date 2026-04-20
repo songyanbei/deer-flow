@@ -15,6 +15,8 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.gateway.sso.audit import extract_client_ip, get_default_ledger
@@ -36,7 +38,12 @@ router = APIRouter(prefix="/api/sso", tags=["sso"])
 
 
 class SsoCallbackRequest(BaseModel):
-    ticket: str = Field(..., description="moss-hub ticket")
+    # ``ticket`` is declared Optional so a missing body field does NOT trip
+    # FastAPI's default 422 envelope — the checklist mandates that every
+    # ticket-shaped failure (missing / blank / rejected) surface as a 401
+    # with an ``sso_login_failed`` audit entry. The handler validates
+    # non-empty explicitly.
+    ticket: Optional[str] = Field(default=None, description="moss-hub ticket")
     targetSystem: Optional[str] = Field(  # noqa: N815 — mirrors moss-hub naming
         default=None,
         description="Optional target system echoed by the frontend; NOT trusted.",
@@ -46,8 +53,15 @@ class SsoCallbackRequest(BaseModel):
     # target system is the value moss-hub returns from ``verify-ticket``.
 
 
+# Canonical landing page after a successful moss-hub SSO handshake. The
+# frontend exposes the new-chat entry under ``/workspace/chats/new``; an
+# earlier draft shipped ``/chat`` which never existed as a Next.js route
+# and 404'd in the browser.
+SSO_LANDING_PATH = "/workspace/chats/new"
+
+
 class SsoCallbackResponse(BaseModel):
-    redirect: str = "/chat"
+    redirect: str = SSO_LANDING_PATH
 
 
 def _client_ip(request: Request) -> str | None:
@@ -95,11 +109,20 @@ async def sso_callback(
         )
         raise HTTPException(status_code=500, detail="SSO unavailable")
 
-    if not payload.ticket or not payload.ticket.strip():
-        raise HTTPException(status_code=400, detail="ticket is required")
-
     client_ip = _client_ip(request)
     user_agent = request.headers.get("user-agent")
+
+    # A missing / blank ticket is indistinguishable from an expired one as far
+    # as the caller is concerned — both mean "you cannot complete the SSO
+    # handshake with what you sent". Per checklist §6 the contract for every
+    # ticket-shaped failure is 401 + ``sso_login_failed`` audit.
+    if payload.ticket is None or not payload.ticket.strip():
+        ledger.record_sso_login_failed(
+            reason="ticket_missing_or_blank",
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        raise HTTPException(status_code=401, detail="login link expired")
 
     try:
         profile = await verify_ticket(payload.ticket, config=config)
@@ -173,4 +196,4 @@ async def sso_callback(
         user_agent=user_agent,
     )
 
-    return SsoCallbackResponse(redirect="/chat")
+    return SsoCallbackResponse(redirect=SSO_LANDING_PATH)

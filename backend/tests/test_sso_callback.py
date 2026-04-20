@@ -78,7 +78,7 @@ def test_callback_happy_path(client, enabled_config, monkeypatch):
 
     resp = client.post("/api/sso/callback", json={"ticket": "tkt-good"})
     assert resp.status_code == 200
-    assert resp.json() == {"redirect": "/chat"}
+    assert resp.json() == {"redirect": "/workspace/chats/new"}
 
     cookies = resp.headers.get_list("set-cookie")
     assert any("df_session=" in c for c in cookies)
@@ -125,7 +125,17 @@ def test_callback_upstream_error_returns_500(client, monkeypatch):
 
 def test_callback_empty_ticket_rejected(client):
     resp = client.post("/api/sso/callback", json={"ticket": "   "})
-    assert resp.status_code == 400
+    # Checklist §6: ticket-shaped failures — including missing / blank —
+    # must surface as 401, not 400 or 422, so the frontend can render a
+    # single "login link expired" message.
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "login link expired"
+
+
+def test_callback_missing_ticket_field_returns_401(client):
+    resp = client.post("/api/sso/callback", json={})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "login link expired"
 
 
 def test_callback_sets_secure_flag_when_cookie_secure(monkeypatch, paths_root):

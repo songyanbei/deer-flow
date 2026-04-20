@@ -105,7 +105,10 @@ def test_wrap_tool_preserves_name_and_description():
     wrapped = wrap_tool(t, FakeAuth())
     assert wrapped.name == t.name
     assert wrapped.description.splitlines()[0] == t.description.splitlines()[0]
-    assert wrapped.args_schema is t.args_schema
+    # The outer schema must hide identity fields from the model — the wrapper
+    # injects them right before invoking the inner tool.
+    assert "organizer" not in wrapped.args_schema.model_fields
+    assert "title" in wrapped.args_schema.model_fields
 
 
 def test_wrap_tool_enforces_on_invoke(paths_root):
@@ -113,6 +116,28 @@ def test_wrap_tool_enforces_on_invoke(paths_root):
     wrapped = wrap_tool(t, FakeAuth())
     out = wrapped.invoke({"title": "T", "organizer": "E_ATTACKER"})
     assert "E0001" in out
+
+
+def test_wrap_tool_injects_missing_required_identity_field(paths_root):
+    """P1 regression: a required identity field that the model omits must not
+    trip Pydantic — the guard injects it from the authenticated principal."""
+    t = _make_tool()  # ``organizer`` is a required positional
+    wrapped = wrap_tool(t, FakeAuth())
+    # Calling with only ``title`` used to raise ValidationError because the
+    # original args_schema still declared ``organizer`` as required.
+    out = wrapped.invoke({"title": "T"})
+    assert "E0001" in out
+
+
+def test_wrap_tool_mcp_schema_scenario_missing_required_identity(paths_root):
+    """MCP tool that declares ``caller`` + ``organizer`` as required fields —
+    after wrapping, the model can call it with just the business fields and
+    the guard fills identity from the authenticated principal."""
+    t = _tool_with_identity_field()
+    wrapped = wrap_tool(t, FakeAuth())
+    # Neither identity field supplied — guard injects both.
+    out = wrapped.invoke({"title": "Sync"})
+    assert out == "Sync"
 
 
 def test_wrap_tools_wraps_each():

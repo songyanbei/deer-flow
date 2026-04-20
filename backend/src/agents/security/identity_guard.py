@@ -23,6 +23,7 @@ import logging
 from typing import Any, Iterable
 
 from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, create_model
 
 from src.gateway.sso.audit import get_default_ledger
 
@@ -216,11 +217,67 @@ def wrap_tool(tool: BaseTool, auth_user: Any) -> BaseTool:
     }
     args_schema = getattr(inner, "args_schema", None)
     if args_schema is not None:
-        kwargs["args_schema"] = args_schema
+        # The model must not be asked to supply identity fields — they come
+        # from the authenticated principal. If we kept the raw args_schema,
+        # Pydantic would reject the call before the guard can inject them
+        # (either because the field is required, or because it is required
+        # with the wrong type after we overwrite it). Present a trimmed
+        # schema to the model and let ``enforce_identity`` put the real
+        # values back right before ``inner.invoke``.
+        outer_schema = _schema_without_identity_fields(args_schema)
+        if outer_schema is not None:
+            kwargs["args_schema"] = outer_schema
     return_direct = getattr(inner, "return_direct", False)
     if return_direct:
         kwargs["return_direct"] = True
     return StructuredTool.from_function(**kwargs)
+
+
+def _schema_without_identity_fields(args_schema: Any) -> Any:
+    """Return a copy of ``args_schema`` with identity fields removed.
+
+    ``args_schema`` is typically a Pydantic v2 ``BaseModel`` subclass. We
+    build a new model that preserves every non-identity field (including
+    its default, annotation, and ``Field`` metadata) and drops the ones
+    named in :data:`IDENTITY_FIELDS`. Falls back to the original schema on
+    any unexpected shape — runtime enforcement in :func:`enforce_identity`
+    is still authoritative.
+    """
+    try:
+        if not isinstance(args_schema, type) or not issubclass(args_schema, BaseModel):
+            return args_schema
+    except TypeError:
+        return args_schema
+
+    model_fields = getattr(args_schema, "model_fields", None)
+    if not isinstance(model_fields, dict):
+        return args_schema
+
+    surviving: dict[str, tuple[Any, Any]] = {}
+    for field_name, field_info in model_fields.items():
+        if field_name in IDENTITY_FIELDS:
+            continue
+        annotation = field_info.annotation if field_info.annotation is not None else Any
+        surviving[field_name] = (annotation, field_info)
+
+    if len(surviving) == len(model_fields):
+        # Nothing to strip — reuse the original schema so downstream code
+        # that checks identity on the class object still recognises it.
+        return args_schema
+
+    try:
+        new_model = create_model(
+            f"{args_schema.__name__}WithoutIdentity",
+            __base__=BaseModel,
+            **surviving,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to strip identity fields from %s; keeping original schema",
+            args_schema,
+        )
+        return args_schema
+    return new_model
 
 
 def wrap_tools(tools: Iterable[BaseTool], auth_user: Any) -> list[BaseTool]:

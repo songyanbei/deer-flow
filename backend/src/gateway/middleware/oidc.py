@@ -224,6 +224,7 @@ class OIDCAuthMiddleware(BaseHTTPMiddleware):
 
         token, source = self._read_token(request)
         if token is None:
+            self._audit_token_invalid(request, "missing_token")
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Missing or invalid Authorization header"},
