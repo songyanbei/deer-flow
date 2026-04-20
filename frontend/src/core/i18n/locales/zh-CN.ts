@@ -541,4 +541,22 @@ export const zhCN: Translations = {
       emptyDescription: "相关的致谢信息会展示在这里。",
     },
   },
+
+  // SSO
+  sso: {
+    callback: {
+      pageTitle: "SSO 登录中",
+      pending: "正在登录…",
+      pendingHint: "正在为你校验登录凭证，请稍候。",
+      invalidEntryTitle: "登录入口无效",
+      invalidEntryDescription: "缺少登录参数，请从 moss-hub 重新进入。",
+      expiredTitle: "登录链接已失效",
+      expiredDescription: "此登录链接已失效或已被使用，请从 moss-hub 重新进入。",
+      unavailableTitle: "SSO 服务暂不可用",
+      unavailableDescription: "登录服务暂时不可用，请稍后从 moss-hub 重新进入。",
+      networkTitle: "网络异常",
+      networkDescription: "无法连接到登录服务，请检查网络后从 moss-hub 重新进入。",
+      backToMossHubHint: "请回到 moss-hub 重新点击入口，不要手动刷新本页。",
+    },
+  },
 };
