@@ -653,6 +653,7 @@ async def _execute_intercepted_tool_call(
     agent_name = agent_config.get("configurable", {}).get("agent_name", "")
     tenant_id = agent_config.get("configurable", {}).get("tenant_id")
     user_id = agent_config.get("configurable", {}).get("user_id")
+    auth_user = agent_config.get("configurable", {}).get("auth_user")
 
     if idempotency_key:
         logger.info(
@@ -681,6 +682,23 @@ async def _execute_intercepted_tool_call(
     if target_tool is None:
         return ToolMessage(
             content=json.dumps({"error": f"Tool '{tool_name}' not found for fast-path execution."}, ensure_ascii=False),
+            tool_call_id=tool_call_id,
+            name=tool_name,
+        )
+
+    # Identity guard: enforce authenticated principal on intercepted/resume
+    # tool calls so the fast-path does not bypass the wrapper used by the
+    # normal lead-agent tool list.
+    try:
+        from src.agents.security.identity_guard import enforce_identity, _identity_fields_in_schema
+
+        declared = _identity_fields_in_schema(getattr(target_tool, "args_schema", None))
+        tool_args = enforce_identity(
+            tool_name, tool_args, auth_user, declared_identity_fields=declared
+        )
+    except Exception as e:
+        return ToolMessage(
+            content=json.dumps({"error": f"identity guard: {e}"}, ensure_ascii=False),
             tool_call_id=tool_call_id,
             name=tool_name,
         )

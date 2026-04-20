@@ -64,6 +64,14 @@ async def get_mcp_tools(tenant_id: str | None = None, user_id: str | None = None
 
         # Get all tools from all servers
         tools = await client.get_tools()
+        # Strip identity-bearing fields from MCP tool schemas so the model
+        # cannot supply them. Runtime identity_guard remains the hard boundary.
+        try:
+            from src.agents.security.identity_guard import filter_mcp_schemas
+
+            tools = filter_mcp_schemas(tools)
+        except Exception as exc:  # pragma: no cover — filter is best-effort
+            logger.debug("MCP schema filter failed: %s", exc)
         logger.info(f"Successfully loaded {len(tools)} tool(s) from MCP servers")
 
         return tools

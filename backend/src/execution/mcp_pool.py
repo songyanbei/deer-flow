@@ -108,6 +108,14 @@ class _AgentMCPClient:
                     )
 
             if loaded_tools:
+                # Strip identity fields from MCP tool schemas; the runtime
+                # identity_guard is still the authoritative enforcement layer.
+                try:
+                    from src.agents.security.identity_guard import filter_mcp_schemas
+
+                    loaded_tools = filter_mcp_schemas(loaded_tools)
+                except Exception as exc:  # pragma: no cover
+                    logger.debug("[MCPPool] schema filter failed: %s", exc)
                 self._tools = loaded_tools
                 if errors:
                     self._last_error = "; ".join(f"{k}: {v}" for k, v in errors.items())

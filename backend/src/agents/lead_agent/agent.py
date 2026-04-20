@@ -314,6 +314,7 @@ def make_lead_agent(config: RunnableConfig):
     agent_name = cfg.get("agent_name")
     tenant_id = cfg.get("tenant_id", "default")
     user_id = cfg.get("user_id")
+    auth_user = cfg.get("auth_user")
     agents_dir = resolve_tenant_user_agents_dir(tenant_id, user_id) or resolve_tenant_agents_dir(tenant_id)
 
     agent_config = load_agent_config_layered(agent_name, tenant_id=tenant_id, user_id=user_id) if not is_bootstrap else None
@@ -377,11 +378,15 @@ def make_lead_agent(config: RunnableConfig):
 
     if is_bootstrap:
         # Special bootstrap agent with minimal prompt for initial custom agent creation flow
-        system_prompt = apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, available_skills=set(["bootstrap"]))
+        system_prompt = apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, available_skills=set(["bootstrap"]), auth_user=auth_user)
 
+        from src.agents.security.identity_guard import wrap_tools as _wrap_identity_tools
         agent = create_agent(
             model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled),
-            tools=get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False, tenant_id=tenant_id) + [setup_agent],
+            tools=_wrap_identity_tools(
+                get_available_tools(model_name=model_name, subagent_enabled=subagent_enabled, is_domain_agent=False, tenant_id=tenant_id) + [setup_agent],
+                auth_user,
+            ),
             middleware=_build_middlewares(config, model_name=model_name),
             system_prompt=system_prompt,
             state_schema=ThreadState,
@@ -417,9 +422,9 @@ def make_lead_agent(config: RunnableConfig):
             logger.warning("Failed to get MCP tools for agent '%s': %s", agent_name, e)
 
     # Default lead agent (unchanged behavior)
-    agent = create_agent(
-        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
-        tools=get_available_tools(
+    from src.agents.security.identity_guard import wrap_tools as _wrap_identity_tools
+    _all_tools = (
+        get_available_tools(
             model_name=model_name,
             groups=agent_config.tool_groups if agent_config else None,
             include_mcp=not bool(cfg.get("is_domain_agent", False)),
@@ -428,7 +433,11 @@ def make_lead_agent(config: RunnableConfig):
             tenant_id=tenant_id,
             user_id=user_id,
         )
-        + extra_tools,
+        + extra_tools
+    )
+    agent = create_agent(
+        model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
+        tools=_wrap_identity_tools(_all_tools, auth_user),
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),
         system_prompt=apply_prompt_template(
             subagent_enabled=subagent_enabled,
@@ -440,6 +449,7 @@ def make_lead_agent(config: RunnableConfig):
             tenant_id=tenant_id,
             user_id=user_id,
             agents_dir=agents_dir,
+            auth_user=auth_user,
         ),
         state_schema=ThreadState,
     )

@@ -274,6 +274,12 @@ async def start_stream(
         value = context.get(key)
         if value:
             configurable[key] = value
+    # Propagate the authenticated principal so identity_guard can enforce
+    # tool-arg identity fields fail-closed.  Sent as a plain dict so it
+    # survives LangGraph checkpoint serialization.
+    auth_user = context.get("auth_user")
+    if isinstance(auth_user, dict) and auth_user.get("user_id"):
+        configurable["auth_user"] = auth_user
     if configurable:
         run_config["configurable"] = configurable
 
