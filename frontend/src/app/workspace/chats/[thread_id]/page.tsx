@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { type PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { ArtifactTrigger } from "@/components/workspace/artifacts";
@@ -31,8 +32,31 @@ export default function ChatPage() {
   const [settings, setSettings] = useLocalSettings();
   const [hydrated, setHydrated] = useState(false);
 
-  const { threadId, isNewThread, setIsNewThread, isMock } = useThreadChat();
+  const {
+    threadId,
+    isNewThread,
+    setIsNewThread,
+    isMock,
+    threadReady,
+    threadCreationState,
+    threadCreationError,
+    retryThreadCreation,
+  } = useThreadChat();
   useSpecificChatMode();
+
+  useEffect(() => {
+    if (threadCreationState === "error" && threadCreationError) {
+      toast.error(
+        `Failed to create thread: ${threadCreationError.message}`,
+        {
+          action: {
+            label: "Retry",
+            onClick: () => retryThreadCreation(),
+          },
+        },
+      );
+    }
+  }, [retryThreadCreation, threadCreationError, threadCreationState]);
 
   useEffect(() => {
     setHydrated(true);
@@ -210,7 +234,10 @@ export default function ChatPage() {
                     extraHeader={
                       isNewThread && <Welcome mode={settings.context.mode} />
                     }
-                    disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
+                    disabled={
+                      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                      !threadReady
+                    }
                     onContextChange={(context) => setSettings("context", context)}
                     onSubmit={handleSubmit}
                     onStop={handleStop}

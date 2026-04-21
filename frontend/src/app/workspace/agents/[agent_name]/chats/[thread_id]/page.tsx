@@ -3,6 +3,7 @@
 import { BotIcon, PlusSquare } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { Button } from "@/components/ui/button";
@@ -39,11 +40,33 @@ export default function AgentChatPage() {
 
   const { agent } = useAgent(agent_name);
 
-  const { threadId, isNewThread, setIsNewThread } = useThreadChat();
+  const {
+    threadId,
+    isNewThread,
+    setIsNewThread,
+    threadReady,
+    threadCreationState,
+    threadCreationError,
+    retryThreadCreation,
+  } = useThreadChat();
 
   useEffect(() => {
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (threadCreationState === "error" && threadCreationError) {
+      toast.error(
+        `Failed to create thread: ${threadCreationError.message}`,
+        {
+          action: {
+            label: "Retry",
+            onClick: () => retryThreadCreation(),
+          },
+        },
+      );
+    }
+  }, [retryThreadCreation, threadCreationError, threadCreationState]);
 
   const { showNotification } = useNotification();
   const {
@@ -245,7 +268,10 @@ export default function AgentChatPage() {
                         <AgentWelcome agent={agent} agentName={agent_name} />
                       )
                     }
-                    disabled={env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true"}
+                    disabled={
+                      env.NEXT_PUBLIC_STATIC_WEBSITE_ONLY === "true" ||
+                      !threadReady
+                    }
                     onContextChange={(context) => setSettings("context", context)}
                     onSubmit={handleSubmit}
                     onStop={handleStop}

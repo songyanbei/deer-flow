@@ -19,6 +19,73 @@ contracts.
 
 ## Open Items
 
+## [open] Gateway SSE event parity for main chat (Phase 1 D1.2 blocker)
+- Date: 2026-04-21
+- Related feature:
+  - `features/runtime-lg1x-trusted-context-submit.md` (D2 Gateway SSE Contract For Main Chat)
+  - `features/runtime-lg1x-trusted-context-submit-development-checklist.md` (D1.2, D1.3)
+- Blocking area:
+  Frontend main chat submit migration from `/api/langgraph` to Gateway
+  `POST /api/runtime/threads/{id}/messages:stream`. Phase 1 D1.1 (thread
+  lifecycle) can proceed independently, but D1.2 (submit adapter) cannot ship
+  until the Gateway SSE projection exposes the fields listed below.
+- Current frontend assumption:
+  `useThreadStream` in `frontend/src/core/threads/hooks.ts` currently consumes
+  the native LangGraph `useStream` with `streamMode=["values","messages-tuple","custom"]`
+  plus `onLangChainEvent` / `onCustomEvent`. The UI state is driven by full
+  `values` snapshots, custom multi-agent task events, and `onFinish(state)`.
+- What is missing from backend:
+  `backend/src/gateway/runtime_service.py::iter_events` currently projects only
+  `ack`, `message_delta`, `message_completed`, `artifact_created`,
+  `intervention_requested`, `governance_created`, `run_completed`, `run_failed`.
+  The following signals that today's UI depends on are not projected:
+  1. `title` updates (auto-generated thread title) — needed by `ThreadTitle`.
+  2. `todos[]` updates — needed by `TodoList`.
+  3. `task_pool[]` updates (multi-agent tasks, including clarification/intervention fields) — needed by `task-panel.tsx`.
+  4. `workflow_stage` / `workflow_stage_detail` / `workflow_stage_updated_at` — needed by `WorkflowFooterBar` and `mergeThreadValuesWithPatch`.
+  5. `resolved_orchestration_mode` / `orchestration_reason` — needed by `OrchestrationSummary`.
+  6. Multi-agent custom task events: `task_started`, `task_running`,
+     `task_waiting_intervention`, `task_waiting_dependency`, `task_help_requested`,
+     `task_resumed`, `task_completed`, `task_failed`, `task_timed_out` — consumed by
+     `classifyTaskEvent` / `fromMultiAgentTaskEvent` / `fromLegacyTaskEvent` in `hooks.ts`.
+  7. A terminal full-state snapshot equivalent to LangGraph `onFinish(state)` —
+     today's `run_completed` carries only `{thread_id, run_id}`, not the final
+     `messages`/`title` used for desktop notifications and query invalidation.
+  8. Streaming human-message echo (so optimistic message swap works without
+     reading LangGraph thread state directly). Today `hooks.ts` swaps optimistic
+     messages once `thread.messages.length` grows; Gateway needs an equivalent
+     authoritative signal or a state-snapshot event.
+- Why this matters:
+  Feature spec D2 forbids frontend from falling back to `/api/langgraph` when
+  Gateway SSE is insufficient, and forbids subscribing to LangGraph `events`
+  stream mode. Without these fields, D1.2 either ships a degraded main chat
+  (no tasks panel, no workflow progress, no title refresh, no todos) or
+  violates the spec. Therefore D1.2 is paused until the backend extends the
+  projection.
+- Needed response:
+  Extend `iter_events` (or introduce additional event names) so the Gateway
+  SSE stream is sufficient to drive the current main chat UI without relying
+  on LangGraph native `values` / `custom` / `events` stream modes. At
+  minimum, surface the eight items above. Concrete schemas can be decided
+  jointly; the frontend is flexible on event names as long as payloads map
+  1:1 to the existing state/event shapes in `core/threads/hooks.ts`.
+- Suggested payload or API:
+  - Add an `SSE_STATE_SNAPSHOT` event emitted on each `values` chunk (or
+    periodic coalesced snapshots) with the fields listed in items 1–5 and
+    7 above, preserving LangGraph shapes.
+  - Mirror the multi-agent `custom` task events 1:1 under their existing
+    `type` names (item 6), or expose them under a single Gateway event
+    `task_event` with a `type` field.
+  - Extend `run_completed` payload with the final state summary (title,
+    last AI message, artifacts count) so `onFinish` behavior is preserved.
+- Notes:
+  - D1.1 (thread lifecycle via `POST /api/runtime/threads`) is unaffected
+    and proceeds now.
+  - Intervention / governance resume flows are out of scope for this
+    handoff (tracked by Phase 2 D2.1 / D2.2).
+  - Contract tests must continue to assert main chat submit payload does
+    not include the `events` stream mode (spec D2 hard constraint).
+
 ## [closed] Governance history lacks server-side time range filtering
 - Date: 2026-03-26
 - Related feature:
