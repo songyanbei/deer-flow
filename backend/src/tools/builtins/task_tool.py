@@ -71,6 +71,7 @@ def task_tool(
     trace_id = None
 
     auth_user = None
+    thread_context = None
     if runtime is not None:
         sandbox_state = runtime.state.get("sandbox")
         thread_data = runtime.state.get("thread_data")
@@ -79,10 +80,14 @@ def task_tool(
             tenant_id = runtime.context.get("tenant_id")
             user_id = runtime.context.get("user_id")
 
-        # Propagate the authenticated principal down to subagent tool wrapping
-        # so identity guards stay intact across the parent/subagent boundary.
+        # Propagate the authenticated principal AND the trusted serialized
+        # ThreadContext down to the subagent so the child's ThreadDataMiddleware
+        # resolves the exact same {tenant_id, user_id, thread_id} scope as the
+        # parent and its identity guards stay intact across the boundary.
         configurable = runtime.config.get("configurable", {}) if runtime.config else {}
-        auth_user = configurable.get("auth_user") if isinstance(configurable, dict) else None
+        if isinstance(configurable, dict):
+            auth_user = configurable.get("auth_user")
+            thread_context = configurable.get("thread_context")
 
         # Try to get parent model from configurable
         metadata = runtime.config.get("metadata", {})
@@ -127,6 +132,8 @@ def task_tool(
         tenant_id=tenant_id,
         user_id=user_id,
         trace_id=trace_id,
+        thread_context=thread_context,
+        auth_user=auth_user,
     )
 
     # Start background execution (always async to prevent blocking)

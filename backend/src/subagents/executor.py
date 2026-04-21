@@ -133,6 +133,8 @@ class SubagentExecutor:
         tenant_id: str | None = None,
         user_id: str | None = None,
         trace_id: str | None = None,
+        thread_context: dict | None = None,
+        auth_user: dict | None = None,
     ):
         """Initialize the executor.
 
@@ -146,6 +148,13 @@ class SubagentExecutor:
             tenant_id: Tenant ID from parent agent (for isolation).
             user_id: User ID from parent agent (for isolation).
             trace_id: Trace ID from parent for distributed tracing.
+            thread_context: Serialized parent ThreadContext. Forwarded into
+                the child's ``configurable`` so ThreadDataMiddleware resolves
+                the same trusted scope as the parent. Must never be synthesized
+                from loose ids when absent -- fail closed.
+            auth_user: Authenticated principal snapshot from parent. Forwarded
+                into the child's ``configurable`` so identity_guard stays
+                enforced on subagent tool calls.
         """
         self.config = config
         self.parent_model = parent_model
@@ -154,6 +163,8 @@ class SubagentExecutor:
         self.thread_id = thread_id
         self.tenant_id = tenant_id
         self.user_id = user_id
+        self.thread_context = thread_context
+        self.auth_user = auth_user
         # Generate trace_id if not provided (for top-level calls)
         self.trace_id = trace_id or str(uuid.uuid4())[:8]
 
@@ -254,6 +265,15 @@ class SubagentExecutor:
             if self.user_id:
                 configurable["user_id"] = self.user_id
                 context["user_id"] = self.user_id
+            # Forward trusted parent-derived fields so the child's
+            # ThreadDataMiddleware resolves the same ThreadContext and the
+            # child's identity_guard keeps enforcing tool-arg identity fields
+            # fail-closed. Only forward when the parent actually provided
+            # them -- never synthesize from loose ids.
+            if isinstance(self.thread_context, dict) and self.thread_context:
+                configurable["thread_context"] = self.thread_context
+            if isinstance(self.auth_user, dict) and self.auth_user.get("user_id"):
+                configurable["auth_user"] = self.auth_user
             if configurable:
                 run_config["configurable"] = configurable
 

@@ -266,22 +266,15 @@ async def start_stream(
         ],
     }
 
-    # Inject identity into configurable so that make_lead_agent() can read
-    # tenant_id/user_id at Agent *build* time (before any middleware runs).
+    # LG1.x (langgraph-api >= 0.7.65) rejects submits that carry both
+    # ``config.configurable`` and ``context`` at the same time with HTTP 400.
+    # Identity (`thread_id`, `tenant_id`, `user_id`, `thread_context`,
+    # `auth_user`) is already present in ``context`` (built by the router),
+    # and the remote LangGraph API mirrors it back into ``configurable`` so
+    # ``ThreadDataMiddleware`` still reads it from its authoritative source.
+    # Therefore we send ``config`` with recursion limit only and rely on
+    # ``context`` as the single identity channel for remote submits.
     run_config: dict = {"recursion_limit": 1000}
-    configurable: dict = {}
-    for key in ("thread_id", "tenant_id", "user_id"):
-        value = context.get(key)
-        if value:
-            configurable[key] = value
-    # Propagate the authenticated principal so identity_guard can enforce
-    # tool-arg identity fields fail-closed.  Sent as a plain dict so it
-    # survives LangGraph checkpoint serialization.
-    auth_user = context.get("auth_user")
-    if isinstance(auth_user, dict) and auth_user.get("user_id"):
-        configurable["auth_user"] = auth_user
-    if configurable:
-        run_config["configurable"] = configurable
 
     try:
         upstream_iter = client.runs.stream(
@@ -289,7 +282,7 @@ async def start_stream(
             ENTRY_GRAPH_ASSISTANT_ID,
             input=input_payload,
             config=run_config,
-            context=context,
+            context=dict(context),
             stream_mode=["values", "messages"],
             multitask_strategy="reject",
         )
