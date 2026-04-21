@@ -111,6 +111,86 @@ MAX_GROUP_KEY_LENGTH = 128  # same limit as portal_session_id
 DEFAULT_GROUP_KEY = "default"
 
 
+class ClarificationAnswer(BaseModel):
+    """One answer inside a workflow clarification response payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(..., description="User's answer text for this question")
+
+
+class WorkflowClarificationResponse(BaseModel):
+    """Envelope for the user's clarification answers on a suspended workflow task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answers: dict[str, ClarificationAnswer] = Field(
+        ..., description="Answers keyed by clarification question id"
+    )
+
+
+class AppRuntimeContext(BaseModel):
+    """App-level runtime flags forwarded into the LangGraph ``context``.
+
+    These are per-run, per-submit fields that drive model selection,
+    middleware wiring, and workflow clarification resume. Identity fields
+    (``tenant_id`` / ``user_id`` / ``thread_id`` / ``thread_context`` /
+    ``auth_user``) are **intentionally absent** from this schema — identity
+    is always resolved from the auth middleware and ``resolve_thread_context``.
+    ``extra="forbid"`` ensures any attempt to smuggle identity (or unknown)
+    fields through here surfaces as HTTP 422 rather than being silently
+    merged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    thinking_enabled: bool | None = Field(
+        default=None, description="Enable thinking-capable model selection"
+    )
+    is_plan_mode: bool | None = Field(
+        default=None, description="Enable TodoListMiddleware + write_todos tool"
+    )
+    subagent_enabled: bool | None = Field(
+        default=None, description="Enable the task delegation tool + SubagentLimitMiddleware"
+    )
+    is_bootstrap: bool | None = Field(
+        default=None, description="Agent bootstrap marker for /agents/{name}/chats/new"
+    )
+    workflow_clarification_resume: bool | None = Field(
+        default=None, description="Mark this submit as a workflow clarification resume"
+    )
+    workflow_resume_run_id: str | None = Field(
+        default=None, description="Run id of the suspended workflow to resume"
+    )
+    workflow_resume_task_id: str | None = Field(
+        default=None, description="Task id within the resumed run"
+    )
+    workflow_clarification_response: WorkflowClarificationResponse | None = Field(
+        default=None, description="Clarification answers payload for the resume path"
+    )
+
+
+# Keys that the router builds server-side and must never be overwritten by
+# ``app_context``. The merge order already keeps server identity fields on
+# top, but we also drop any client-supplied key matching this set as a
+# belt-and-braces defense (in case AppRuntimeContext schema ever gains a
+# conflicting name). Kept as a module constant so tests can import it.
+_IDENTITY_CONTEXT_KEYS: frozenset[str] = frozenset(
+    {
+        "thread_id",
+        "tenant_id",
+        "user_id",
+        "username",
+        "allowed_agents",
+        "group_key",
+        "thread_context",
+        "auth_user",
+        "agent_name",
+        "requested_orchestration_mode",
+    }
+)
+
+
 class MessageStreamRequest(BaseModel):
     message: str = Field(..., max_length=MAX_MESSAGE_LENGTH, description="User message text")
     # DeerFlow main chat has no stable group concept, so ``group_key`` is
@@ -132,6 +212,14 @@ class MessageStreamRequest(BaseModel):
         default=None, description="Orchestration mode hint"
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Optional primitive-only metadata")
+    # App-level runtime flags forwarded into LangGraph ``context`` (per-run,
+    # not per-thread). Validated via ``extra="forbid"`` on its own model so
+    # unknown keys surface as 422 instead of being silently dropped — that
+    # was the regression the frontend hit when Gateway submit replaced the
+    # native ``thread.submit({context})`` path.
+    app_context: AppRuntimeContext | None = Field(
+        default=None, description="App-level runtime flags (thinking/plan/subagent/workflow-resume)"
+    )
 
     # Silently drop any unknown fields — including forged identity fields
     # (``tenant_id`` / ``user_id`` / ``thread_context`` / ``auth_user`` /
@@ -387,27 +475,50 @@ async def stream_runtime_message(
     entry_agent = _validate_entry_agent(body.entry_agent, allowed_agents)
     _validate_metadata(body.metadata)
 
-    # Build runtime context with serialized ThreadContext
-    context: dict[str, Any] = {
-        "thread_id": thread_id,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "username": username,
-        "allowed_agents": allowed_agents,
-        "group_key": group_key,
-        "thread_context": ctx.serialize(),
-        # Authenticated principal snapshot — downstream identity guard
-        # reads this from ``config.configurable["auth_user"]`` to enforce
-        # tool-arg identity fields fail-closed.
-        "auth_user": {
-            "tenant_id": auth_user.tenant_id,
-            "user_id": auth_user.user_id,
-            "name": auth_user.name,
-            "employee_no": auth_user.employee_no,
-            "target_system": auth_user.target_system,
-            "role": auth_user.role,
-        },
-    }
+    # Start with app-level runtime flags (per-run state). These drive model
+    # selection, middleware wiring, and workflow clarification resume.
+    # ``exclude_none=True`` means only fields the client explicitly set are
+    # forwarded — absent fields stay absent downstream (same semantics as
+    # the legacy ``thread.submit({context})`` path).
+    context: dict[str, Any] = {}
+    if body.app_context is not None:
+        app_fields = body.app_context.model_dump(exclude_none=True)
+        # Drop any key that collides with a server-sourced identity field.
+        # ``extra="forbid"`` on AppRuntimeContext already rejects identity
+        # keys at the pydantic layer (they are not declared fields), so in
+        # practice ``app_fields`` never contains them — this is a second
+        # line of defense that also protects against future schema drift.
+        for key in list(app_fields.keys()):
+            if key in _IDENTITY_CONTEXT_KEYS:
+                app_fields.pop(key, None)
+        context.update(app_fields)
+
+    # Server-sourced identity + routing fields. Written AFTER ``app_context``
+    # so any client attempt to smuggle identity (via schema drift or future
+    # additions) is overwritten here. ``resolve_thread_context`` already
+    # enforced tenant/user ownership of ``thread_id`` above.
+    context.update(
+        {
+            "thread_id": thread_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "username": username,
+            "allowed_agents": allowed_agents,
+            "group_key": group_key,
+            "thread_context": ctx.serialize(),
+            # Authenticated principal snapshot — downstream identity guard
+            # reads this from ``config.configurable["auth_user"]`` to enforce
+            # tool-arg identity fields fail-closed.
+            "auth_user": {
+                "tenant_id": auth_user.tenant_id,
+                "user_id": auth_user.user_id,
+                "name": auth_user.name,
+                "employee_no": auth_user.employee_no,
+                "target_system": auth_user.target_system,
+                "role": auth_user.role,
+            },
+        }
+    )
     if body.requested_orchestration_mode:
         context["requested_orchestration_mode"] = body.requested_orchestration_mode
     if entry_agent:
