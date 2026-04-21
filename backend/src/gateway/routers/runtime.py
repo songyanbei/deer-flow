@@ -18,9 +18,13 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from src.config.agents_config import load_agent_config, load_agent_config_layered
+from src.config.agents_config import (
+    list_all_agents,
+    load_agent_config,
+    load_agent_config_layered,
+)
 from src.config.paths import get_paths
 from src.gateway.dependencies import (
     AuthenticatedUser,
@@ -50,7 +54,18 @@ RequestedOrchestrationMode = Literal["auto", "leader", "workflow"]
 
 
 class ThreadCreateRequest(BaseModel):
-    portal_session_id: str = Field(..., description="Platform session ID")
+    # DeerFlow web main chat (Phase 1) has no platform session concept, so
+    # ``portal_session_id`` is optional — Gateway fills a safe derived value
+    # (``deerflow-web:{thread_id}``) when the client omits it. External
+    # platform callers that already have a session id keep sending it.
+    portal_session_id: str | None = Field(
+        default=None, description="Platform session ID (optional for DeerFlow web main chat)"
+    )
+
+    # Silently drop any unknown fields (including forged identity fields like
+    # ``tenant_id`` / ``user_id`` / ``thread_context`` / ``auth_user``). The
+    # router never reads them — identity always comes from auth middleware.
+    model_config = ConfigDict(extra="ignore")
 
 
 class ThreadCreateResponse(BaseModel):
@@ -90,15 +105,40 @@ MAX_ALLOWED_AGENTS = 100  # no realistic workflow needs more than 100 agents
 MAX_GROUP_KEY_LENGTH = 128  # same limit as portal_session_id
 
 
+# Safe default ``group_key`` for DeerFlow main chat when the client does not
+# supply one. External platform callers that care about group scoping pass an
+# explicit value.
+DEFAULT_GROUP_KEY = "default"
+
+
 class MessageStreamRequest(BaseModel):
     message: str = Field(..., max_length=MAX_MESSAGE_LENGTH, description="User message text")
-    group_key: str = Field(..., max_length=MAX_GROUP_KEY_LENGTH, description="Agent group key")
-    allowed_agents: list[str] = Field(..., max_length=MAX_ALLOWED_AGENTS, description="Allowed agent names for this request")
+    # DeerFlow main chat has no stable group concept, so ``group_key`` is
+    # optional. When omitted, Gateway falls back to ``DEFAULT_GROUP_KEY``.
+    group_key: str | None = Field(
+        default=None, max_length=MAX_GROUP_KEY_LENGTH, description="Agent group key (defaults to 'default')"
+    )
+    # DeerFlow main chat has no stable allowed_agents concept either, so this
+    # is optional. When omitted, Gateway derives the list from the tenant/user
+    # visible agent set (same three-layer resolution the planner uses). The
+    # tenant/user visibility guarantee is preserved either way.
+    allowed_agents: list[str] | None = Field(
+        default=None,
+        max_length=MAX_ALLOWED_AGENTS,
+        description="Allowed agent names for this request (defaults to tenant/user visible set)",
+    )
     entry_agent: str | None = Field(default=None, description="Optional entry agent name")
     requested_orchestration_mode: RequestedOrchestrationMode | None = Field(
         default=None, description="Orchestration mode hint"
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Optional primitive-only metadata")
+
+    # Silently drop any unknown fields — including forged identity fields
+    # (``tenant_id`` / ``user_id`` / ``thread_context`` / ``auth_user`` /
+    # ``configurable``). The router never reads the body for identity; it
+    # builds ``context`` exclusively from the auth-middleware-resolved
+    # tenant/user and Gateway's ``resolve_thread_context(...)``.
+    model_config = ConfigDict(extra="ignore")
 
 
 # ── Validation helpers ───────────────────────────────────────────────
@@ -128,11 +168,53 @@ def _validate_message(value: str) -> str:
     return trimmed
 
 
-def _validate_group_key(value: str) -> str:
+def _resolve_group_key(value: str | None) -> str:
+    """Resolve ``group_key`` to a safe value.
+
+    DeerFlow main chat (Phase 1) has no stable group concept, so the client
+    may omit the field entirely. When provided, the value must be a non-empty
+    string after trimming; when omitted, the Gateway default applies.
+    External platform callers that pass an explicit value keep their scoping.
+    """
+    if value is None:
+        return DEFAULT_GROUP_KEY
     trimmed = value.strip()
     if not trimmed:
-        raise HTTPException(status_code=422, detail="group_key must be non-empty")
+        raise HTTPException(status_code=422, detail="group_key must be non-empty when provided")
     return trimmed
+
+
+def _resolve_allowed_agents(
+    agents: list[str] | None,
+    tenant_id: str,
+    user_id: str | None = None,
+) -> list[str]:
+    """Resolve and validate ``allowed_agents``.
+
+    When the client supplies an explicit list, each entry is validated via
+    three-layer agent resolution (same code path as the planner/router) and
+    must be visible to ``{tenant_id, user_id}``.
+
+    When omitted, the Gateway defaults to the tenant/user visible set —
+    this is the α-scheme default for DeerFlow main chat. Visibility is
+    preserved either way: a browser can never widen its own reach by
+    omitting the field.
+    """
+    if agents is None:
+        visible = list_all_agents(tenant_id=tenant_id, user_id=user_id)
+        resolved = [a.name.lower() for a in visible]
+        if not resolved:
+            raise HTTPException(
+                status_code=422,
+                detail="No agents are visible for this tenant/user; cannot derive default allowed_agents",
+            )
+        # Guard against pathologically large tenant agent sets — keep the
+        # hard cap consistent with the explicit-list path.
+        if len(resolved) > MAX_ALLOWED_AGENTS:
+            resolved = resolved[:MAX_ALLOWED_AGENTS]
+        return resolved
+
+    return _validate_allowed_agents(agents, tenant_id, user_id=user_id)
 
 
 def _validate_allowed_agents(agents: list[str], tenant_id: str, user_id: str | None = None) -> list[str]:
@@ -209,7 +291,15 @@ async def create_runtime_thread(
     user_id: str = Depends(get_user_id),
 ):
     """Create a new DeerFlow runtime thread for the platform."""
-    portal_session_id = _validate_portal_session_id(body.portal_session_id)
+    # ``portal_session_id`` is optional for DeerFlow web main chat. External
+    # callers that already have a session id keep validating / passing it;
+    # when omitted, the Gateway derives a stable value from the thread id so
+    # the registry binding always has something meaningful to anchor on.
+    provided_portal_session_id = (
+        _validate_portal_session_id(body.portal_session_id)
+        if body.portal_session_id is not None
+        else None
+    )
 
     try:
         lg_thread = await create_thread()
@@ -217,6 +307,7 @@ async def create_runtime_thread(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     thread_id = lg_thread["thread_id"]
+    portal_session_id = provided_portal_session_id or f"deerflow-web:{thread_id}"
 
     registry = get_thread_registry()
     binding = registry.register_binding(
@@ -285,10 +376,14 @@ async def stream_runtime_message(
     # Ownership validation — returns 403 for unknown or unauthorized threads
     ctx = resolve_thread_context(thread_id, tenant_id, user_id)
 
-    # Validate payload
+    # Validate payload. ``group_key`` and ``allowed_agents`` accept None and
+    # fall back to Gateway-owned defaults suitable for DeerFlow main chat.
+    # Tenant/user agent visibility is enforced in both the explicit-list and
+    # default-derived paths — a browser cannot widen its own reach by omitting
+    # the field, and identity fields in the body are dropped by the model.
     message = _validate_message(body.message)
-    group_key = _validate_group_key(body.group_key)
-    allowed_agents = _validate_allowed_agents(body.allowed_agents, tenant_id, user_id=user_id)
+    group_key = _resolve_group_key(body.group_key)
+    allowed_agents = _resolve_allowed_agents(body.allowed_agents, tenant_id, user_id=user_id)
     entry_agent = _validate_entry_agent(body.entry_agent, allowed_agents)
     _validate_metadata(body.metadata)
 

@@ -18,6 +18,55 @@ clarification on how a payload will be displayed.
 
 ## Open Items
 
+## [open] Phase 1 main chat SSE parity gaps from Gateway runtime
+- Date: 2026-04-21
+- Related feature:
+  - `features/runtime-lg1x-trusted-context-submit.md`
+- Blocking area:
+  - Phase 1 D1.2 — frontend migrating main chat submit from `/api/langgraph` to
+    `POST /api/runtime/threads/{id}/messages:stream`.
+- Backend question:
+  - Phase 1 backend has softened the runtime contract (D1.1) so the frontend
+    can call `POST /api/runtime/threads` and `messages:stream` without
+    `portal_session_id` / `group_key` / `allowed_agents`. Before frontend flips
+    the submit path, please confirm whether the current Gateway SSE projection
+    is sufficient to drive main chat UI, or whether the backend must close the
+    gaps below as part of D1.3 before D1.2 can land.
+  - Current upstream `stream_mode` is `["values", "messages"]`. The
+    `"custom"` channel is **not** subscribed, so none of the
+    ``get_stream_writer()`` events from `task_tool`, `planner`, `router`,
+    `orchestration/selector`, or `executor` reach the Gateway SSE consumer.
+  - Current projected SSE event names: `ack`, `message_delta`,
+    `message_completed`, `artifact_created`, `intervention_requested`,
+    `governance_created`, `run_completed`, `run_failed`. No `task_*`,
+    `workflow_stage`, `todo`, or explicit `title` events are emitted today.
+- Frontend decision needed:
+  - Whether main chat UI can render exclusively from the current event set, or
+    which of the following must be added before Phase 1 flips:
+    - `task_started` / `task_running` / `task_completed` / `task_failed` /
+      `task_timed_out` (custom channel, emitted by `task_tool`)
+    - Workflow shell / `workflow_stage` / `workflow_stage_detail` updates from
+      the `values` snapshot
+    - Todo / task_pool incremental updates beyond `intervention_requested`
+    - Explicit `title` / `run_id` events (currently `run_id` leaks through
+      message metadata only)
+  - Whether `values` vs `messages-tuple` change is desired (current upstream
+    uses `messages` — the SDK's per-message channel — not `messages-tuple`).
+- Suggested payload or API:
+  - If gaps are confirmed: backend extends `runtime_service` upstream
+    `stream_mode` to `["values", "messages-tuple", "custom"]` and adds a
+    `_handle_custom_event` projection layer that maps writer payloads to
+    stable SSE event names, following the existing `_handle_values_event` /
+    `_handle_messages_event` style.
+- Notes:
+  - D3 remains out of scope for Phase 1; resume / governance still live on
+    `/api/langgraph` until Phase 2.
+  - The backend contract already ignores any identity fields in the body
+    (`model_config = ConfigDict(extra="ignore")`), so frontend must never
+    send `tenant_id` / `user_id` / `thread_context` / `auth_user` /
+    `configurable` — identity is resolved exclusively from the auth
+    middleware.
+
 ## [closed] Workflow first-screen contract is now fully verified for queued refresh recovery
 - Date: 2026-03-14
 - Related feature:
