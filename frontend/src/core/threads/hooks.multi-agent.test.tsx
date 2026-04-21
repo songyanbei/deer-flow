@@ -7,10 +7,24 @@ import { useThreadStream } from "./hooks";
 const useStreamMock = vi.fn();
 const useQueryClientMock = vi.fn(() => ({
   invalidateQueries: vi.fn(),
+  setQueriesData: vi.fn(),
 }));
 const hydrateTasksMock = vi.fn();
 const resetTasksBySourceMock = vi.fn();
 const upsertTaskMock = vi.fn();
+
+async function* emptyGatewayStream(): AsyncGenerator<never, void, void> {
+  /* yields nothing */
+}
+
+vi.mock("./runtime-stream", async () => {
+  const actual =
+    await vi.importActual<typeof import("./runtime-stream")>("./runtime-stream");
+  return {
+    ...actual,
+    streamRuntimeMessage: () => emptyGatewayStream(),
+  };
+});
 
 vi.mock("@langchain/langgraph-sdk/react", () => ({
   useStream: (...args: unknown[]) => useStreamMock(...args),
@@ -23,7 +37,11 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 vi.mock("../api", () => ({
-  getAPIClient: vi.fn(() => ({})),
+  getAPIClient: vi.fn(() => ({
+    threads: {
+      getState: vi.fn(async () => ({ values: {} })),
+    },
+  })),
 }));
 
 vi.mock("../i18n/hooks", () => ({
@@ -37,6 +55,10 @@ vi.mock("../i18n/hooks", () => ({
 }));
 
 vi.mock("../tasks/context", () => ({
+  useSubtaskContext: () => ({
+    tasksById: {},
+    orderedTaskIds: [],
+  }),
   useTaskActions: () => ({
     hydrateTasks: hydrateTasksMock,
     resetTasksBySource: resetTasksBySourceMock,
