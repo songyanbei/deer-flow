@@ -18,7 +18,69 @@ clarification on how a payload will be displayed.
 
 ## Open Items
 
-## [open] Phase 1 main chat SSE parity gaps from Gateway runtime
+## [closed] Phase 1 main chat SSE parity gaps from Gateway runtime
+
+- Closed: 2026-04-21
+- Backend response (2026-04-21): D1.3 Gateway SSE projection extended to
+  cover the 8-item gap list in ``frontend-to-backend.md``. Summary of the
+  new contract:
+
+  **Upstream subscription**
+  - ``runtime_service.start_stream`` now subscribes
+    ``stream_mode=["values", "messages", "custom"]``. The ``custom`` channel
+    carries all ``get_stream_writer()`` payloads from ``task_tool`` /
+    ``planner`` / router / executor.
+
+  **New SSE events**
+  - Custom task lifecycle (1:1 passthrough, event name = writer ``type``):
+    ``task_started``, ``task_running``, ``task_waiting_intervention``,
+    ``task_waiting_dependency``, ``task_help_requested``, ``task_resumed``,
+    ``task_completed``, ``task_failed``, ``task_timed_out``. Payload keeps
+    writer-chosen fields and adds ``{thread_id, run_id}``.
+  - Workflow stage: ``workflow_stage_changed`` with ``workflow_stage``,
+    ``workflow_stage_detail``, ``workflow_stage_updated_at``.
+  - ``state_snapshot`` — emitted on every ``values`` chunk whose projected
+    subset changed. Payload (LangGraph shapes preserved):
+    - ``thread_id``, ``run_id``
+    - ``title``, ``todos``, ``task_pool``
+    - ``workflow_stage``, ``workflow_stage_detail``, ``workflow_stage_updated_at``
+    - ``resolved_orchestration_mode``, ``orchestration_reason``
+    - ``messages_count`` (authoritative count for optimistic message swap)
+    - ``last_human_message_id`` (present when the last human message has an id)
+    - ``artifacts_count``
+  - Only fields actually present in the ``values`` chunk are included; the
+    event is skipped when the projected subset equals the previously sent
+    snapshot (no redundant frames).
+
+  **``run_completed`` enrichment**
+  - Payload now carries ``final_state`` (same fields as ``state_snapshot``
+    plus counts) and ``last_ai_content``. Safe absence: when no ``values``
+    chunk was observed, those keys are omitted (existing minimal shape).
+
+  **Security / trust invariants**
+  - Unknown ``custom`` writer ``type`` values are silently dropped via an
+    allow-list (``_ALLOWED_CUSTOM_EVENT_TYPES``) so agent-internal debug
+    payloads cannot leak into the external platform stream.
+  - Identity fields in the body of ``POST /threads`` and
+    ``messages:stream`` continue to be dropped by
+    ``ConfigDict(extra="ignore")`` — identity comes exclusively from auth
+    middleware.
+
+  **Tests**
+  - New coverage: ``backend/tests/test_runtime_sse_projection.py`` (14
+    cases) + existing router/service suites. Full runtime tests: 104
+    passing.
+
+  **Unchanged (Phase 1 out of scope)**
+  - ``messages-tuple`` vs ``messages`` — kept as ``messages``. Gateway
+    normalizes per-token chunks into ``message_delta`` / ``message_completed``,
+    so the upstream channel choice is invisible to the frontend SSE
+    consumer. If per-chunk metadata (run_id-per-token) becomes necessary,
+    flag it as a separate handoff.
+  - Resume / governance flows still submit via ``/api/langgraph`` until
+    Phase 2 (tracked by D2.1/D2.2).
+
+## [archived] Phase 1 main chat SSE parity gaps from Gateway runtime (original entry)
 - Date: 2026-04-21
 - Related feature:
   - `features/runtime-lg1x-trusted-context-submit.md`
