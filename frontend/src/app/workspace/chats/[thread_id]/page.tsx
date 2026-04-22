@@ -82,7 +82,7 @@ export default function ChatPage() {
     onFinish: (state) => {
       if (document.hidden || !document.hasFocus()) {
         let body = "Conversation finished";
-        const lastMessage = state.messages.at(-1);
+        const lastMessage = state.messages?.at(-1);
         if (lastMessage) {
           const textContent = textOfMessage(lastMessage);
           if (textContent) {
@@ -92,7 +92,7 @@ export default function ChatPage() {
                 : textContent;
           }
         }
-        showNotification(state.title, { body });
+        showNotification(state.title ?? "Conversation", { body });
       }
     },
   });

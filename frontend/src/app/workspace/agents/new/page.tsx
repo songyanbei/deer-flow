@@ -2,7 +2,7 @@
 
 import { ArrowLeftIcon, BotIcon, CheckCircleIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -27,7 +27,7 @@ import { useUpdateAgent, type Agent } from "@/core/agents";
 import { checkAgentName, getAgent } from "@/core/agents/api";
 import { useI18n } from "@/core/i18n/hooks";
 import { useThreadStream } from "@/core/threads/hooks";
-import { uuid } from "@/core/utils/uuid";
+import { createRuntimeThread } from "@/core/threads/runtime-api";
 import { cn } from "@/lib/utils";
 
 type Step = "name" | "chat";
@@ -49,7 +49,11 @@ export default function NewAgentPage() {
   const [requestedOrchestrationMode, setRequestedOrchestrationMode] =
     useState<RequestedOrchestrationMode>("auto");
 
-  const threadId = useMemo(() => uuid(), []);
+  // Thread id is issued by the Gateway (`POST /api/runtime/threads`) so
+  // `ThreadRegistry` has a binding before the first `messages:stream` submit —
+  // a locally-generated uuid would be unknown to `resolve_thread_context`
+  // and get a 403. Stays null until the user confirms the agent name.
+  const [threadId, setThreadId] = useState<string | null>(null);
 
   const syncAgentDefaultMode = useCallback(
     async (currentAgent: Agent) => {
@@ -74,7 +78,7 @@ export default function NewAgentPage() {
 
   const [thread, sendMessage] = useThreadStream({
     assistantId: "lead_agent",
-    threadId: step === "chat" ? threadId : undefined,
+    threadId: step === "chat" && threadId ? threadId : undefined,
     context: {
       mode: "flash",
       is_bootstrap: true,
@@ -117,9 +121,26 @@ export default function NewAgentPage() {
       setIsCheckingName(false);
     }
 
+    // Create the Gateway-registered thread BEFORE the first bootstrap submit.
+    // `messages:stream` rejects unknown thread ids with 403, so a
+    // locally-generated uuid would fail the ownership check.
+    let registeredThreadId = threadId;
+    if (!registeredThreadId) {
+      try {
+        const created = await createRuntimeThread();
+        registeredThreadId = created.thread_id;
+        setThreadId(registeredThreadId);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : String(error),
+        );
+        return;
+      }
+    }
+
     setAgentName(trimmed);
     setStep("chat");
-    await sendMessage(threadId, {
+    await sendMessage(registeredThreadId, {
       text: t.agents.nameStepBootstrapMessage.replace("{name}", trimmed),
       files: [],
     });
@@ -143,7 +164,7 @@ export default function NewAgentPage() {
   const handleChatSubmit = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || thread.isLoading) {
+      if (!trimmed || thread.isLoading || !threadId) {
         return;
       }
       await sendMessage(
@@ -255,7 +276,7 @@ export default function NewAgentPage() {
             <div className="flex min-h-0 flex-1 justify-center">
               <MessageList
                 className="size-full pt-10"
-                threadId={threadId}
+                threadId={threadId ?? ""}
                 thread={thread}
               />
             </div>

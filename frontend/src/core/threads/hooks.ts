@@ -483,8 +483,17 @@ export function useThreadStream({
   const hydratedRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (_threadId && _threadId !== threadId) {
-      setThreadId(threadId ?? null);
+    // Sync the internal ``_threadId`` to the outer ``threadId`` prop whenever
+    // they disagree. This covers three cases:
+    //   1. initial null → real id (new-thread flow where Gateway issues the
+    //      id after mount — without this sync, ``useStream`` hydration, the
+    //      ``refetchThreadState`` call, and task-event thread attribution
+    //      would stay stuck on the initial null value).
+    //   2. real id → different real id (navigating between threads).
+    //   3. real id → undefined (resetting for a fresh new-thread session).
+    const next = threadId ?? null;
+    if (next !== _threadId) {
+      setThreadId(next);
       startedRef.current = false;
     }
   }, [_threadId, threadId]);
