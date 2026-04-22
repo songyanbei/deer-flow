@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, NoReturn
 
 from langgraph_sdk import get_client
 
@@ -333,22 +333,98 @@ async def start_stream(
             stream_mode=["values", "messages", "custom"],
             multitask_strategy="reject",
         )
-        # Await the first chunk — this is where connection/auth/404 errors
-        # surface.  ``__aiter__`` + ``__anext__`` is the standard way to pull
-        # one item from an async iterator.
         upstream_aiter = upstream_iter.__aiter__()
         first_chunk = await upstream_aiter.__anext__()
         return first_chunk, upstream_aiter
     except StopAsyncIteration:
-        # Empty stream — unusual but not an error
         return None, None
     except Exception as exc:
-        exc_text = str(exc).lower()
-        if "404" in exc_text or "not found" in exc_text:
-            raise RuntimeServiceError(f"Runtime thread not found: {thread_id}", status_code=404) from exc
-        if any(tok in exc_text for tok in ("reject", "multitask", "already running", "409")):
-            raise RuntimeServiceError("Runtime rejected the submission (already running)", status_code=409) from exc
-        raise RuntimeServiceError(f"LangGraph submission failed: {_sanitize_error(exc)}", status_code=503) from exc
+        _raise_runtime_error(exc, thread_id)
+
+
+async def start_resume_stream(
+    *,
+    thread_id: str,
+    context: dict[str, Any],
+    message: str | None = None,
+    checkpoint: dict[str, Any] | None = None,
+    command: dict[str, Any] | None = None,
+) -> tuple[Any, Any]:
+    """Initiate an upstream LangGraph resume run and return the first chunk + iterator.
+
+    Mirrors :func:`start_stream` but supports intervention/interrupt resume
+    semantics:
+
+    - When ``checkpoint`` is provided, the upstream resumes from that
+      checkpoint rather than appending a fresh message at the head of the
+      current checkpoint chain. This lets the Gateway resume an interrupted
+      workflow run instead of starting a new one.
+    - When ``command`` is provided (``Command.resume`` / ``Command.goto``),
+      the resume payload is delivered to the ``interrupt()`` caller inside
+      the graph. ``command`` and ``message`` may both be supplied — the
+      ``message`` becomes the next human-turn input while ``command``
+      carries the resume value for the pending interrupt.
+
+    Identity (``thread_context`` / ``auth_user`` / tenant / user / thread)
+    is expected to already be in ``context`` — the router builds it from
+    auth middleware + ``resolve_thread_context``. Single-channel remote
+    submit is preserved (LG1.x rejects dual ``configurable + context``).
+    """
+    client = _get_client()
+
+    # Resume preserves the legacy ``thread.submit({ streamResumable: true,
+    # streamMode: ["values", "messages-tuple", "custom"] })`` contract used by
+    # the browser InterventionCard path. ``stream_resumable=True`` lets the
+    # frontend reconnect mid-resume without dropping events; ``messages-tuple``
+    # yields ``(message, metadata)`` tuples so the normalizer can pull run_id
+    # from metadata on every chunk.
+    kwargs: dict[str, Any] = {
+        "config": {"recursion_limit": 1000},
+        "context": dict(context),
+        "stream_mode": ["values", "messages-tuple", "custom"],
+        "stream_resumable": True,
+        "multitask_strategy": "reject",
+    }
+    if message is not None:
+        kwargs["input"] = {
+            "messages": [
+                {
+                    "type": "human",
+                    "content": [{"type": "text", "text": message}],
+                }
+            ],
+        }
+    else:
+        # Pure Command-based resume — upstream accepts ``input=None``.
+        kwargs["input"] = None
+    if checkpoint is not None:
+        kwargs["checkpoint"] = checkpoint
+    if command is not None:
+        kwargs["command"] = command
+
+    try:
+        upstream_iter = client.runs.stream(
+            thread_id,
+            ENTRY_GRAPH_ASSISTANT_ID,
+            **kwargs,
+        )
+        upstream_aiter = upstream_iter.__aiter__()
+        first_chunk = await upstream_aiter.__anext__()
+        return first_chunk, upstream_aiter
+    except StopAsyncIteration:
+        return None, None
+    except Exception as exc:
+        _raise_runtime_error(exc, thread_id)
+
+
+def _raise_runtime_error(exc: Exception, thread_id: str) -> NoReturn:
+    """Map upstream SDK exceptions to ``RuntimeServiceError`` with HTTP status."""
+    exc_text = str(exc).lower()
+    if "404" in exc_text or "not found" in exc_text:
+        raise RuntimeServiceError(f"Runtime thread not found: {thread_id}", status_code=404) from exc
+    if any(tok in exc_text for tok in ("reject", "multitask", "already running", "409")):
+        raise RuntimeServiceError("Runtime rejected the submission (already running)", status_code=409) from exc
+    raise RuntimeServiceError(f"LangGraph submission failed: {_sanitize_error(exc)}", status_code=503) from exc
 
 
 async def iter_events(

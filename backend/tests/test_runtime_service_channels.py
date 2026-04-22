@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.gateway.runtime_service import start_stream
+from src.gateway.runtime_service import start_resume_stream, start_stream
 from src.subagents.executor import SubagentExecutor
 
 
@@ -151,6 +151,72 @@ def test_start_stream_does_not_mutate_caller_context(mock_get_client):
     assert context == snapshot, "start_stream must not mutate caller-owned context"
     # The dict sent upstream must be a distinct object from the caller's.
     assert runs.captured_kwargs.get("context") is not context
+
+
+# ── D2.1: Gateway resume submit kwargs ────────────────────────────────
+
+
+@patch("src.gateway.runtime_service._get_client")
+def test_start_resume_stream_single_channel(mock_get_client):
+    """D2.1: resume path must submit context-only, never dual-channel."""
+    runs = _CapturingRuns()
+    client = MagicMock()
+    client.runs = runs
+    mock_get_client.return_value = client
+
+    context = _build_trusted_context()
+    checkpoint = {"checkpoint_id": "ckpt-1"}
+
+    asyncio.run(
+        start_resume_stream(
+            thread_id="thread-xyz",
+            context=context,
+            message="resume now",
+            checkpoint=checkpoint,
+        )
+    )
+
+    config = runs.captured_kwargs.get("config")
+    assert config == {"recursion_limit": 1000}
+    assert "configurable" not in config
+
+    sent_ctx = runs.captured_kwargs.get("context")
+    assert sent_ctx["thread_context"]["thread_id"] == "thread-xyz"
+    assert runs.captured_kwargs.get("checkpoint") == checkpoint
+    # Resume with a message still builds a human input payload.
+    input_payload = runs.captured_kwargs.get("input")
+    assert isinstance(input_payload, dict)
+    assert input_payload["messages"][0]["content"][0]["text"] == "resume now"
+
+    # D2.1 kwargs contract — resume preserves the legacy InterventionCard
+    # stream contract: resumable stream + messages-tuple mode.
+    assert runs.captured_kwargs.get("stream_resumable") is True
+    stream_mode = runs.captured_kwargs.get("stream_mode")
+    assert stream_mode == ["values", "messages-tuple", "custom"]
+
+
+@patch("src.gateway.runtime_service._get_client")
+def test_start_resume_stream_command_only(mock_get_client):
+    """D2.1: command-only resume sends input=None and forwards Command."""
+    runs = _CapturingRuns()
+    client = MagicMock()
+    client.runs = runs
+    mock_get_client.return_value = client
+
+    context = _build_trusted_context()
+
+    asyncio.run(
+        start_resume_stream(
+            thread_id="thread-xyz",
+            context=context,
+            message=None,
+            command={"resume": {"answer": "yes"}},
+        )
+    )
+
+    assert runs.captured_kwargs.get("input") is None
+    assert runs.captured_kwargs.get("command") == {"resume": {"answer": "yes"}}
+    assert "configurable" not in runs.captured_kwargs.get("config", {})
 
 
 # ── D0.2: Subagent trusted context propagation ────────────────────────

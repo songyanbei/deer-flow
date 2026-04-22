@@ -38,6 +38,7 @@ from src.gateway.runtime_service import (
     create_thread,
     get_thread_state_summary,
     iter_events,
+    start_resume_stream,
     start_stream,
     stream_message,
 )
@@ -369,6 +370,135 @@ def _validate_metadata(meta: dict[str, Any] | None) -> dict[str, Any] | None:
     return meta
 
 
+# ── Resume request model ──────────────────────────────────────────────
+
+
+# Resume ``Command.goto`` whitelist — currently empty because the Gateway
+# intervention resume path relies on checkpoint + resume message only. Any
+# browser-supplied ``goto`` is rejected as a server-side route-bypass attempt.
+# Extend this set deliberately when a new resume flow is introduced.
+_ALLOWED_RESUME_GOTO: frozenset[str] = frozenset()
+
+
+MAX_RESUME_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+
+
+class ResumePayload(BaseModel):
+    """Nested ``resume_payload`` body shape documented in the Phase 2.1 spec.
+
+    The legacy InterventionCard contract wraps the resume message inside a
+    ``resume_payload`` object. Phase 2.1 accepts either that nested form or a
+    top-level ``message``; if both are given, the top-level wins so the
+    contract stays strict about which field the caller intended.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str | None = Field(
+        default=None,
+        max_length=MAX_RESUME_MESSAGE_LENGTH,
+        description="Human resume text (equivalent to top-level ``message``)",
+    )
+
+
+class ResumeStreamRequest(BaseModel):
+    """Request body for ``POST /api/runtime/threads/{id}/resume``.
+
+    The Gateway mirrors the legacy ``thread.submit({...})`` contract the
+    frontend ``InterventionCard`` used against ``/api/langgraph``, minus any
+    identity channel. The browser may pass:
+
+    - ``message`` — human resume text (same semantics as the legacy path).
+    - ``checkpoint`` — forwarded to LangGraph to anchor the resume to the
+      interrupted run's checkpoint chain.
+    - ``interrupt_feedback`` — becomes ``Command.resume`` when present.
+    - ``goto`` — validated against a Gateway-owned whitelist. Currently
+      empty, so any non-None value is rejected.
+    - ``workflow_clarification_resume`` / ``workflow_resume_run_id`` /
+      ``workflow_resume_task_id`` — trusted-context hints forwarded into
+      LangGraph ``context`` so the workflow resume node can continue the
+      interrupted task instead of starting a fresh message.
+    - ``app_context`` — per-run flags (thinking/plan/subagent) same as the
+      ``messages:stream`` path.
+
+    Identity fields (``tenant_id`` / ``user_id`` / ``thread_context`` /
+    ``auth_user`` / ``config`` / ``configurable``) are dropped by
+    ``extra="ignore"`` — the router never reads the body for identity.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    message: str | None = Field(
+        default=None,
+        max_length=MAX_RESUME_MESSAGE_LENGTH,
+        description="Optional human resume message appended as the next turn",
+    )
+    checkpoint: dict[str, Any] | None = Field(
+        default=None,
+        description="LangGraph checkpoint to anchor the resume (opaque to Gateway)",
+    )
+    interrupt_feedback: Any = Field(
+        default=None,
+        description="Resume value delivered to the upstream interrupt() caller (Command.resume)",
+    )
+    goto: str | None = Field(
+        default=None,
+        description="Optional Command.goto node name (must be in backend whitelist)",
+    )
+    workflow_clarification_resume: bool | None = Field(
+        default=None, description="Mark this submit as a workflow clarification resume"
+    )
+    workflow_resume_run_id: str | None = Field(
+        default=None, description="Run id of the suspended workflow to resume"
+    )
+    workflow_resume_task_id: str | None = Field(
+        default=None, description="Task id within the resumed run"
+    )
+    app_context: AppRuntimeContext | None = Field(
+        default=None,
+        description="App-level runtime flags (thinking/plan/subagent/workflow-resume)",
+    )
+    resume_payload: ResumePayload | None = Field(
+        default=None,
+        description="Nested payload carrying ``message`` — accepted for compat with the legacy InterventionCard contract",
+    )
+
+
+def _validate_resume_goto(value: str | None) -> str | None:
+    """Return a normalized ``goto`` if it is allow-listed, else raise 422."""
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        raise HTTPException(status_code=422, detail="goto must be non-empty when provided")
+    if trimmed not in _ALLOWED_RESUME_GOTO:
+        raise HTTPException(
+            status_code=422,
+            detail=f"goto '{trimmed}' is not allowed by the resume contract",
+        )
+    return trimmed
+
+
+def _validate_resume_message(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        raise HTTPException(status_code=422, detail="message must be non-empty when provided")
+    return trimmed
+
+
+def _validate_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Basic shape guard — checkpoint is opaque, but we reject identity smuggling."""
+    if checkpoint is None:
+        return None
+    if not isinstance(checkpoint, dict):
+        raise HTTPException(status_code=422, detail="checkpoint must be a JSON object")
+    # Checkpoint is forwarded to LangGraph as-is. Strip any keys that collide
+    # with server-sourced identity fields — belt-and-braces against schema drift.
+    return {k: v for k, v in checkpoint.items() if k not in _IDENTITY_CONTEXT_KEYS}
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 
@@ -546,6 +676,146 @@ async def stream_runtime_message(
         requested_orchestration_mode=body.requested_orchestration_mode,
         metadata=body.metadata,
     )
+
+    return StreamingResponse(
+        iter_events(
+            thread_id=thread_id,
+            first_chunk=first_chunk,
+            upstream_iter=upstream_iter,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/threads/{thread_id}/resume")
+async def resume_runtime_stream(
+    thread_id: str,
+    body: ResumeStreamRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    username: str = Depends(get_username),
+    auth_user: AuthenticatedUser = Depends(get_user_profile),
+):
+    """Resume an interrupted runtime thread via trusted Gateway SSE.
+
+    This is the Phase 2 successor to the browser ``thread.submit(..., {
+    checkpoint, context: { workflow_resume_* } })`` path used by
+    ``InterventionCard``. The resume is anchored to the caller-supplied
+    checkpoint, trusted identity is injected server-side, and upstream
+    ``config.configurable`` is never populated — LG1.x rejects dual-channel.
+    """
+    registry = get_thread_registry()
+
+    # Ownership validation — returns 403 for unknown or unauthorized threads.
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
+
+    # Validate body fields. Browser-supplied identity has already been dropped
+    # by ``extra="ignore"``; these validators only shape-check the remaining
+    # fields before we build trusted context.
+    # Accept either ``message`` at the top level or the nested
+    # ``resume_payload.message`` form documented in the Phase 2.1 spec. Top
+    # level wins when both are present — the contract is explicit rather than
+    # silently merging.
+    raw_message = body.message
+    if raw_message is None and body.resume_payload is not None:
+        raw_message = body.resume_payload.message
+    message = _validate_resume_message(raw_message)
+    goto = _validate_resume_goto(body.goto)
+    checkpoint = _validate_checkpoint(body.checkpoint)
+
+    # Build LangGraph ``context`` — identical construction to ``messages:stream``
+    # so the state projection driving ``liveValuesPatch`` converges. App-level
+    # flags (thinking/plan/subagent) applied first, then server-sourced identity
+    # overwrites anything colliding.
+    context: dict[str, Any] = {}
+    if body.app_context is not None:
+        app_fields = body.app_context.model_dump(exclude_none=True)
+        for key in list(app_fields.keys()):
+            if key in _IDENTITY_CONTEXT_KEYS:
+                app_fields.pop(key, None)
+        context.update(app_fields)
+
+    # Workflow resume hints are trusted-context business fields — they drive
+    # the workflow resume node to continue the interrupted task rather than
+    # starting a fresh message. Same shape the legacy front-end path used.
+    if body.workflow_clarification_resume is not None:
+        context["workflow_clarification_resume"] = body.workflow_clarification_resume
+    if body.workflow_resume_run_id is not None:
+        context["workflow_resume_run_id"] = body.workflow_resume_run_id
+    if body.workflow_resume_task_id is not None:
+        context["workflow_resume_task_id"] = body.workflow_resume_task_id
+
+    context.update(
+        {
+            "thread_id": thread_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "username": username,
+            "thread_context": ctx.serialize(),
+            "auth_user": {
+                "tenant_id": auth_user.tenant_id,
+                "user_id": auth_user.user_id,
+                "name": auth_user.name,
+                "employee_no": auth_user.employee_no,
+                "target_system": auth_user.target_system,
+                "role": auth_user.role,
+            },
+        }
+    )
+
+    # Fall back to the registry-bound routing fields when the interrupted run
+    # had them — resume inherits the original run's ``group_key`` /
+    # ``allowed_agents`` / ``entry_agent`` rather than letting the browser
+    # widen scope mid-run.
+    binding = registry.get_binding(thread_id) or {}
+    bound_group_key = binding.get("group_key")
+    if bound_group_key:
+        context["group_key"] = bound_group_key
+    bound_allowed_agents = binding.get("allowed_agents")
+    if bound_allowed_agents:
+        context["allowed_agents"] = list(bound_allowed_agents)
+    bound_entry_agent = binding.get("entry_agent")
+    if bound_entry_agent:
+        context["agent_name"] = bound_entry_agent
+    bound_mode = binding.get("requested_orchestration_mode")
+    if bound_mode:
+        context["requested_orchestration_mode"] = bound_mode
+
+    # Build the ``Command`` payload when the caller supplied resume semantics.
+    # The intervention card path currently uses message+checkpoint only, but
+    # the spec requires the endpoint to accept ``interrupt_feedback`` /
+    # ``goto`` for future flows.
+    command: dict[str, Any] | None = None
+    if body.interrupt_feedback is not None or goto is not None:
+        command = {}
+        if body.interrupt_feedback is not None:
+            command["resume"] = body.interrupt_feedback
+        if goto is not None:
+            command["goto"] = goto
+
+    if message is None and command is None:
+        # Nothing for the upstream to do. Prefer a structured 422 over a
+        # confusing upstream rejection.
+        raise HTTPException(
+            status_code=422,
+            detail="resume request must include at least one of: message, interrupt_feedback, goto",
+        )
+
+    try:
+        first_chunk, upstream_iter = await start_resume_stream(
+            thread_id=thread_id,
+            context=context,
+            message=message,
+            checkpoint=checkpoint,
+            command=command,
+        )
+    except RuntimeServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     return StreamingResponse(
         iter_events(
