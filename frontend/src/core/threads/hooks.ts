@@ -732,14 +732,28 @@ export function useThreadStream({
     };
   }, []);
 
+  // Clear optimistic messages once the authoritative message baseline has
+  // grown past the snapshot taken when the submit started. Phase 1 routes
+  // live runs through the Gateway SSE consumer, which writes persisted
+  // messages into ``liveValuesPatch.messages`` via
+  // ``refetchThreadState``; ``thread.messages`` from the read-only
+  // ``useStream`` snapshot does not grow during the run. Using the max of
+  // both lengths covers the first submit on a new thread (where only
+  // ``liveValuesPatch.messages`` updates) AND the historic hydration
+  // path (where ``thread.messages`` grows via a future ``useStream``
+  // refetch).
+  const effectiveBaselineLength = Math.max(
+    liveValuesPatch.messages?.length ?? 0,
+    thread.messages.length,
+  );
   useEffect(() => {
     if (
       optimisticMessages.length > 0 &&
-      thread.messages.length > prevMsgCountRef.current
+      effectiveBaselineLength > prevMsgCountRef.current
     ) {
       setOptimisticMessages([]);
     }
-  }, [thread.messages.length, optimisticMessages.length]);
+  }, [effectiveBaselineLength, optimisticMessages.length]);
 
   const sendMessage = useCallback(
     async (
@@ -772,7 +786,16 @@ export function useThreadStream({
             ? clarificationTask.task_id
             : clarificationTask.id);
 
-      prevMsgCountRef.current = thread.messages.length;
+      // Snapshot the authoritative message count at submit start. We take
+      // the max of the useStream snapshot and any persisted messages
+      // already merged into ``liveValuesPatch`` from a prior run on this
+      // thread — otherwise a second submit would read stale 0 from
+      // ``thread.messages.length`` and the optimistic-clear effect would
+      // fire immediately, hiding the user's bubble.
+      prevMsgCountRef.current = Math.max(
+        liveValuesPatch.messages?.length ?? 0,
+        thread.messages.length,
+      );
 
       seedRecentThreadPreview(queryClient, threadId, text);
 
