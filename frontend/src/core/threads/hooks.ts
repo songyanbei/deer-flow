@@ -695,8 +695,27 @@ export function useThreadStream({
     }
   }, [_threadId, isMock]);
 
+  const previousThreadIdRef = useRef<string | null>(_threadId);
   useEffect(() => {
-    // New thread id → discard any in-flight Gateway run and reset live state.
+    // Only reset when the user actually navigates AWAY from the current
+    // thread — i.e. a real id changes to another real id, or a real id
+    // drops back to null (returning to a fresh new-thread page).
+    //
+    // The `null → real id` transition is part of the new-thread first
+    // submit: `sendMessage` starts the Gateway SSE with the
+    // freshly-registered id, fires `onStart`, the host page flips
+    // `isNewThread` to false, that feeds the real id back into the
+    // `threadId` prop, and the sync effect above pushes it into
+    // `_threadId`. If we reset here, we would `abort()` the stream that
+    // the same submit just kicked off and clear `streamingAi` /
+    // `isRunning`, so the UI would look like the run ended immediately
+    // with no output.
+    const previous = previousThreadIdRef.current;
+    previousThreadIdRef.current = _threadId;
+
+    if (previous === _threadId) return;
+    if (previous === null) return;
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
