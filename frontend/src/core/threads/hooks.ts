@@ -30,11 +30,6 @@ import {
 } from "./runtime-stream";
 import type { AgentThread, AgentThreadState } from "./types";
 
-export type ToolEndEvent = {
-  name: string;
-  data: unknown;
-};
-
 export type ThreadAssistantId = "entry_graph" | "lead_agent" | "multi_agent";
 
 type BaseTaskEvent = {
@@ -465,7 +460,6 @@ export type ThreadStreamOptions = {
   isMock?: boolean;
   onStart?: (threadId: string) => void;
   onFinish?: (state: AgentThreadState) => void;
-  onToolEnd?: (event: ToolEndEvent) => void;
 };
 
 export function useThreadStream({
@@ -475,7 +469,6 @@ export function useThreadStream({
   isMock,
   onStart,
   onFinish,
-  onToolEnd,
 }: ThreadStreamOptions) {
   const { t } = useI18n();
   const [_threadId, setThreadId] = useState<string | null>(threadId ?? null);
@@ -506,69 +499,20 @@ export function useThreadStream({
     useState<LocalWorkflowShell | null>(null);
   const hadWorkflowHydrationRef = useRef(false);
   const staleRunIdsRef = useRef<Set<string>>(new Set());
+  // Phase 1 cleanup: ``useStream`` is retained ONLY as a read-only hydration
+  // surface — it exposes ``thread.values`` / ``thread.messages`` loaded via
+  // ``fetchStateHistory`` for initial rendering of a persisted thread. All
+  // live-run events (run lifecycle, task events, message deltas, workflow
+  // stage, artifacts) flow exclusively through the Gateway SSE consumer in
+  // ``sendMessage`` below. We drop every SDK event callback and disable
+  // ``reconnectOnMount`` so that mount/remount cycles never silently reopen
+  // an SDK event channel that would bypass the Gateway.
   const thread = useStream<AgentThreadState>({
     client: getAPIClient(isMock),
     assistantId,
     threadId: _threadId,
-    reconnectOnMount: true,
+    reconnectOnMount: false,
     fetchStateHistory: { limit: 1 },
-    onCreated(meta) {
-      setThreadId(meta.thread_id);
-      if (!startedRef.current) {
-        onStart?.(meta.thread_id);
-        startedRef.current = true;
-      }
-    },
-    onLangChainEvent(event) {
-      if (event.event === "on_tool_end") {
-        onToolEnd?.({
-          name: event.name,
-          data: event.data,
-        });
-      }
-    },
-    onCustomEvent(event: unknown) {
-      const patch = extractThreadEventPatch(event);
-      if (patch) {
-        setEventPatch((current) => {
-          const currentRunId = current.run_id ?? thread.values.run_id ?? null;
-          const incomingRunId = patch.run_id ?? null;
-          if (
-            currentRunId !== null &&
-            incomingRunId !== null &&
-            currentRunId !== incomingRunId
-          ) {
-            staleRunIdsRef.current.add(currentRunId);
-          }
-          return mergeThreadEventPatch(
-            current,
-            patch,
-            staleRunIdsRef.current,
-          );
-        });
-      }
-
-      if (typeof event !== "object" || event === null || !("type" in event)) {
-        return;
-      }
-
-      const taskEvent = classifyTaskEvent(event);
-      if (!taskEvent) {
-        return;
-      }
-
-      if (taskEvent.kind === "multi_agent") {
-        upsertTask(fromMultiAgentTaskEvent(taskEvent.event, _threadId ?? undefined));
-        return;
-      }
-
-      upsertTask(fromLegacyTaskEvent(taskEvent.event));
-    },
-    onFinish(state) {
-      setLocalWorkflowShell(null);
-      onFinish?.(state.values);
-      void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
-    },
   });
 
   useEffect(() => {
@@ -1188,7 +1132,6 @@ export function useThreadStream({
       eventPatch.run_id,
       mergedValues,
       upsertTask,
-      _threadId,
       liveValuesPatch,
       refetchThreadState,
       onFinish,

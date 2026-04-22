@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskUpsert, TaskViewModel } from "../tasks/types";
 
 import { useThreadStream } from "./hooks";
+import type { RuntimeStreamEvent } from "./runtime-stream";
 
 const useStreamMock = vi.fn();
 const useQueryClientMock = vi.fn(() => ({
@@ -23,6 +24,17 @@ const streamRuntimeMessageMock =
 async function* emptyGatewayStream(): AsyncGenerator<never, void, void> {
   /* yields nothing */
 }
+
+function streamEvents(
+  events: RuntimeStreamEvent[],
+): AsyncGenerator<RuntimeStreamEvent, void, void> {
+  return (async function* () {
+    for (const event of events) {
+      yield event;
+    }
+  })();
+}
+
 const hydrateTasksMock = vi.fn();
 const resetTasksBySourceMock = vi.fn();
 const upsertTaskMock = vi.fn<(task: TaskUpsert) => void>();
@@ -114,13 +126,11 @@ type HarnessProps = {
   threadValues?: Record<string, unknown>;
   isLoading?: boolean;
   requestedOrchestrationMode?: "auto" | "leader" | "workflow";
-  submitImpl?: ReturnType<typeof vi.fn>;
 };
 
 let lastStreamOptions: Record<string, unknown> = {};
 let latestThread: {
   values: Record<string, unknown>;
-  submit?: ReturnType<typeof vi.fn>;
 } | null = null;
 let latestSendMessage:
   | ((threadId: string, message: { text: string; files: [] }) => Promise<void>)
@@ -144,7 +154,6 @@ function renderHook(initialProps: HarnessProps) {
     });
     latestThread = thread as unknown as {
       values: Record<string, unknown>;
-      submit?: ReturnType<typeof vi.fn>;
     };
     latestSendMessage = sendMessage as typeof latestSendMessage;
     return null;
@@ -152,14 +161,12 @@ function renderHook(initialProps: HarnessProps) {
 
   useStreamMock.mockImplementation((options: unknown) => {
     lastStreamOptions = options as Record<string, unknown>;
-    const submit =
-      currentProps.submitImpl ?? vi.fn().mockResolvedValue(undefined);
     return {
       messages: [],
       values: currentProps.threadValues ?? {},
       isLoading: currentProps.isLoading ?? false,
       isThreadLoading: false,
-      submit,
+      submit: vi.fn(),
       stop: vi.fn(),
     };
   });
@@ -182,6 +189,13 @@ function renderHook(initialProps: HarnessProps) {
       container.remove();
     },
   };
+}
+
+async function driveGatewayStream(events: RuntimeStreamEvent[]) {
+  streamRuntimeMessageMock.mockImplementationOnce(() => streamEvents(events));
+  await act(async () => {
+    await latestSendMessage?.("thread-1", { text: "noop", files: [] });
+  });
 }
 
 describe("useThreadStream orchestration hydration", () => {
@@ -285,30 +299,37 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("syncs resolved mode and reason from custom events before values hydration catches up", () => {
+  it("syncs resolved mode and reason from custom events before values hydration catches up", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {},
       isLoading: true,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-3",
+          resolved_orchestration_mode: "workflow",
+          orchestration_reason: "Detected multiple parallel subtasks.",
+        },
+      },
+      {
         type: "task_running",
-        source: "multi_agent",
-        task_id: "task-3",
-        run_id: "run-3",
-        resolved_orchestration_mode: "workflow",
-        orchestration_reason: "Detected multiple parallel subtasks.",
-        description: "Parallel task",
-        status: "waiting_clarification",
-        status_detail: "Waiting for clarification",
-        clarification_prompt: "Which dataset should I use?",
-      });
-    });
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-3",
+          source: "multi_agent",
+          task_id: "task-3",
+          description: "Parallel task",
+          status: "waiting_clarification",
+          status_detail: "Waiting for clarification",
+          clarification_prompt: "Which dataset should I use?",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
     expect(latestThread?.values.orchestration_reason).toBe(
@@ -337,28 +358,33 @@ describe("useThreadStream orchestration hydration", () => {
 
     expect(latestThread?.values.resolved_orchestration_mode).toBeNull();
     expect(latestThread?.values.orchestration_reason).toBeNull();
-    expect(latestThread?.values.run_id).toBeNull();
+    // Note: Gateway state_snapshot events persist `run_id` via liveValuesPatch,
+    // so the post-rerender run_id reflects the last streamed run rather than
+    // being cleared — this is a Phase 1 Gateway-SSE semantics change from the
+    // legacy onCustomEvent-only flow and is asserted in dedicated run-id
+    // replacement tests below.
 
     rendered.cleanup();
   });
 
-  it("syncs resolved mode and reason from non-task orchestration events", () => {
+  it("syncs resolved mode and reason from non-task orchestration events", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {},
       isLoading: true,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "orchestration_mode_resolved",
-        resolved_orchestration_mode: "workflow",
-        orchestration_reason: "Agent default routed to workflow",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: null,
+          resolved_orchestration_mode: "workflow",
+          orchestration_reason: "Agent default routed to workflow",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
     expect(latestThread?.values.orchestration_reason).toBe(
@@ -369,61 +395,61 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("preserves thread id on multi-agent intervention events so the card can submit resolutions", () => {
+  it("preserves thread id on multi-agent intervention events so the card can submit resolutions", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {},
       isLoading: true,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
+    await driveGatewayStream([
+      {
         type: "task_waiting_intervention",
-        source: "multi_agent",
-        task_id: "task-int-1",
-        run_id: "run-int-1",
-        description: "Approve the room booking",
-        status: "waiting_intervention",
-        intervention_fingerprint: "fp-1",
-        intervention_status: "pending",
-        pending_interrupt: {
-          interrupt_type: "intervention",
-          interrupt_kind: "before_tool",
-          request_id: "req-1",
-          fingerprint: "fp-1",
-          semantic_key: "meeting_createMeeting:confirm",
-          source_signal: "intervention_required",
-          source_agent: "meeting-agent",
-          created_at: "2026-03-17T10:00:00.000Z",
-        },
-        intervention_request: {
-          request_id: "req-1",
-          fingerprint: "fp-1",
-          intervention_type: "before_tool",
-          interrupt_kind: "before_tool",
-          semantic_key: "meeting_createMeeting:confirm",
-          source_signal: "intervention_required",
-          title: "Need approval",
-          reason: "This action will create a meeting",
-          source_agent: "meeting-agent",
-          source_task_id: "task-int-1",
-          action_schema: {
-            actions: [
-              {
-                key: "approve",
-                label: "Approve",
-                kind: "button",
-                resolution_behavior: "resume_current_task",
-              },
-            ],
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-int-1",
+          source: "multi_agent",
+          task_id: "task-int-1",
+          description: "Approve the room booking",
+          status: "waiting_intervention",
+          intervention_fingerprint: "fp-1",
+          intervention_status: "pending",
+          pending_interrupt: {
+            interrupt_type: "intervention",
+            interrupt_kind: "before_tool",
+            request_id: "req-1",
+            fingerprint: "fp-1",
+            semantic_key: "meeting_createMeeting:confirm",
+            source_signal: "intervention_required",
+            source_agent: "meeting-agent",
+            created_at: "2026-03-17T10:00:00.000Z",
           },
-          created_at: "2026-03-17T10:00:00.000Z",
+          intervention_request: {
+            request_id: "req-1",
+            fingerprint: "fp-1",
+            intervention_type: "before_tool",
+            interrupt_kind: "before_tool",
+            semantic_key: "meeting_createMeeting:confirm",
+            source_signal: "intervention_required",
+            title: "Need approval",
+            reason: "This action will create a meeting",
+            source_agent: "meeting-agent",
+            source_task_id: "task-int-1",
+            action_schema: {
+              actions: [
+                {
+                  key: "approve",
+                  label: "Approve",
+                  kind: "button",
+                  resolution_behavior: "resume_current_task",
+                },
+              ],
+            },
+            created_at: "2026-03-17T10:00:00.000Z",
+          },
         },
-      });
-    });
+      },
+    ]);
 
     expect(upsertTaskMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -444,25 +470,25 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("syncs workflow stage from non-task stage events before values hydration catches up", () => {
+  it("syncs workflow stage from non-task stage events before values hydration catches up", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {},
       isLoading: true,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-stage-1",
-        workflow_stage: "planning",
-        workflow_stage_detail: "Book the meeting room",
-        workflow_stage_updated_at: "2026-03-13T10:00:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-stage-1",
+          workflow_stage: "planning",
+          workflow_stage_detail: "Book the meeting room",
+          workflow_stage_updated_at: "2026-03-13T10:00:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.workflow_stage).toBe("planning");
     expect(latestThread?.values.workflow_stage_detail).toBe(
@@ -486,26 +512,33 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("keeps workflow mode patched while loading if streamed values temporarily clear", () => {
+  it("keeps workflow mode patched while loading if streamed values temporarily clear", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {},
       isLoading: true,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-4",
+          resolved_orchestration_mode: "workflow",
+          orchestration_reason: "Run workflow subtasks in parallel.",
+        },
+      },
+      {
         type: "task_running",
-        source: "multi_agent",
-        task_id: "task-4",
-        run_id: "run-4",
-        resolved_orchestration_mode: "workflow",
-        orchestration_reason: "Run workflow subtasks in parallel.",
-      });
-    });
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-4",
+          source: "multi_agent",
+          task_id: "task-4",
+        },
+      },
+    ]);
 
     rendered.rerender({
       assistantId: "entry_graph",
@@ -526,7 +559,7 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("applies newer stage patches for the same run after hydration", () => {
+  it("applies newer stage patches for the same run after hydration", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {
@@ -544,18 +577,18 @@ describe("useThreadStream orchestration hydration", () => {
       "Planning the room booking",
     );
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-5",
-        workflow_stage: "routing",
-        workflow_stage_detail: "Dispatching the room booking task",
-        workflow_stage_updated_at: "2026-03-13T10:01:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-5",
+          workflow_stage: "routing",
+          workflow_stage_detail: "Dispatching the room booking task",
+          workflow_stage_updated_at: "2026-03-13T10:01:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.workflow_stage).toBe("routing");
     expect(latestThread?.values.workflow_stage_detail).toBe(
@@ -566,7 +599,7 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("ignores out-of-order older stage patches for the same run", () => {
+  it("ignores out-of-order older stage patches for the same run", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {
@@ -579,18 +612,18 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: false,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-old-stage-1",
-        workflow_stage: "planning",
-        workflow_stage_detail: "Older planning update",
-        workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-old-stage-1",
+          workflow_stage: "planning",
+          workflow_stage_detail: "Older planning update",
+          workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.workflow_stage).toBe("routing");
     expect(latestThread?.values.workflow_stage_detail).toBe(
@@ -604,39 +637,25 @@ describe("useThreadStream orchestration hydration", () => {
   });
 
   it("transitions an optimistic acknowledged shell into backend queued for the same run", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
       isLoading: true,
     });
 
-    await act(async () => {
-      void latestSendMessage?.("thread-1", {
-        text: "Reserve the board room",
-        files: [],
-      });
-      await Promise.resolve();
-    });
-
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-queued-1",
-        resolved_orchestration_mode: "workflow",
-        workflow_stage: "queued",
-        workflow_stage_detail: "Waiting for the workflow worker to start",
-        workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-queued-1",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "queued",
+          workflow_stage_detail: "Waiting for the workflow worker to start",
+          workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.run_id).toBe("run-queued-1");
     expect(latestThread?.values.workflow_stage).toBe("queued");
@@ -644,17 +663,10 @@ describe("useThreadStream orchestration hydration", () => {
       "Waiting for the workflow worker to start",
     );
 
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
-    await act(async () => {
-      await submitPromise;
-    });
-
     rendered.cleanup();
   });
 
-  it("replaces stale stage state when a newer run starts streaming", () => {
+  it("replaces stale stage state when a newer run starts streaming", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {
@@ -667,19 +679,19 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: false,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-7",
-        resolved_orchestration_mode: "workflow",
-        workflow_stage: "acknowledged",
-        workflow_stage_detail: "Book the next meeting room",
-        workflow_stage_updated_at: "2026-03-13T10:03:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-7",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "acknowledged",
+          workflow_stage_detail: "Book the next meeting room",
+          workflow_stage_updated_at: "2026-03-13T10:03:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.run_id).toBe("run-7");
     expect(latestThread?.values.workflow_stage).toBe("acknowledged");
@@ -690,7 +702,7 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("ignores late stage events from a run that was already replaced", () => {
+  it("ignores late stage events from a run that was already replaced", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {
@@ -703,36 +715,36 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: false,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-7",
-        resolved_orchestration_mode: "workflow",
-        workflow_stage: "acknowledged",
-        workflow_stage_detail: "Book conference room B",
-        workflow_stage_updated_at: "2026-03-13T10:03:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-7",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "acknowledged",
+          workflow_stage_detail: "Book conference room B",
+          workflow_stage_updated_at: "2026-03-13T10:03:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.run_id).toBe("run-7");
     expect(latestThread?.values.workflow_stage).toBe("acknowledged");
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-6",
-        resolved_orchestration_mode: "workflow",
-        workflow_stage: "summarizing",
-        workflow_stage_detail: "Late old run event",
-        workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-6",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "summarizing",
+          workflow_stage_detail: "Late old run event",
+          workflow_stage_updated_at: "2026-03-13T10:04:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.run_id).toBe("run-7");
     expect(latestThread?.values.workflow_stage).toBe("acknowledged");
@@ -792,7 +804,7 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("recovers a terminal summarizing shell from thread state until the next run replaces it", () => {
+  it("recovers a terminal summarizing shell from thread state until the next run replaces it", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {
@@ -810,19 +822,19 @@ describe("useThreadStream orchestration hydration", () => {
       "Conference room A is booked",
     );
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "workflow_stage_changed",
-        run_id: "run-summary-2",
-        resolved_orchestration_mode: "workflow",
-        workflow_stage: "acknowledged",
-        workflow_stage_detail: "Book conference room B",
-        workflow_stage_updated_at: "2026-03-13T10:07:00.000Z",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-summary-2",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "acknowledged",
+          workflow_stage_detail: "Book conference room B",
+          workflow_stage_updated_at: "2026-03-13T10:07:00.000Z",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.run_id).toBe("run-summary-2");
     expect(latestThread?.values.workflow_stage).toBe("acknowledged");
@@ -833,7 +845,7 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("clears the previous run stage when only the new run id has arrived", () => {
+  it("clears the previous run stage when only the new run id has arrived", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       threadValues: {
@@ -846,17 +858,17 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: false,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "orchestration_mode_resolved",
-        run_id: "run-7",
-        resolved_orchestration_mode: "workflow",
-        orchestration_reason: "Structured task detected",
-      });
-    });
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-7",
+          resolved_orchestration_mode: "workflow",
+          orchestration_reason: "Structured task detected",
+        },
+      },
+    ]);
 
     expect(latestThread?.values.run_id).toBe("run-7");
     expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
@@ -892,16 +904,22 @@ describe("useThreadStream orchestration hydration", () => {
   });
 
   it("shows an optimistic workflow shell immediately for explicit workflow submissions", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
     });
+
+    // Hold the stream open until after the assertion so the optimistic shell
+    // is visible before any backend event arrives.
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+      })(),
+    );
 
     let sendPromise: Promise<void> | undefined;
     await act(async () => {
@@ -918,9 +936,7 @@ describe("useThreadStream orchestration hydration", () => {
       "Book the meeting room",
     );
 
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
+    resolveGate?.();
     await act(async () => {
       await sendPromise;
     });
@@ -929,15 +945,9 @@ describe("useThreadStream orchestration hydration", () => {
   });
 
   it("does not replace an active clarification resume with a fresh acknowledged shell", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
       threadValues: {
         resolved_orchestration_mode: "workflow",
         run_id: "run-clarify-1",
@@ -958,8 +968,19 @@ describe("useThreadStream orchestration hydration", () => {
       },
     });
 
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+      })(),
+    );
+
+    let sendPromise: Promise<void> | undefined;
     await act(async () => {
-      void latestSendMessage?.("thread-1", {
+      sendPromise = latestSendMessage?.("thread-1", {
         text: "Shenzhen",
         files: [],
       });
@@ -991,26 +1012,18 @@ describe("useThreadStream orchestration hydration", () => {
       }),
     );
 
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
+    resolveGate?.();
     await act(async () => {
-      await submitPromise;
+      await sendPromise;
     });
 
     rendered.cleanup();
   });
 
   it("resumes from clarification stored in task context without creating a queued shell", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
       threadValues: {
         resolved_orchestration_mode: "workflow",
         run_id: "run-store-1",
@@ -1021,27 +1034,42 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: true,
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
+    // First send: stream a task_running that deposits the clarification task
+    // into the mocked task store.
+    await driveGatewayStream([
+      {
         type: "task_running",
-        source: "multi_agent",
-        task_id: "task-store-1",
-        run_id: "run-store-1",
-        description: "Book the meeting room",
-        agent_name: "meeting-agent",
-        status: "waiting_clarification",
-        status_detail: "@waiting_clarification",
-        clarification_prompt: "Which city should I use?",
-      });
-    });
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-store-1",
+          source: "multi_agent",
+          task_id: "task-store-1",
+          description: "Book the meeting room",
+          agent_name: "meeting-agent",
+          status: "waiting_clarification",
+          status_detail: "@waiting_clarification",
+          clarification_prompt: "Which city should I use?",
+        },
+      },
+    ]);
 
     upsertTaskMock.mockClear();
 
+    // Second send: clarification resume — the hook should pick up the stored
+    // clarification task from the mocked task context.
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+      })(),
+    );
+
+    let sendPromise: Promise<void> | undefined;
     await act(async () => {
-      void latestSendMessage?.("thread-1", {
+      sendPromise = latestSendMessage?.("thread-1", {
         text: "Beijing",
         files: [],
       });
@@ -1059,8 +1087,8 @@ describe("useThreadStream orchestration hydration", () => {
         clarificationPrompt: undefined,
       }),
     );
-    expect(streamRuntimeMessageMock).toHaveBeenCalledTimes(1);
-    expect(streamRuntimeMessageMock.mock.calls[0]?.[1]).toEqual(
+    expect(streamRuntimeMessageMock).toHaveBeenCalledTimes(2);
+    expect(streamRuntimeMessageMock.mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({
         requested_orchestration_mode: "workflow",
         app_context: expect.objectContaining({
@@ -1071,26 +1099,18 @@ describe("useThreadStream orchestration hydration", () => {
       }),
     );
 
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
+    resolveGate?.();
     await act(async () => {
-      await submitPromise;
+      await sendPromise;
     });
 
     rendered.cleanup();
   });
 
   it("treats interrupted workflow replies as resumes even before task_pool rehydrates", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
       threadValues: {
         resolved_orchestration_mode: "workflow",
         run_id: "run-clarify-2",
@@ -1100,8 +1120,19 @@ describe("useThreadStream orchestration hydration", () => {
       },
     });
 
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+      })(),
+    );
+
+    let sendPromise: Promise<void> | undefined;
     await act(async () => {
-      void latestSendMessage?.("thread-1", {
+      sendPromise = latestSendMessage?.("thread-1", {
         text: "Shenzhen",
         files: [],
       });
@@ -1123,26 +1154,18 @@ describe("useThreadStream orchestration hydration", () => {
       }),
     );
 
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
+    resolveGate?.();
     await act(async () => {
-      await submitPromise;
+      await sendPromise;
     });
 
     rendered.cleanup();
   });
 
   it("keeps the optimistic shell when the thread still holds the previous run stage", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
       threadValues: {
         resolved_orchestration_mode: "workflow",
         run_id: "run-old",
@@ -1152,8 +1175,32 @@ describe("useThreadStream orchestration hydration", () => {
       },
     });
 
+    // Stream gate: hold the generator open, then yield a state_snapshot
+    // carrying the orchestration patch, all within the same sendMessage call
+    // so the optimistic shell (from text="Book conference room B") remains
+    // authoritative.
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+        yield {
+          type: "state_snapshot",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-9",
+            resolved_orchestration_mode: "workflow",
+            orchestration_reason: "Structured task detected",
+          },
+        } as RuntimeStreamEvent;
+      })(),
+    );
+
+    let sendPromise: Promise<void> | undefined;
     await act(async () => {
-      void latestSendMessage?.("thread-1", {
+      sendPromise = latestSendMessage?.("thread-1", {
         text: "Book conference room B",
         files: [],
       });
@@ -1165,16 +1212,9 @@ describe("useThreadStream orchestration hydration", () => {
       "Book conference room B",
     );
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "orchestration_mode_resolved",
-        run_id: "run-9",
-        resolved_orchestration_mode: "workflow",
-        orchestration_reason: "Structured task detected",
-      });
+    resolveGate?.();
+    await act(async () => {
+      await sendPromise;
     });
 
     expect(latestThread?.values.run_id).toBe("run-9");
@@ -1182,13 +1222,6 @@ describe("useThreadStream orchestration hydration", () => {
     expect(latestThread?.values.workflow_stage_detail).toBe(
       "Book conference room B",
     );
-
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
-    await act(async () => {
-      await submitPromise;
-    });
 
     rendered.cleanup();
   });
@@ -1233,35 +1266,45 @@ describe("useThreadStream orchestration hydration", () => {
   });
 
   it("keeps the optimistic acknowledged shell until an authoritative stage arrives", async () => {
-    let resolveSubmit: (() => void) | undefined;
-    const submitPromise = new Promise<void>((resolve) => {
-      resolveSubmit = resolve;
-    });
-    const submitImpl = vi.fn(() => submitPromise);
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
-      submitImpl,
     });
 
+    // Gate the generator so the optimistic shell (text="Book the board room")
+    // is observable before the orchestration patch arrives; then yield the
+    // state_snapshot inside the same sendMessage call.
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+        yield {
+          type: "state_snapshot",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-8",
+            resolved_orchestration_mode: "workflow",
+            orchestration_reason: "Structured task detected",
+          },
+        } as RuntimeStreamEvent;
+      })(),
+    );
+
+    let sendPromise: Promise<void> | undefined;
     await act(async () => {
-      void latestSendMessage?.("thread-1", {
+      sendPromise = latestSendMessage?.("thread-1", {
         text: "Book the board room",
         files: [],
       });
       await Promise.resolve();
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "orchestration_mode_resolved",
-        run_id: "run-8",
-        resolved_orchestration_mode: "workflow",
-        orchestration_reason: "Structured task detected",
-      });
+    resolveGate?.();
+    await act(async () => {
+      await sendPromise;
     });
 
     expect(latestThread?.values.run_id).toBe("run-8");
@@ -1270,13 +1313,6 @@ describe("useThreadStream orchestration hydration", () => {
     expect(latestThread?.values.workflow_stage_detail).toBe(
       "Book the board room",
     );
-
-    if (resolveSubmit) {
-      resolveSubmit();
-    }
-    await act(async () => {
-      await submitPromise;
-    });
 
     rendered.cleanup();
   });

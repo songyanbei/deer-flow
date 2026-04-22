@@ -83,15 +83,21 @@ export default function NewAgentPage() {
       mode: "flash",
       is_bootstrap: true,
     },
-    onToolEnd({ name }) {
-      if (name !== "setup_agent" || !agentName) {
-        return;
-      }
-
+    // Phase 1 cleanup: the bootstrap flow previously detected agent
+    // creation via the LangGraph SDK ``on_tool_end`` callback. Now that the
+    // main chat only reads events from the Gateway SSE stream, we hook into
+    // ``onFinish`` (fired after the SSE ``run_completed`` event) and probe
+    // the agent API. A 404 here simply means the run didn't call
+    // ``setup_agent`` yet — non-fatal, the UI stays on the chat input so
+    // the user can iterate.
+    onFinish() {
+      if (!agentName) return;
       getAgent(agentName)
         .then((fetched) => void syncAgentDefaultMode(fetched))
-        .catch((error) => {
-          toast.error(error instanceof Error ? error.message : String(error));
+        .catch(() => {
+          // Expected when the agent hasn't been created yet (404) or any
+          // other transient read error — the input remains active so the
+          // user can try again.
         });
     },
   });
