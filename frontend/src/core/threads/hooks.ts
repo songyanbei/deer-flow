@@ -727,11 +727,14 @@ export function useThreadStream({
   const [isRunning, setIsRunning] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const refetchThreadState = useCallback(async () => {
-    if (!_threadId) return;
+  const refetchThreadState = useCallback(async (activeThreadId?: string) => {
+    // Prefer the caller-supplied thread id so first-submit hydration in a
+    // freshly-registered thread doesn't silently no-op on stale closure state.
+    const target = activeThreadId ?? _threadId;
+    if (!target) return;
     try {
       const client = getAPIClient(isMock);
-      const state = await client.threads.getState<AgentThreadState>(_threadId);
+      const state = await client.threads.getState<AgentThreadState>(target);
       if (state?.values) {
         // Re-hydrate authoritative messages/artifacts/etc. after the Gateway
         // run completes. We keep the shape aligned with useStream's values.
@@ -1102,7 +1105,7 @@ export function useThreadStream({
                   upsertTask(
                     fromMultiAgentTaskEvent(
                       classified.event,
-                      _threadId ?? undefined,
+                      threadId,
                     ),
                   );
                 } else {
@@ -1113,7 +1116,7 @@ export function useThreadStream({
                 setIsRunning(false);
                 setStreamingAi(null);
                 setLocalWorkflowShell(null);
-                void refetchThreadState();
+                void refetchThreadState(threadId);
                 void queryClient.invalidateQueries({
                   queryKey: ["threads", "search"],
                 });
