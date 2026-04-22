@@ -9,7 +9,20 @@ import { useThreadStream } from "./hooks";
 const useStreamMock = vi.fn();
 const useQueryClientMock = vi.fn(() => ({
   invalidateQueries: vi.fn(),
+  setQueriesData: vi.fn(),
 }));
+const streamRuntimeMessageMock =
+  vi.fn<
+    (
+      threadId: string,
+      body: unknown,
+      options?: { signal?: AbortSignal },
+    ) => AsyncGenerator<unknown, void, void>
+  >();
+
+async function* emptyGatewayStream(): AsyncGenerator<never, void, void> {
+  /* yields nothing */
+}
 const hydrateTasksMock = vi.fn();
 const resetTasksBySourceMock = vi.fn();
 const upsertTaskMock = vi.fn<(task: TaskUpsert) => void>();
@@ -40,6 +53,19 @@ function upsertMockedTask(task: TaskUpsert) {
   }
 }
 
+vi.mock("./runtime-stream", async () => {
+  const actual =
+    await vi.importActual<typeof import("./runtime-stream")>("./runtime-stream");
+  return {
+    ...actual,
+    streamRuntimeMessage: (
+      threadId: string,
+      body: unknown,
+      options?: { signal?: AbortSignal },
+    ) => streamRuntimeMessageMock(threadId, body, options),
+  };
+});
+
 vi.mock("@langchain/langgraph-sdk/react", () => ({
   useStream: (...args: unknown[]) => useStreamMock(...args),
 }));
@@ -51,7 +77,11 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 
 vi.mock("../api", () => ({
-  getAPIClient: vi.fn(() => ({})),
+  getAPIClient: vi.fn(() => ({
+    threads: {
+      getState: vi.fn(async () => ({ values: {} })),
+    },
+  })),
 }));
 
 vi.mock("../i18n/hooks", () => ({
@@ -160,6 +190,8 @@ describe("useThreadStream orchestration hydration", () => {
     hydrateTasksMock.mockReset();
     resetTasksBySourceMock.mockReset();
     upsertTaskMock.mockReset();
+    streamRuntimeMessageMock.mockReset();
+    streamRuntimeMessageMock.mockImplementation(() => emptyGatewayStream());
     resetMockedTasks();
     lastStreamOptions = {};
     latestThread = null;
@@ -834,16 +866,11 @@ describe("useThreadStream orchestration hydration", () => {
     rendered.cleanup();
   });
 
-  it("disables subgraph streaming for explicit workflow mode submissions", async () => {
+  it("routes explicit workflow mode submissions through the Gateway stream with workflow orchestration", async () => {
     const rendered = renderHook({
       assistantId: "entry_graph",
       requestedOrchestrationMode: "workflow",
     });
-
-    const submitMock = latestThread?.submit;
-    if (!submitMock) {
-      throw new Error("Expected submit mock to be available.");
-    }
 
     await act(async () => {
       await latestSendMessage?.("thread-1", {
@@ -852,10 +879,12 @@ describe("useThreadStream orchestration hydration", () => {
       });
     });
 
-    expect(submitMock).toHaveBeenCalledTimes(1);
-    expect(submitMock.mock.calls[0]?.[1]).toEqual(
+    expect(streamRuntimeMessageMock).toHaveBeenCalledTimes(1);
+    expect(streamRuntimeMessageMock.mock.calls[0]?.[0]).toBe("thread-1");
+    expect(streamRuntimeMessageMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
-        streamSubgraphs: false,
+        message: "Plan this in workflow mode.",
+        requested_orchestration_mode: "workflow",
       }),
     );
 
@@ -950,13 +979,11 @@ describe("useThreadStream orchestration hydration", () => {
         clarificationPrompt: undefined,
       }),
     );
-    expect(submitImpl).toHaveBeenCalledTimes(1);
-    expect((submitImpl.mock.calls[0] as unknown[] | undefined)?.[1]).toEqual(
+    expect(streamRuntimeMessageMock).toHaveBeenCalledTimes(1);
+    expect(streamRuntimeMessageMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
-        config: expect.objectContaining({
-          recursion_limit: 1000,
-        }),
-        context: expect.objectContaining({
+        requested_orchestration_mode: "workflow",
+        app_context: expect.objectContaining({
           workflow_clarification_resume: true,
           workflow_resume_run_id: "run-clarify-1",
           workflow_resume_task_id: "task-clarify-1",
@@ -1032,13 +1059,11 @@ describe("useThreadStream orchestration hydration", () => {
         clarificationPrompt: undefined,
       }),
     );
-    expect(submitImpl).toHaveBeenCalledTimes(1);
-    expect((submitImpl.mock.calls[0] as unknown[] | undefined)?.[1]).toEqual(
+    expect(streamRuntimeMessageMock).toHaveBeenCalledTimes(1);
+    expect(streamRuntimeMessageMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
-        config: expect.objectContaining({
-          recursion_limit: 1000,
-        }),
-        context: expect.objectContaining({
+        requested_orchestration_mode: "workflow",
+        app_context: expect.objectContaining({
           workflow_clarification_resume: true,
           workflow_resume_run_id: "run-store-1",
           workflow_resume_task_id: "task-store-1",
@@ -1087,13 +1112,11 @@ describe("useThreadStream orchestration hydration", () => {
     expect(latestThread?.values.workflow_stage_detail).toBe(
       "Resuming the meeting room booking",
     );
-    expect(submitImpl).toHaveBeenCalledTimes(1);
-    expect((submitImpl.mock.calls[0] as unknown[] | undefined)?.[1]).toEqual(
+    expect(streamRuntimeMessageMock).toHaveBeenCalledTimes(1);
+    expect(streamRuntimeMessageMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
-        config: expect.objectContaining({
-          recursion_limit: 1000,
-        }),
-        context: expect.objectContaining({
+        requested_orchestration_mode: "workflow",
+        app_context: expect.objectContaining({
           workflow_clarification_resume: true,
           workflow_resume_run_id: "run-clarify-2",
         }),

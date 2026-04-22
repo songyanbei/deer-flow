@@ -19,6 +19,233 @@ contracts.
 
 ## Open Items
 
+## [closed] Gateway runtime context does not forward app-level submit fields (Phase 1 D1.2 blocker)
+- Closed: 2026-04-21 by backend (commit pending on branch `claude/runtime-lg1x-phase1`).
+- Resolution:
+  - `backend/src/gateway/routers/runtime.py` now defines three Pydantic models
+    with `ConfigDict(extra="forbid")`: `ClarificationAnswer`,
+    `WorkflowClarificationResponse`, and `AppRuntimeContext` (8 fields:
+    `thinking_enabled`, `is_plan_mode`, `subagent_enabled`, `is_bootstrap`,
+    `workflow_clarification_resume`, `workflow_resume_run_id`,
+    `workflow_resume_task_id`, `workflow_clarification_response`).
+  - `MessageStreamRequest.app_context: AppRuntimeContext | None` is the
+    transport channel. Unknown keys at any nesting level surface as HTTP 422.
+  - `stream_runtime_message` now merges
+    `body.app_context.model_dump(exclude_none=True)` into the runtime
+    `context` FIRST, then overlays server-sourced identity/routing fields —
+    identity always wins by merge order. A belt-and-braces
+    `_IDENTITY_CONTEXT_KEYS` filter drops identity keys from `app_fields`
+    before the merge even though `extra="forbid"` already rejects them.
+  - `app_context` is per-run: it is NOT persisted into ThreadRegistry binding
+    metadata (verified by `test_app_context_fields_not_in_binding`).
+  - Contract tests: `backend/tests/test_runtime_app_context.py` (10 cases
+    across 4 classes — round-trip / absence / partial / 422-extra-forbid at
+    3 levels / identity defense for 5 keys / body identity still overridden
+    by identity-merge-last / not persisted). Regression suite stays green:
+    `test_runtime_app_context.py + test_runtime_router.py +
+    test_runtime_router_phase1.py + test_runtime_sse_projection.py +
+    test_runtime_service_channels.py` → **95/95 passed**.
+  - Frontend can now wire all 8 fields through the `app_context` channel.
+
+## [archived] Gateway runtime context does not forward app-level submit fields (Phase 1 D1.2 blocker)
+- Date: 2026-04-21
+- Related feature:
+  - `features/runtime-lg1x-trusted-context-submit.md` (D2 Gateway submit contract)
+  - `features/runtime-lg1x-trusted-context-submit-development-checklist.md` (D1.2)
+- Blocking area:
+  Frontend main chat submit migration from `/api/langgraph` to Gateway
+  `POST /api/runtime/threads/{id}/messages:stream`. The Gateway router only
+  forwards `requested_orchestration_mode` and `entry_agent` into the LangGraph
+  runtime `context`; every other app-level field that today's frontend passes
+  via `thread.submit(..., { context })` is silently dropped. Without a
+  transport for these fields, D1.2 cannot faithfully reproduce current main
+  chat behavior. The user has explicitly required a complete migration with no
+  deferred gaps, so D1.2 is paused until this gap is closed.
+- Current frontend assumption:
+  `frontend/src/core/threads/hooks.ts::sendMessage` currently calls
+  `thread.submit(threadId, input, { context: { ...settingsContext, ...extraContext, thinking_enabled, is_plan_mode, subagent_enabled, thread_id, workflow_clarification_resume, workflow_resume_run_id, workflow_resume_task_id }, config: { recursion_limit: 1000 } })`.
+  These fields reach the agent runtime through LangGraph native `context` and
+  drive middleware wiring / workflow resume logic.
+- What is missing from backend:
+  `backend/src/gateway/routers/runtime.py` (`stream_messages`, lines ~390–414)
+  builds `context` using only identity fields (`tenant_id`, `user_id`,
+  `username`, `thread_id`, `allowed_agents`, `group_key`, `thread_context`,
+  `auth_user`) plus `requested_orchestration_mode` and `agent_name`.
+  `MessageStreamRequest.metadata` is persisted to the `ThreadRegistry` binding
+  but is NOT merged into the LangGraph runtime `context`. The following
+  app-level fields that the current UI depends on are therefore lost:
+
+  1. `thinking_enabled` — drives thinking-capable model selection
+     (flash/thinking/pro/ultra modes) and the thinking code path in
+     `src/models/factory.py::create_chat_model`.
+  2. `is_plan_mode` — gates `TodoListMiddleware` (Plan mode + `write_todos`
+     tool) in `src/agents/lead_agent/agent.py`.
+  3. `subagent_enabled` — gates the `task` tool and `SubagentLimitMiddleware`.
+  4. `workflow_clarification_resume` — boolean flag consumed by
+     `workflow_resume.py` to recognize a clarification-resume turn.
+  5. `workflow_resume_run_id` — identifies which suspended workflow run the
+     clarification answer belongs to.
+  6. `workflow_resume_task_id` — identifies which suspended workflow task
+     within that run is being resumed.
+  7. `workflow_clarification_response` — payload carrying the user's
+     clarification answers (`{ answers: { [id]: { text } } }`), used by the
+     resume path to unblock `ClarificationMiddleware`-suspended tasks.
+  8. `is_bootstrap` — agent bootstrap marker for the
+     `/workspace/agents/[agent]/chats/new` path; distinguishes first-turn
+     bootstrap from regular sends.
+- Why this matters:
+  - Items 4–7 are the workflow clarification / resume lifecycle. Dropping
+    them means a user's clarification answer is submitted as a plain message;
+    the interrupted workflow task stays suspended forever and the run cannot
+    recover. This is a hard regression of the current workflow mode.
+  - Items 1–3 control main-chat model selection, plan mode, and subagent
+    delegation. Dropping them silently downgrades every main-chat submit to
+    the default non-thinking, non-plan, non-subagent path. Users flipping
+    mode toggles see no effect.
+  - Item 8 affects the agent bootstrap UX on `/agents/[agent]/chats/new`.
+  - Phase 1 D2 hard constraint "frontend must not fall back to
+    `/api/langgraph`" means these fields must travel through Gateway or the
+    Phase 1 feature goal is unmet.
+- Needed response:
+  Extend the Gateway submit contract so the frontend can pass the above 8
+  app-level fields and the router merges them into the LangGraph runtime
+  `context` dict (alongside the existing identity fields). Identity fields
+  (`tenant_id`, `user_id`, `thread_id`, `thread_context`, `auth_user`) must
+  still be sourced only from the server; the new channel must not be a
+  general-purpose `context` passthrough.
+- Suggested payload or API:
+  Add a server-validated app-runtime block to `MessageStreamRequest`, e.g.:
+
+  ```python
+  class AppRuntimeContext(BaseModel):
+      model_config = ConfigDict(extra="forbid")
+      thinking_enabled: bool | None = None
+      is_plan_mode: bool | None = None
+      subagent_enabled: bool | None = None
+      is_bootstrap: bool | None = None
+      workflow_clarification_resume: bool | None = None
+      workflow_resume_run_id: str | None = None
+      workflow_resume_task_id: str | None = None
+      workflow_clarification_response: WorkflowClarificationResponse | None = None
+
+  class WorkflowClarificationResponse(BaseModel):
+      model_config = ConfigDict(extra="forbid")
+      answers: dict[str, ClarificationAnswer]
+
+  class ClarificationAnswer(BaseModel):
+      model_config = ConfigDict(extra="forbid")
+      text: str
+
+  class MessageStreamRequest(BaseModel):
+      # ... existing fields ...
+      app_context: AppRuntimeContext | None = None
+  ```
+
+  Router behavior:
+  - Merge `body.app_context.model_dump(exclude_none=True)` into the runtime
+    `context` dict AFTER the identity fields are set, so identity cannot be
+    overwritten (explicit key-allow-list is also acceptable).
+  - `extra="forbid"` on both the app-context block and its nested types so
+    unknown keys surface as 422 instead of being silently dropped.
+  - Keep `MessageStreamRequest.extra="ignore"` on the top-level model so
+    stray identity fields from the browser continue to be dropped.
+  - Do not store `app_context` in `ThreadRegistry` binding metadata; it is
+    per-run state, not per-thread.
+- Acceptance:
+  - Contract tests assert each of the 8 fields round-trips into the runtime
+    `context` when supplied, and is absent when not supplied.
+  - Contract tests assert supplying an unknown key under `app_context`
+    returns 422 (prevents silent drops like the current regression).
+  - Contract tests assert supplying `tenant_id` / `user_id` / `thread_id` /
+    `thread_context` / `auth_user` inside `app_context` is rejected or
+    ignored (never overrides server-sourced identity).
+  - End-to-end regression: submit with `workflow_clarification_resume=true`
+    + `workflow_resume_run_id` + `workflow_resume_task_id` +
+    `workflow_clarification_response.answers` against a suspended workflow
+    task advances the task past `ClarificationMiddleware` (same behavior as
+    today's `/api/langgraph` path).
+- Notes:
+  - D1.1 (thread lifecycle) and the Gateway SSE projection (previous closed
+    entry) are unaffected.
+  - Phase 2 intervention resume still targets the dedicated
+    `/api/interventions/{id}/resolve` endpoint, not this submit path.
+  - Frontend will wire all 8 fields through the new `app_context` channel in
+    D1.2 once this contract lands; no fallback to `/api/langgraph` will be
+    introduced.
+
+## [closed] Gateway SSE event parity for main chat (Phase 1 D1.2 blocker)
+- Resolved: 2026-04-21 by backend commit `512938ea` (feat(runtime): Phase 1 D1.3
+  — extend Gateway SSE projection for main chat). All 8 items below are
+  projected; `state_snapshot`, allow-listed custom task events, and enriched
+  `run_completed` are documented in `collaboration/handoffs/backend-to-frontend.md`.
+  Frontend D1.2 adapter unblocked.
+
+- Date: 2026-04-21
+- Related feature:
+  - `features/runtime-lg1x-trusted-context-submit.md` (D2 Gateway SSE Contract For Main Chat)
+  - `features/runtime-lg1x-trusted-context-submit-development-checklist.md` (D1.2, D1.3)
+- Blocking area:
+  Frontend main chat submit migration from `/api/langgraph` to Gateway
+  `POST /api/runtime/threads/{id}/messages:stream`. Phase 1 D1.1 (thread
+  lifecycle) can proceed independently, but D1.2 (submit adapter) cannot ship
+  until the Gateway SSE projection exposes the fields listed below.
+- Current frontend assumption:
+  `useThreadStream` in `frontend/src/core/threads/hooks.ts` currently consumes
+  the native LangGraph `useStream` with `streamMode=["values","messages-tuple","custom"]`
+  plus `onLangChainEvent` / `onCustomEvent`. The UI state is driven by full
+  `values` snapshots, custom multi-agent task events, and `onFinish(state)`.
+- What is missing from backend:
+  `backend/src/gateway/runtime_service.py::iter_events` currently projects only
+  `ack`, `message_delta`, `message_completed`, `artifact_created`,
+  `intervention_requested`, `governance_created`, `run_completed`, `run_failed`.
+  The following signals that today's UI depends on are not projected:
+  1. `title` updates (auto-generated thread title) — needed by `ThreadTitle`.
+  2. `todos[]` updates — needed by `TodoList`.
+  3. `task_pool[]` updates (multi-agent tasks, including clarification/intervention fields) — needed by `task-panel.tsx`.
+  4. `workflow_stage` / `workflow_stage_detail` / `workflow_stage_updated_at` — needed by `WorkflowFooterBar` and `mergeThreadValuesWithPatch`.
+  5. `resolved_orchestration_mode` / `orchestration_reason` — needed by `OrchestrationSummary`.
+  6. Multi-agent custom task events: `task_started`, `task_running`,
+     `task_waiting_intervention`, `task_waiting_dependency`, `task_help_requested`,
+     `task_resumed`, `task_completed`, `task_failed`, `task_timed_out` — consumed by
+     `classifyTaskEvent` / `fromMultiAgentTaskEvent` / `fromLegacyTaskEvent` in `hooks.ts`.
+  7. A terminal full-state snapshot equivalent to LangGraph `onFinish(state)` —
+     today's `run_completed` carries only `{thread_id, run_id}`, not the final
+     `messages`/`title` used for desktop notifications and query invalidation.
+  8. Streaming human-message echo (so optimistic message swap works without
+     reading LangGraph thread state directly). Today `hooks.ts` swaps optimistic
+     messages once `thread.messages.length` grows; Gateway needs an equivalent
+     authoritative signal or a state-snapshot event.
+- Why this matters:
+  Feature spec D2 forbids frontend from falling back to `/api/langgraph` when
+  Gateway SSE is insufficient, and forbids subscribing to LangGraph `events`
+  stream mode. Without these fields, D1.2 either ships a degraded main chat
+  (no tasks panel, no workflow progress, no title refresh, no todos) or
+  violates the spec. Therefore D1.2 is paused until the backend extends the
+  projection.
+- Needed response:
+  Extend `iter_events` (or introduce additional event names) so the Gateway
+  SSE stream is sufficient to drive the current main chat UI without relying
+  on LangGraph native `values` / `custom` / `events` stream modes. At
+  minimum, surface the eight items above. Concrete schemas can be decided
+  jointly; the frontend is flexible on event names as long as payloads map
+  1:1 to the existing state/event shapes in `core/threads/hooks.ts`.
+- Suggested payload or API:
+  - Add an `SSE_STATE_SNAPSHOT` event emitted on each `values` chunk (or
+    periodic coalesced snapshots) with the fields listed in items 1–5 and
+    7 above, preserving LangGraph shapes.
+  - Mirror the multi-agent `custom` task events 1:1 under their existing
+    `type` names (item 6), or expose them under a single Gateway event
+    `task_event` with a `type` field.
+  - Extend `run_completed` payload with the final state summary (title,
+    last AI message, artifacts count) so `onFinish` behavior is preserved.
+- Notes:
+  - D1.1 (thread lifecycle via `POST /api/runtime/threads`) is unaffected
+    and proceeds now.
+  - Intervention / governance resume flows are out of scope for this
+    handoff (tracked by Phase 2 D2.1 / D2.2).
+  - Contract tests must continue to assert main chat submit payload does
+    not include the `events` stream mode (spec D2 hard constraint).
+
 ## [closed] Governance history lacks server-side time range filtering
 - Date: 2026-03-26
 - Related feature:

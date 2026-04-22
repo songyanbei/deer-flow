@@ -33,6 +33,53 @@ SSE_GOVERNANCE_CREATED = "governance_created"
 SSE_RUN_COMPLETED = "run_completed"
 SSE_RUN_FAILED = "run_failed"
 
+# Phase 1 D1.3 additions — projections the main chat UI needs to drive its
+# `ThreadTitle`, `TodoList`, `task-panel`, `WorkflowFooterBar`, and
+# `OrchestrationSummary` surfaces off the Gateway SSE alone. See
+# ``collaboration/handoffs/frontend-to-backend.md`` §"Gateway SSE event
+# parity for main chat (Phase 1 D1.2 blocker)".
+SSE_STATE_SNAPSHOT = "state_snapshot"
+
+
+# Fields lifted from each ``values`` chunk into the state_snapshot event.
+# This preserves LangGraph shapes so the frontend's existing reducers
+# (``mergeThreadValuesWithPatch``, task-context store, etc.) can apply the
+# payload 1:1 without a translation layer.
+_STATE_SNAPSHOT_FIELDS: tuple[str, ...] = (
+    "title",
+    "todos",
+    "task_pool",
+    "workflow_stage",
+    "workflow_stage_detail",
+    "workflow_stage_updated_at",
+    "resolved_orchestration_mode",
+    "orchestration_reason",
+)
+
+
+# Custom-channel event types projected from upstream ``get_stream_writer()``
+# payloads (stream_mode="custom"). These are pass-through — the Gateway keeps
+# the writer-chosen ``type`` as the SSE event name so the frontend's existing
+# task / workflow handlers can stay untouched. Only payloads whose ``type``
+# is in this allow-list are projected; unknown types are dropped to keep the
+# SSE contract stable and prevent agent-internal debug payloads from leaking.
+_ALLOWED_CUSTOM_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        # Subagent task lifecycle (task_tool.py + multi-agent extensions)
+        "task_started",
+        "task_running",
+        "task_waiting_intervention",
+        "task_waiting_dependency",
+        "task_help_requested",
+        "task_resumed",
+        "task_completed",
+        "task_failed",
+        "task_timed_out",
+        # Workflow stage transitions (planner/node.py)
+        "workflow_stage_changed",
+    }
+)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -283,7 +330,7 @@ async def start_stream(
             input=input_payload,
             config=run_config,
             context=dict(context),
-            stream_mode=["values", "messages"],
+            stream_mode=["values", "messages", "custom"],
             multitask_strategy="reject",
         )
         # Await the first chunk — this is where connection/auth/404 errors
@@ -319,17 +366,26 @@ async def iter_events(
     _last_ai_content: str | None = None
     _last_artifacts_count: int = 0
     _emitted_intervention_ids: set[str] = set()
+    # D1.3 state_snapshot dedupe — holds the last projected snapshot dict so
+    # identical consecutive chunks don't produce redundant SSE frames.
+    _last_snapshot: dict[str, Any] = {}
+    # Terminal state captured from the final values chunk, used to enrich the
+    # ``run_completed`` payload so the frontend's ``onFinish`` equivalent can
+    # trigger desktop notifications and query invalidation without a separate
+    # ``GET /threads/{id}`` round-trip.
+    _final_snapshot: dict[str, Any] = {}
 
     yield _format_sse(SSE_ACK, {"thread_id": thread_id})
 
     def _process_chunk(chunk: Any) -> list[str]:
-        nonlocal run_id, _last_ai_content, _last_artifacts_count
+        nonlocal run_id, _last_ai_content, _last_artifacts_count, _last_snapshot, _final_snapshot
         frames: list[str] = []
         events = _normalize_stream_event(
             chunk, thread_id, run_id,
             _last_ai_content=_last_ai_content,
             _last_artifacts_count=_last_artifacts_count,
             _emitted_intervention_ids=_emitted_intervention_ids,
+            _last_snapshot=_last_snapshot,
         )
         for event_name, event_data in events:
             if event_data and event_data.get("run_id"):
@@ -339,6 +395,15 @@ async def iter_events(
             if event_name == SSE_ARTIFACT_CREATED:
                 _last_artifacts_count = event_data.get("_artifacts_count", _last_artifacts_count)
                 event_data.pop("_artifacts_count", None)
+            if event_name == SSE_STATE_SNAPSHOT:
+                # Refresh the dedupe baseline AND stash the latest snapshot
+                # for the terminal run_completed payload.
+                _last_snapshot = {k: event_data.get(k) for k in _STATE_SNAPSHOT_FIELDS if k in event_data}
+                _final_snapshot = dict(_last_snapshot)
+                if "artifacts_count" in event_data:
+                    _final_snapshot["artifacts_count"] = event_data["artifacts_count"]
+                if "messages_count" in event_data:
+                    _final_snapshot["messages_count"] = event_data["messages_count"]
             frames.append(_format_sse(event_name, event_data))
         return frames
 
@@ -354,7 +419,12 @@ async def iter_events(
                 for frame in _process_chunk(chunk):
                     yield frame
 
-        yield _format_sse(SSE_RUN_COMPLETED, {"thread_id": thread_id, "run_id": run_id})
+        completed_payload: dict[str, Any] = {"thread_id": thread_id, "run_id": run_id}
+        if _final_snapshot:
+            completed_payload["final_state"] = _final_snapshot
+        if _last_ai_content:
+            completed_payload["last_ai_content"] = _last_ai_content
+        yield _format_sse(SSE_RUN_COMPLETED, completed_payload)
 
     except Exception as exc:
         logger.error("[RuntimeService] Stream error for thread '%s': %s", thread_id, exc)
@@ -373,6 +443,7 @@ def _normalize_stream_event(
     _last_ai_content: str | None = None,
     _last_artifacts_count: int = 0,
     _emitted_intervention_ids: set[str] | None = None,
+    _last_snapshot: dict[str, Any] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Map a raw LangGraph stream chunk to a list of stable (event_name, payload) pairs.
 
@@ -388,12 +459,24 @@ def _normalize_stream_event(
     base = {"thread_id": thread_id, "run_id": current_run_id}
 
     if event == "values":
-        return _handle_values_event(data, base, _last_ai_content, _last_artifacts_count, _emitted_intervention_ids)
+        return _handle_values_event(
+            data,
+            base,
+            _last_ai_content,
+            _last_artifacts_count,
+            _emitted_intervention_ids,
+            _last_snapshot,
+        )
 
     # langgraph_sdk stream_mode="messages" yields events like:
     #   "messages/partial" (streaming chunks) and "messages/complete" (finished messages)
     if event.startswith("messages"):
         return _handle_messages_event(event, data, base)
+
+    # langgraph_sdk stream_mode="custom" yields writer payloads dispatched via
+    # ``get_stream_writer()`` from task_tool / planner / router / executor.
+    if event == "custom":
+        return _handle_custom_event(data, base)
 
     # Unknown event type — skip
     return []
@@ -405,12 +488,40 @@ def _handle_values_event(
     last_ai_content: str | None,
     last_artifacts_count: int,
     emitted_intervention_ids: set[str] | None = None,
+    last_snapshot: dict[str, Any] | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
     """Extract stable events from a full state snapshot."""
     if not isinstance(data, dict):
         return []
 
     results: list[tuple[str, dict[str, Any]]] = []
+
+    # D1.3 — project the main-chat-relevant portion of the values snapshot
+    # into a ``state_snapshot`` SSE event. Only fields listed in
+    # ``_STATE_SNAPSHOT_FIELDS`` are forwarded, and only when the projected
+    # subset differs from the previously emitted one, so identical
+    # consecutive chunks don't flood the client. Preserves LangGraph shapes.
+    projected = {k: data[k] for k in _STATE_SNAPSHOT_FIELDS if k in data}
+    if projected and projected != (last_snapshot or {}):
+        snapshot_payload = {**base, **projected}
+        # Enrich with derived scalars the frontend needs for optimistic
+        # message swap and artifact counters (item 8 / item 7 of the
+        # frontend-to-backend handoff).
+        messages_list = data.get("messages")
+        if isinstance(messages_list, list):
+            snapshot_payload["messages_count"] = len(messages_list)
+            # Surface the latest human message id so the frontend can swap
+            # its optimistic placeholder without reading LangGraph state.
+            for msg in reversed(messages_list):
+                if isinstance(msg, dict) and msg.get("type") == "human":
+                    msg_id = msg.get("id")
+                    if msg_id:
+                        snapshot_payload["last_human_message_id"] = msg_id
+                    break
+        artifacts_list = data.get("artifacts")
+        if isinstance(artifacts_list, list):
+            snapshot_payload["artifacts_count"] = len(artifacts_list)
+        results.append((SSE_STATE_SNAPSHOT, snapshot_payload))
 
     # Check for new AI message (deduplicate against last seen content)
     messages = data.get("messages") or []
@@ -484,6 +595,47 @@ def _handle_values_event(
             }))
 
     return results
+
+
+def _handle_custom_event(
+    data: Any,
+    base: dict[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Project a writer-dispatched custom payload to a stable SSE event.
+
+    Writer payloads always carry a string ``type`` field naming the event
+    (e.g. ``task_started``, ``workflow_stage_changed``). The Gateway keeps
+    that name as the SSE event name and merges the rest of the payload with
+    the standard ``{thread_id, run_id}`` base so the frontend can correlate
+    the event back to its run without depending on side-channel metadata.
+
+    Only types in ``_ALLOWED_CUSTOM_EVENT_TYPES`` are forwarded — this keeps
+    the SSE contract small and prevents ad-hoc debug payloads from agent
+    code leaking into the external platform stream.
+    """
+    if not isinstance(data, dict):
+        return []
+
+    event_type = data.get("type")
+    if not isinstance(event_type, str) or event_type not in _ALLOWED_CUSTOM_EVENT_TYPES:
+        return []
+
+    # Strip the ``type`` key from the forwarded payload — it's now carried by
+    # the SSE ``event:`` header. Keep every other field as-is; they're already
+    # primitive JSON values produced by trusted agent code.
+    projected = {k: v for k, v in data.items() if k != "type"}
+
+    # Merge base last so per-event thread_id/run_id wins even if a writer
+    # accidentally included a stale one. ``None`` run_id is intentionally kept
+    # — the first few writer events may fire before the Gateway has captured
+    # run_id from a values/messages chunk, and the frontend already tolerates
+    # it (it backfills from later events).
+    payload: dict[str, Any] = {**projected, **base}
+    # Preserve writer-supplied run_id when Gateway hasn't captured one yet.
+    if base.get("run_id") is None and projected.get("run_id"):
+        payload["run_id"] = projected["run_id"]
+
+    return [(event_type, payload)]
 
 
 def _handle_messages_event(

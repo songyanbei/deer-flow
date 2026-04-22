@@ -21,6 +21,13 @@ import type { TaskViewModel } from "../tasks/types";
 import type { UploadedFileInfo } from "../uploads";
 import { uploadFiles } from "../uploads";
 
+import {
+  RuntimeStreamHttpError,
+  streamRuntimeMessage,
+  type RuntimeAppContext,
+  type RuntimeStreamEvent,
+  type RuntimeStreamRequest,
+} from "./runtime-stream";
 import type { AgentThread, AgentThreadState } from "./types";
 
 export type ToolEndEvent = {
@@ -476,8 +483,17 @@ export function useThreadStream({
   const hydratedRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (_threadId && _threadId !== threadId) {
-      setThreadId(threadId ?? null);
+    // Sync the internal ``_threadId`` to the outer ``threadId`` prop whenever
+    // they disagree. This covers three cases:
+    //   1. initial null → real id (new-thread flow where Gateway issues the
+    //      id after mount — without this sync, ``useStream`` hydration, the
+    //      ``refetchThreadState`` call, and task-event thread attribution
+    //      would stay stuck on the initial null value).
+    //   2. real id → different real id (navigating between threads).
+    //   3. real id → undefined (resetting for a fresh new-thread session).
+    const next = threadId ?? null;
+    if (next !== _threadId) {
+      setThreadId(next);
       startedRef.current = false;
     }
   }, [_threadId, threadId]);
@@ -696,6 +712,63 @@ export function useThreadStream({
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   const prevMsgCountRef = useRef(thread.messages.length);
 
+  // ── Gateway SSE live-run state ────────────────────────────────────
+  // Phase 1 D1.2: main chat submits go through the Gateway
+  // ``POST /api/runtime/threads/{id}/messages:stream`` endpoint. The SSE
+  // consumer drives this local state; ``useStream`` is kept only for
+  // initial thread hydration (``fetchStateHistory``) and never submits.
+  const [liveValuesPatch, setLiveValuesPatch] = useState<
+    Partial<AgentThreadState>
+  >({});
+  const [streamingAi, setStreamingAi] = useState<{
+    id: string;
+    content: string;
+  } | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const refetchThreadState = useCallback(async (activeThreadId?: string) => {
+    // Prefer the caller-supplied thread id so first-submit hydration in a
+    // freshly-registered thread doesn't silently no-op on stale closure state.
+    const target = activeThreadId ?? _threadId;
+    if (!target) return;
+    try {
+      const client = getAPIClient(isMock);
+      const state = await client.threads.getState<AgentThreadState>(target);
+      if (state?.values) {
+        // Re-hydrate authoritative messages/artifacts/etc. after the Gateway
+        // run completes. We keep the shape aligned with useStream's values.
+        setLiveValuesPatch((prev) => ({
+          ...prev,
+          messages: state.values.messages ?? prev.messages,
+          artifacts: state.values.artifacts ?? prev.artifacts,
+          title: state.values.title ?? prev.title,
+        }));
+      }
+    } catch {
+      // Hydration failures are non-fatal; state_snapshot events already
+      // carried the primary fields needed by the UI surfaces.
+    }
+  }, [_threadId, isMock]);
+
+  useEffect(() => {
+    // New thread id → discard any in-flight Gateway run and reset live state.
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setLiveValuesPatch({});
+    setStreamingAi(null);
+    setIsRunning(false);
+  }, [_threadId]);
+
+  useEffect(() => {
+    return () => {
+      // Unmount guard: abort any in-flight Gateway stream.
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
   useEffect(() => {
     if (
       optimisticMessages.length > 0 &&
@@ -880,55 +953,224 @@ export function useThreadStream({
           }
         }
 
-        const filesForSubmit: FileInMessage[] = uploadedFileInfo.map(
-          (info) => ({
-            filename: info.filename,
-            size: info.size,
-            path: info.virtual_path,
-            status: "uploaded" as const,
-          }),
+        // ── Build Gateway submit payload ────────────────────────────
+        // App-level runtime flags travel through ``app_context`` (validated
+        // server-side with ``extra="forbid"``). Identity fields are never
+        // sent from the browser — Gateway injects them from the session.
+        const isBootstrapAgent =
+          typeof extraContext?.is_bootstrap === "boolean"
+            ? extraContext.is_bootstrap
+            : undefined;
+        const workflowClarificationAnswers = extractClarificationAnswers(
+          extraContext?.workflow_clarification_response,
         );
 
-        await thread.submit(
-          {
-            messages: [
-              {
-                type: "human",
-                content: [
-                  {
-                    type: "text",
-                    text,
-                  },
-                ],
-                additional_kwargs:
-                  filesForSubmit.length > 0 ? { files: filesForSubmit } : {},
+        const appContext: RuntimeAppContext = {};
+        if (context.mode === "flash") {
+          appContext.thinking_enabled = false;
+        } else if (
+          context.mode === "thinking" ||
+          context.mode === "pro" ||
+          context.mode === "ultra"
+        ) {
+          appContext.thinking_enabled = true;
+        }
+        if (context.mode === "pro" || context.mode === "ultra") {
+          appContext.is_plan_mode = true;
+        }
+        if (context.mode === "ultra") {
+          appContext.subagent_enabled = true;
+        }
+        if (isBootstrapAgent !== undefined) {
+          appContext.is_bootstrap = isBootstrapAgent;
+        }
+        if (isClarificationResume) {
+          appContext.workflow_clarification_resume = true;
+          if (currentRunId) appContext.workflow_resume_run_id = currentRunId;
+          if (clarificationResumeTaskId) {
+            appContext.workflow_resume_task_id = clarificationResumeTaskId;
+          }
+          if (workflowClarificationAnswers) {
+            appContext.workflow_clarification_response = {
+              answers: workflowClarificationAnswers,
+            };
+          }
+        }
+
+        const humanContent = text ? [{ type: "text" as const, text }] : "";
+        const humanAdditionalKwargs: Record<string, unknown> =
+          uploadedFileInfo.length > 0
+            ? {
+                files: uploadedFileInfo.map((info) => ({
+                  filename: info.filename,
+                  size: info.size,
+                  path: info.virtual_path,
+                  status: "uploaded" as const,
+                })),
+              }
+            : {};
+        // Upload-annotated messages go via the message text — file metadata
+        // reaches the agent through ``uploads`` directory on the sandbox.
+        // Gateway request body only carries the text.
+        const requestedMode = context.requested_orchestration_mode;
+        const agentName = context.agent_name;
+        const body: RuntimeStreamRequest = {
+          message: text,
+          app_context:
+            Object.keys(appContext).length > 0 ? appContext : undefined,
+          requested_orchestration_mode:
+            requestedMode === "auto" ||
+            requestedMode === "leader" ||
+            requestedMode === "workflow"
+              ? requestedMode
+              : undefined,
+          entry_agent:
+            typeof agentName === "string" && agentName ? agentName : undefined,
+        };
+        void humanContent;
+        void humanAdditionalKwargs;
+        void shouldStreamSubgraphs;
+
+        // Start the Gateway SSE stream with a fresh AbortController.
+        abortControllerRef.current?.abort();
+        const abortController = new AbortController();
+        abortControllerRef.current = abortController;
+        setIsRunning(true);
+        setStreamingAi(null);
+
+        let runFailed = false;
+        let lastRunId: string | null = null;
+
+        try {
+          const iter = streamRuntimeMessage(threadId, body, {
+            signal: abortController.signal,
+          });
+
+          for await (const event of iter) {
+            if (abortController.signal.aborted) break;
+            lastRunId = event.data.run_id ?? lastRunId;
+            applyGatewayEvent({
+              event,
+              onStateSnapshot: (patch, customPatch) => {
+                setLiveValuesPatch((prev) => ({ ...prev, ...patch }));
+                if (customPatch) {
+                  setEventPatch((current) => {
+                    const currentRunIdLocal =
+                      current.run_id ?? thread.values.run_id ?? null;
+                    const incomingRunIdLocal = customPatch.run_id ?? null;
+                    if (
+                      currentRunIdLocal !== null &&
+                      incomingRunIdLocal !== null &&
+                      currentRunIdLocal !== incomingRunIdLocal
+                    ) {
+                      staleRunIdsRef.current.add(currentRunIdLocal);
+                    }
+                    return mergeThreadEventPatch(
+                      current,
+                      customPatch,
+                      staleRunIdsRef.current,
+                    );
+                  });
+                }
               },
-            ],
-          },
-          {
-            threadId: threadId,
-            streamSubgraphs: shouldStreamSubgraphs,
-            streamResumable: true,
-            streamMode: ["values", "messages-tuple", "custom"],
-            config: {
-              recursion_limit: 1000,
-            },
-            context: {
-              ...extraContext,
-              ...context,
-              thinking_enabled: context.mode !== "flash",
-              is_plan_mode: context.mode === "pro" || context.mode === "ultra",
-              subagent_enabled: context.mode === "ultra",
-              thread_id: threadId,
-              workflow_clarification_resume: isClarificationResume || undefined,
-              workflow_resume_run_id:
-                isClarificationResume ? currentRunId ?? undefined : undefined,
-              workflow_resume_task_id:
-                isClarificationResume ? clarificationResumeTaskId : undefined,
-            },
-          },
-        );
-        void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
+              onMessageDelta: (deltaContent) => {
+                setStreamingAi((prev) => ({
+                  id: prev?.id ?? `live-ai-${Date.now()}`,
+                  content: (prev?.content ?? "") + deltaContent,
+                }));
+              },
+              onMessageCompleted: () => {
+                setStreamingAi(null);
+              },
+              onArtifactCreated: (artifact) => {
+                setLiveValuesPatch((prev) => {
+                  const existing =
+                    prev.artifacts ?? thread.values.artifacts ?? [];
+                  const candidateUrl = artifact.artifact_url;
+                  const artifactKey =
+                    typeof candidateUrl === "string" && candidateUrl
+                      ? candidateUrl
+                      : JSON.stringify(artifact);
+                  if (existing.includes(artifactKey)) return prev;
+                  return {
+                    ...prev,
+                    artifacts: [...existing, artifactKey],
+                  };
+                });
+              },
+              onCustomTaskEvent: (taskEvent) => {
+                const classified = classifyTaskEvent(taskEvent);
+                if (!classified) return;
+                if (classified.kind === "multi_agent") {
+                  upsertTask(
+                    fromMultiAgentTaskEvent(
+                      classified.event,
+                      threadId,
+                    ),
+                  );
+                } else {
+                  upsertTask(fromLegacyTaskEvent(classified.event));
+                }
+              },
+              onRunCompleted: () => {
+                setIsRunning(false);
+                setStreamingAi(null);
+                setLocalWorkflowShell(null);
+                void refetchThreadState(threadId);
+                void queryClient.invalidateQueries({
+                  queryKey: ["threads", "search"],
+                });
+              },
+              onRunFailed: (errorText) => {
+                runFailed = true;
+                setIsRunning(false);
+                setStreamingAi(null);
+                setLocalWorkflowShell(null);
+                toast.error(errorText || "Runtime execution failed");
+              },
+            });
+          }
+
+          // Fire the onFinish callback with the best-effort merged state so
+          // downstream (notifications, query invalidation) matches the
+          // legacy useStream.onFinish behavior.
+          if (!runFailed && !abortController.signal.aborted) {
+            const finishedValues: AgentThreadState = {
+              ...thread.values,
+              ...liveValuesPatch,
+              run_id: lastRunId ?? thread.values.run_id ?? null,
+            };
+            onFinish?.(finishedValues);
+          }
+        } catch (error) {
+          if (
+            error instanceof DOMException &&
+            error.name === "AbortError"
+          ) {
+            // user-initiated stop — silent.
+            setIsRunning(false);
+            setStreamingAi(null);
+          } else if (error instanceof RuntimeStreamHttpError) {
+            setIsRunning(false);
+            setStreamingAi(null);
+            setLocalWorkflowShell(null);
+            setOptimisticMessages([]);
+            toast.error(
+              `Gateway rejected the submission (${error.status})${error.detail ? `: ${error.detail}` : ""}`,
+            );
+            throw error;
+          } else {
+            setIsRunning(false);
+            setStreamingAi(null);
+            setLocalWorkflowShell(null);
+            setOptimisticMessages([]);
+            throw error;
+          }
+        } finally {
+          if (abortControllerRef.current === abortController) {
+            abortControllerRef.current = null;
+          }
+        }
       } catch (error) {
         setLocalWorkflowShell(null);
         setOptimisticMessages([]);
@@ -946,22 +1188,196 @@ export function useThreadStream({
       eventPatch.run_id,
       mergedValues,
       upsertTask,
+      _threadId,
+      liveValuesPatch,
+      refetchThreadState,
+      onFinish,
     ],
   );
 
-  const mergedThread =
-    optimisticMessages.length > 0
-      ? ({
-          ...thread,
-          values: mergedValues,
-          messages: [...thread.messages, ...optimisticMessages],
-        } as typeof thread)
-      : ({
-          ...thread,
-          values: mergedValues,
-        } as typeof thread);
+  const stop = useCallback(async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsRunning(false);
+    setStreamingAi(null);
+  }, []);
+
+  const liveStreamingMessages = useMemo<Message[]>(() => {
+    if (!streamingAi) return [];
+    return [
+      {
+        type: "ai",
+        id: streamingAi.id,
+        content: streamingAi.content,
+        additional_kwargs: {},
+      } as Message,
+    ];
+  }, [streamingAi]);
+
+  const mergedThread = useMemo(() => {
+    const baseMessages = liveValuesPatch.messages ?? thread.messages;
+    const extraMessages = [...optimisticMessages, ...liveStreamingMessages];
+    return {
+      ...thread,
+      values: {
+        ...mergedValues,
+        ...liveValuesPatch,
+        // mergedValues wins for workflow-stage-sensitive fields because it
+        // already includes the local shell + event-patch logic.
+        resolved_orchestration_mode: mergedValues.resolved_orchestration_mode,
+        orchestration_reason: mergedValues.orchestration_reason,
+        workflow_stage: mergedValues.workflow_stage,
+        workflow_stage_detail: mergedValues.workflow_stage_detail,
+        workflow_stage_updated_at: mergedValues.workflow_stage_updated_at,
+        run_id: mergedValues.run_id ?? liveValuesPatch.run_id ?? null,
+      },
+      messages:
+        extraMessages.length > 0
+          ? [...baseMessages, ...extraMessages]
+          : baseMessages,
+      isLoading: isRunning || thread.isLoading,
+      stop,
+    } as typeof thread;
+  }, [
+    isRunning,
+    liveStreamingMessages,
+    liveValuesPatch,
+    mergedValues,
+    optimisticMessages,
+    stop,
+    thread,
+  ]);
 
   return [mergedThread, sendMessage] as const;
+}
+
+function extractClarificationAnswers(
+  value: unknown,
+): Record<string, { text: string }> | null {
+  if (typeof value !== "object" || value === null) return null;
+  const container = value as { answers?: unknown };
+  if (typeof container.answers !== "object" || container.answers === null) {
+    return null;
+  }
+  const result: Record<string, { text: string }> = {};
+  for (const [key, raw] of Object.entries(
+    container.answers as Record<string, unknown>,
+  )) {
+    if (typeof raw === "object" && raw !== null) {
+      const candidate = raw as { text?: unknown };
+      if (typeof candidate.text === "string") {
+        result[key] = { text: candidate.text };
+      }
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+type GatewayEventApplyOptions = {
+  event: RuntimeStreamEvent;
+  onStateSnapshot: (
+    patch: Partial<AgentThreadState>,
+    customPatch: ThreadEventPatch | null,
+  ) => void;
+  onMessageDelta: (delta: string) => void;
+  onMessageCompleted: () => void;
+  onArtifactCreated: (artifact: Record<string, unknown>) => void;
+  onCustomTaskEvent: (payload: Record<string, unknown>) => void;
+  onRunCompleted: () => void;
+  onRunFailed: (error: string) => void;
+};
+
+const CUSTOM_TASK_EVENT_NAMES = new Set<RuntimeStreamEvent["type"]>([
+  "task_started",
+  "task_running",
+  "task_waiting_intervention",
+  "task_waiting_dependency",
+  "task_help_requested",
+  "task_resumed",
+  "task_completed",
+  "task_failed",
+  "task_timed_out",
+  "workflow_stage_changed",
+]);
+
+function applyGatewayEvent(options: GatewayEventApplyOptions) {
+  const { event } = options;
+  switch (event.type) {
+    case "ack":
+      return;
+    case "state_snapshot": {
+      const snapshot = event.data;
+      const patch: Partial<AgentThreadState> = {};
+      if (snapshot.title !== undefined) {
+        patch.title = snapshot.title ?? "";
+      }
+      if (snapshot.todos !== undefined) {
+        patch.todos = snapshot.todos as AgentThreadState["todos"];
+      }
+      if (snapshot.task_pool !== undefined) {
+        patch.task_pool = snapshot.task_pool as AgentThreadState["task_pool"];
+      }
+      if (snapshot.workflow_stage !== undefined) {
+        patch.workflow_stage =
+          snapshot.workflow_stage as AgentThreadState["workflow_stage"];
+      }
+      if (snapshot.workflow_stage_detail !== undefined) {
+        patch.workflow_stage_detail = snapshot.workflow_stage_detail ?? null;
+      }
+      if (snapshot.workflow_stage_updated_at !== undefined) {
+        patch.workflow_stage_updated_at =
+          snapshot.workflow_stage_updated_at ?? null;
+      }
+      if (snapshot.resolved_orchestration_mode !== undefined) {
+        patch.resolved_orchestration_mode =
+          snapshot.resolved_orchestration_mode as AgentThreadState["resolved_orchestration_mode"];
+      }
+      if (snapshot.orchestration_reason !== undefined) {
+        patch.orchestration_reason = snapshot.orchestration_reason ?? null;
+      }
+      if (snapshot.run_id) {
+        patch.run_id = snapshot.run_id;
+      }
+
+      const customPatch = extractThreadEventPatch({
+        ...snapshot,
+        type: "state_snapshot",
+      });
+      options.onStateSnapshot(patch, customPatch);
+      return;
+    }
+    case "message_delta":
+      options.onMessageDelta(event.data.content ?? "");
+      return;
+    case "message_completed":
+      options.onMessageCompleted();
+      return;
+    case "artifact_created":
+      options.onArtifactCreated(event.data.artifact ?? {});
+      return;
+    case "run_completed":
+      options.onRunCompleted();
+      return;
+    case "run_failed":
+      options.onRunFailed(event.data.error || "");
+      return;
+    case "intervention_requested":
+    case "governance_created":
+      // Phase 2 targets — the state_snapshot task_pool/governance_queue
+      // projection still carries the authoritative fields consumed by
+      // intervention/governance cards, so Phase 1 UI remains correct.
+      return;
+    default:
+      if (CUSTOM_TASK_EVENT_NAMES.has(event.type)) {
+        options.onCustomTaskEvent({
+          ...(event.data as Record<string, unknown>),
+          type: event.type,
+        });
+      }
+      return;
+  }
 }
 
 export type ClassifiedTaskEvent =
