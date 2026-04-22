@@ -1065,19 +1065,32 @@ export function useThreadStream({
         // Flagging it stale would drop that legitimate update. The
         // ``setEventPatch`` transition detection covers the "new run_id
         // arrives" case even when liveValuesPatch was previously empty.
-        const previousLiveRunId = liveValuesPatch.run_id ?? null;
-        if (previousLiveRunId !== null) {
-          staleRunIdsRef.current.add(previousLiveRunId);
-          // Scope the task reset to the previous run so any hydrated task
-          // pool from the last workflow submit is cleared before the new
-          // snapshot lands; prevents a momentary flash of stale subtasks.
-          resetTasksBySource("multi_agent", previousLiveRunId);
+        //
+        // Clarification resume reuses the *existing* workflow run_id on the
+        // backend (selector_node / orchestration_selector both return the
+        // live run's id — see
+        // test_orchestration_selector_reuses_run_id_for_workflow_clarification_resume
+        // and test_selector_node_reuses_existing_workflow_run_when_resume_is_explicitly_requested).
+        // Adding that run_id to ``staleRunIdsRef`` here would then cause the
+        // next state_snapshot (same run_id) to be dropped at reception. In
+        // that case, skip the stale-add and the task-scope reset and keep
+        // the live slice intact — the resume is a continuation of the same
+        // run, not a cross-run transition.
+        if (!isClarificationResume) {
+          const previousLiveRunId = liveValuesPatch.run_id ?? null;
+          if (previousLiveRunId !== null) {
+            staleRunIdsRef.current.add(previousLiveRunId);
+            // Scope the task reset to the previous run so any hydrated task
+            // pool from the last workflow submit is cleared before the new
+            // snapshot lands; prevents a momentary flash of stale subtasks.
+            resetTasksBySource("multi_agent", previousLiveRunId);
+          }
+          setLiveValuesPatch((prev) => ({
+            messages: prev.messages,
+            artifacts: prev.artifacts,
+            title: prev.title,
+          }));
         }
-        setLiveValuesPatch((prev) => ({
-          messages: prev.messages,
-          artifacts: prev.artifacts,
-          title: prev.title,
-        }));
         // Seed ``liveThreadId`` from the caller-supplied id so the first
         // hydration pass inside this submit has a thread id even before
         // ``state_snapshot.thread_id`` arrives or ``_threadId`` catches up

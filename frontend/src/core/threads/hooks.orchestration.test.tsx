@@ -1533,4 +1533,85 @@ describe("useThreadStream orchestration hydration", () => {
 
     rendered.cleanup();
   });
+
+  it("does not flag the live run_id stale on clarification resume so same-run snapshots still apply", async () => {
+    // Backend reuses the existing workflow run_id on clarification resume
+    // (selector_node / orchestration_selector — see
+    // test_orchestration_selector_reuses_run_id_for_workflow_clarification_resume
+    // and test_selector_node_reuses_existing_workflow_run_when_resume_is_explicitly_requested).
+    // If the submit-start reset flagged that run_id as stale, the next
+    // state_snapshot (same run_id) would be dropped at reception and the
+    // resumed stage would never propagate to the UI.
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      requestedOrchestrationMode: "workflow",
+      threadValues: {
+        resolved_orchestration_mode: "workflow",
+        run_id: "run-clarify-resume-1",
+        workflow_stage: "executing",
+        workflow_stage_detail: "Booking the meeting room",
+        execution_state: "INTERRUPTED",
+        task_pool: [
+          {
+            task_id: "task-clarify-resume-1",
+            description: "Book the meeting room",
+            run_id: "run-clarify-resume-1",
+            assigned_agent: "meeting-agent",
+            status: "RUNNING",
+            status_detail: "@waiting_clarification",
+            clarification_prompt: "Which city should I use?",
+          },
+        ],
+      },
+    });
+
+    // Seed liveValuesPatch.run_id via a first state_snapshot so the
+    // submit-reset path would normally flag it stale.
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-clarify-resume-1",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "executing",
+          workflow_stage_detail: "Awaiting clarification",
+          workflow_stage_updated_at: "2026-03-13T11:00:00.000Z",
+        },
+      },
+    ]);
+
+    // Clarification resume submit: the backend reuses run-clarify-resume-1
+    // and emits a new state_snapshot for the same run advancing the stage.
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      streamEvents([
+        {
+          type: "state_snapshot",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-clarify-resume-1",
+            resolved_orchestration_mode: "workflow",
+            workflow_stage: "routing",
+            workflow_stage_detail: "Dispatching the resumed task",
+            workflow_stage_updated_at: "2026-03-13T11:05:00.000Z",
+          },
+        },
+      ]),
+    );
+
+    await act(async () => {
+      await latestSendMessage?.("thread-1", {
+        text: "Shenzhen",
+        files: [],
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-clarify-resume-1");
+    expect(latestThread?.values.workflow_stage).toBe("routing");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Dispatching the resumed task",
+    );
+
+    rendered.cleanup();
+  });
 });
