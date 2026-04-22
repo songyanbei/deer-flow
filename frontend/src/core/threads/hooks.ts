@@ -1052,7 +1052,57 @@ export function useThreadStream({
             applyGatewayEvent({
               event,
               onStateSnapshot: (patch, customPatch) => {
-                setLiveValuesPatch((prev) => ({ ...prev, ...patch }));
+                setLiveValuesPatch((prev) => {
+                  const prevRunId = prev.run_id ?? null;
+                  const incomingRunId = patch.run_id ?? null;
+
+                  // Drop state_snapshots from a run we've already superseded
+                  // — tracked in ``staleRunIdsRef`` by the eventPatch side
+                  // when a newer run_id rolled in. Without this, a late
+                  // late-arriving snapshot from run N-1 would clobber live
+                  // run N's workflow_stage / resolved_orchestration_mode
+                  // that now feed straight into ``mergedThread.values``.
+                  if (
+                    incomingRunId !== null &&
+                    staleRunIdsRef.current.has(incomingRunId)
+                  ) {
+                    return prev;
+                  }
+
+                  // Same-run out-of-order guard: a snapshot whose
+                  // ``workflow_stage_updated_at`` is older than what we
+                  // already have for this run is a straggler from an
+                  // earlier state. Keep the newer stage.
+                  const prevStamp =
+                    typeof prev.workflow_stage_updated_at === "string"
+                      ? prev.workflow_stage_updated_at
+                      : (typeof thread.values.workflow_stage_updated_at ===
+                            "string" &&
+                          (prevRunId === null ||
+                            prevRunId ===
+                              (thread.values.run_id ?? null))
+                          ? thread.values.workflow_stage_updated_at
+                          : null);
+                  const incomingStamp =
+                    typeof patch.workflow_stage_updated_at === "string"
+                      ? patch.workflow_stage_updated_at
+                      : null;
+                  const sameRun =
+                    incomingRunId !== null &&
+                    (prevRunId === incomingRunId ||
+                      (prevRunId === null &&
+                        (thread.values.run_id ?? null) === incomingRunId));
+                  if (
+                    sameRun &&
+                    prevStamp !== null &&
+                    incomingStamp !== null &&
+                    incomingStamp < prevStamp
+                  ) {
+                    return prev;
+                  }
+
+                  return { ...prev, ...patch };
+                });
                 if (customPatch) {
                   setEventPatch((current) => {
                     const currentRunIdLocal =
@@ -1223,14 +1273,35 @@ export function useThreadStream({
       values: {
         ...mergedValues,
         ...liveValuesPatch,
-        // mergedValues wins for workflow-stage-sensitive fields because it
-        // already includes the local shell + event-patch logic.
-        resolved_orchestration_mode: mergedValues.resolved_orchestration_mode,
-        orchestration_reason: mergedValues.orchestration_reason,
-        workflow_stage: mergedValues.workflow_stage,
-        workflow_stage_detail: mergedValues.workflow_stage_detail,
-        workflow_stage_updated_at: mergedValues.workflow_stage_updated_at,
-        run_id: mergedValues.run_id ?? liveValuesPatch.run_id ?? null,
+        // Gateway SSE ``state_snapshot`` is the authoritative source for
+        // workflow-stage-sensitive fields during a live run. ``mergedValues``
+        // (derived from ``thread.values`` + ``eventPatch`` via
+        // ``mergeThreadValuesWithPatch``) gates patch application on
+        // ``thread.isLoading``, which stays ``false`` after the Phase 1
+        // migration because main-chat submits no longer go through
+        // ``useStream``. That made live-run ``resolved_orchestration_mode``
+        // / ``workflow_stage`` invisible until a page refresh rehydrated
+        // ``thread.values`` from persisted state — symptom: clarification
+        // cards only surfaced after refresh. Prefer ``liveValuesPatch`` and
+        // fall back to ``mergedValues`` so persisted snapshots still win
+        // when the live patch is absent (refresh / new thread arriving with
+        // history).
+        resolved_orchestration_mode:
+          liveValuesPatch.resolved_orchestration_mode ??
+          mergedValues.resolved_orchestration_mode,
+        orchestration_reason:
+          liveValuesPatch.orchestration_reason ??
+          mergedValues.orchestration_reason,
+        workflow_stage:
+          liveValuesPatch.workflow_stage ?? mergedValues.workflow_stage,
+        workflow_stage_detail:
+          liveValuesPatch.workflow_stage_detail ??
+          mergedValues.workflow_stage_detail,
+        workflow_stage_updated_at:
+          liveValuesPatch.workflow_stage_updated_at ??
+          mergedValues.workflow_stage_updated_at,
+        run_id:
+          liveValuesPatch.run_id ?? mergedValues.run_id ?? null,
       },
       messages:
         extraMessages.length > 0

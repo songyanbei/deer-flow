@@ -356,13 +356,20 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: false,
     });
 
-    expect(latestThread?.values.resolved_orchestration_mode).toBeNull();
-    expect(latestThread?.values.orchestration_reason).toBeNull();
-    // Note: Gateway state_snapshot events persist `run_id` via liveValuesPatch,
-    // so the post-rerender run_id reflects the last streamed run rather than
-    // being cleared — this is a Phase 1 Gateway-SSE semantics change from the
-    // legacy onCustomEvent-only flow and is asserted in dedicated run-id
-    // replacement tests below.
+    // Post-Phase 1 semantics: Gateway state_snapshot writes
+    // resolved_orchestration_mode / orchestration_reason / run_id into
+    // liveValuesPatch, which takes precedence over ``thread.values`` in
+    // ``mergedThread.values``. This is required so workflow UI surfaces
+    // (clarification / intervention cards) appear during a live run
+    // before the backend-persisted state has rehydrated ``thread.values``.
+    // Stale/out-of-order guards live inside the onStateSnapshot setter
+    // (staleRunIdsRef + workflow_stage_updated_at ordering); see the
+    // run-replacement / out-of-order tests below.
+    expect(latestThread?.values.resolved_orchestration_mode).toBe("workflow");
+    expect(latestThread?.values.orchestration_reason).toBe(
+      "Detected multiple parallel subtasks.",
+    );
+    expect(latestThread?.values.run_id).toBe("run-3");
 
     rendered.cleanup();
   });
@@ -506,8 +513,14 @@ describe("useThreadStream orchestration hydration", () => {
       isLoading: false,
     });
 
-    expect(latestThread?.values.workflow_stage).toBeNull();
-    expect(latestThread?.values.workflow_stage_detail).toBeNull();
+    // Post-Phase 1 semantics: workflow_stage / workflow_stage_detail from
+    // Gateway state_snapshot survive a useStream rehydration that briefly
+    // returns null values. Stale-run guards (run replacement + timestamp
+    // ordering) still apply inside the onStateSnapshot setter.
+    expect(latestThread?.values.workflow_stage).toBe("planning");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Book the meeting room",
+    );
 
     rendered.cleanup();
   });
