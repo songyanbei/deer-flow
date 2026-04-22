@@ -126,6 +126,12 @@ type HarnessProps = {
   threadValues?: Record<string, unknown>;
   isLoading?: boolean;
   requestedOrchestrationMode?: "auto" | "leader" | "workflow";
+  // Override the ``threadId`` passed to ``useThreadStream``. Defaults to
+  // ``"thread-1"`` to preserve the historical harness contract; pass
+  // ``null`` to simulate the /workspace/chats/[id] first-submit window
+  // where the hook is invoked with ``threadId: undefined`` until
+  // ``onStart`` flips ``isNewThread`` to false.
+  threadIdOverride?: string | null;
 };
 
 let lastStreamOptions: Record<string, unknown> = {};
@@ -143,9 +149,13 @@ function renderHook(initialProps: HarnessProps) {
   let currentProps = initialProps;
 
   function Harness() {
+    const threadIdProp =
+      currentProps.threadIdOverride === null
+        ? undefined
+        : (currentProps.threadIdOverride ?? "thread-1");
     const [thread, sendMessage] = useThreadStream({
       assistantId: currentProps.assistantId,
-      threadId: "thread-1",
+      threadId: threadIdProp,
       context: {
         mode: "flash",
         requested_orchestration_mode:
@@ -1325,6 +1335,200 @@ describe("useThreadStream orchestration hydration", () => {
     expect(latestThread?.values.workflow_stage).toBe("acknowledged");
     expect(latestThread?.values.workflow_stage_detail).toBe(
       "Book the board room",
+    );
+
+    rendered.cleanup();
+  });
+
+  it("hydrates task_pool with the sendMessage thread id even when the hook's threadId prop is still undefined", async () => {
+    // Simulates /workspace/chats/[id] first-submit window: ``isNewThread``
+    // is still true, so ``useThreadStream`` is called with
+    // ``threadId: undefined``. The Gateway SSE stream fires before the
+    // prop-to-state sync catches up, and without the ``liveThreadId``
+    // fallback the hydrated task's ``threadId`` is ``undefined`` and
+    // ``message-list.tsx`` silently suppresses the intervention card.
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+      threadIdOverride: null,
+    });
+
+    hydrateTasksMock.mockClear();
+
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-live-1",
+          run_id: "run-live-1",
+          resolved_orchestration_mode: "workflow",
+          task_pool: [
+            {
+              task_id: "task-live-1",
+              description: "Please confirm the booking slot",
+              status: "WAITING_INTERVENTION",
+              clarification_prompt: "Morning or afternoon?",
+              run_id: "run-live-1",
+            },
+          ],
+        },
+      },
+    ]);
+
+    expect(hydrateTasksMock).toHaveBeenCalled();
+    const [firstHydrationCallArgs] = hydrateTasksMock.mock.calls;
+    expect(firstHydrationCallArgs).toBeDefined();
+    const hydratedTasks = firstHydrationCallArgs![0] as Array<{
+      id: string;
+      threadId?: string;
+    }>;
+    const clarificationTask = hydratedTasks.find(
+      (task) => task.id === "task-live-1",
+    );
+    expect(clarificationTask).toBeDefined();
+    // Fallback chain: _threadId (undefined here) → liveThreadId (set from
+    // the sendMessage threadId arg "thread-1", then refreshed to the
+    // snapshot's thread_id on receipt).
+    expect(clarificationTask?.threadId).toBeDefined();
+    expect(clarificationTask?.threadId).not.toBe("");
+
+    rendered.cleanup();
+  });
+
+  it("clears the live workflow slice at submit start so the previous run's stage does not leak into the new run", async () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+    });
+
+    // First run: populate liveValuesPatch with workflow_stage via SSE.
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-leak-1",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "summarizing",
+          workflow_stage_detail: "Finishing the first task",
+          workflow_stage_updated_at: "2026-03-13T10:10:00.000Z",
+        },
+      },
+    ]);
+
+    expect(latestThread?.values.workflow_stage).toBe("summarizing");
+    expect(latestThread?.values.run_id).toBe("run-leak-1");
+
+    // Second submit: gate the generator so we can observe state BEFORE
+    // the next state_snapshot arrives — this is the window where a stale
+    // workflow_stage would otherwise still be visible.
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      (async function* () {
+        await gate;
+        yield {
+          type: "state_snapshot",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-leak-2",
+            resolved_orchestration_mode: "workflow",
+            workflow_stage: "queued",
+            workflow_stage_detail: "Dispatching the next task",
+            workflow_stage_updated_at: "2026-03-13T10:20:00.000Z",
+          },
+        } as RuntimeStreamEvent;
+      })(),
+    );
+
+    let sendPromise: Promise<void> | undefined;
+    await act(async () => {
+      sendPromise = latestSendMessage?.("thread-1", {
+        text: "Kick off the next task",
+        files: [],
+      });
+      await Promise.resolve();
+    });
+
+    // Before the new state_snapshot arrives, the previous run's
+    // workflow_stage should already be cleared from the live slice.
+    expect(latestThread?.values.workflow_stage).not.toBe("summarizing");
+    expect(latestThread?.values.workflow_stage_detail).not.toBe(
+      "Finishing the first task",
+    );
+
+    resolveGate?.();
+    await act(async () => {
+      await sendPromise;
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-leak-2");
+    expect(latestThread?.values.workflow_stage).toBe("queued");
+
+    rendered.cleanup();
+  });
+
+  it("marks the previous run_id stale at submit start so a late snapshot from it is dropped", async () => {
+    const rendered = renderHook({
+      assistantId: "entry_graph",
+    });
+
+    // First run establishes run_id = run-stale-1 in liveValuesPatch.
+    await driveGatewayStream([
+      {
+        type: "state_snapshot",
+        data: {
+          thread_id: "thread-1",
+          run_id: "run-stale-1",
+          resolved_orchestration_mode: "workflow",
+          workflow_stage: "executing",
+          workflow_stage_detail: "First run executing",
+          workflow_stage_updated_at: "2026-03-13T10:30:00.000Z",
+        },
+      },
+    ]);
+
+    // Second submit: yields a fresh run-stale-2 state_snapshot, then a
+    // late snapshot from the superseded run-stale-1. The late snapshot
+    // should be dropped by the staleRunIdsRef guard seeded at submit.
+    streamRuntimeMessageMock.mockImplementationOnce(() =>
+      streamEvents([
+        {
+          type: "state_snapshot",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-stale-2",
+            resolved_orchestration_mode: "workflow",
+            workflow_stage: "acknowledged",
+            workflow_stage_detail: "Second run acknowledged",
+            workflow_stage_updated_at: "2026-03-13T10:40:00.000Z",
+          },
+        },
+        {
+          type: "state_snapshot",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-stale-1",
+            resolved_orchestration_mode: "workflow",
+            workflow_stage: "summarizing",
+            workflow_stage_detail: "Late event from the first run",
+            workflow_stage_updated_at: "2026-03-13T10:41:00.000Z",
+          },
+        },
+      ]),
+    );
+
+    await act(async () => {
+      await latestSendMessage?.("thread-1", {
+        text: "Second run",
+        files: [],
+      });
+    });
+
+    expect(latestThread?.values.run_id).toBe("run-stale-2");
+    expect(latestThread?.values.workflow_stage).toBe("acknowledged");
+    expect(latestThread?.values.workflow_stage_detail).toBe(
+      "Second run acknowledged",
     );
 
     rendered.cleanup();

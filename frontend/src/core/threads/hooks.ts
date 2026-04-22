@@ -603,6 +603,16 @@ export function useThreadStream({
   const [liveValuesPatch, setLiveValuesPatch] = useState<
     Partial<AgentThreadState>
   >({});
+  // Live thread id observed from Gateway SSE (``state_snapshot.thread_id``)
+  // or the in-flight ``sendMessage`` argument. Used as a fallback for
+  // ``fromMultiAgentTaskState`` when the ``threadId`` prop has not yet
+  // propagated into ``_threadId`` — e.g. the /workspace/chats/[id] new-thread
+  // first submit, where the hook is invoked with ``threadId: undefined``
+  // until ``onStart`` flips ``isNewThread`` to false. Without this fallback,
+  // the first ``state_snapshot.task_pool`` hydrates tasks with
+  // ``threadId=undefined`` and message-list.tsx's ``Boolean(task.threadId)``
+  // gate silently suppresses the intervention / clarification card.
+  const [liveThreadId, setLiveThreadId] = useState<string | null>(null);
   const [streamingAi, setStreamingAi] = useState<{
     id: string;
     content: string;
@@ -657,9 +667,10 @@ export function useThreadStream({
       return;
     }
 
+    const effectiveThreadId = _threadId ?? liveThreadId ?? undefined;
     hydrateTasks(
       taskPool.map((task) =>
-        fromMultiAgentTaskState(task, _threadId ?? undefined),
+        fromMultiAgentTaskState(task, effectiveThreadId),
       ),
       {
         source: "multi_agent",
@@ -677,6 +688,7 @@ export function useThreadStream({
     mergedValues.task_pool,
     liveValuesPatch.run_id,
     liveValuesPatch.task_pool,
+    liveThreadId,
     localWorkflowShell,
     resetTasksBySource,
     thread.isLoading,
@@ -735,6 +747,7 @@ export function useThreadStream({
       abortControllerRef.current = null;
     }
     setLiveValuesPatch({});
+    setLiveThreadId(null);
     setStreamingAi(null);
     setIsRunning(false);
   }, [_threadId]);
@@ -1035,6 +1048,42 @@ export function useThreadStream({
         abortControllerRef.current?.abort();
         const abortController = new AbortController();
         abortControllerRef.current = abortController;
+
+        // ── Cross-run live-slice reset ────────────────────────────────
+        // Once ``mergedThread.values`` prefers ``liveValuesPatch`` for
+        // workflow-stage-sensitive fields, stale slice from the previous
+        // run stays visible until the first ``state_snapshot`` of the new
+        // run arrives. Clear the workflow slice here (keep
+        // messages/artifacts/title — those are cross-run continuity) and
+        // mark the previous run_id as stale so any late ``state_snapshot``
+        // from it hits the ``staleRunIdsRef`` guard inside
+        // ``onStateSnapshot`` and is dropped instead of re-dirtying the
+        // live patch.
+        // Only use ``liveValuesPatch.run_id`` here — ``thread.values.run_id``
+        // may belong to a run whose *next* state_snapshot is about to arrive
+        // with the same run_id (same-run continuation after hydration).
+        // Flagging it stale would drop that legitimate update. The
+        // ``setEventPatch`` transition detection covers the "new run_id
+        // arrives" case even when liveValuesPatch was previously empty.
+        const previousLiveRunId = liveValuesPatch.run_id ?? null;
+        if (previousLiveRunId !== null) {
+          staleRunIdsRef.current.add(previousLiveRunId);
+          // Scope the task reset to the previous run so any hydrated task
+          // pool from the last workflow submit is cleared before the new
+          // snapshot lands; prevents a momentary flash of stale subtasks.
+          resetTasksBySource("multi_agent", previousLiveRunId);
+        }
+        setLiveValuesPatch((prev) => ({
+          messages: prev.messages,
+          artifacts: prev.artifacts,
+          title: prev.title,
+        }));
+        // Seed ``liveThreadId`` from the caller-supplied id so the first
+        // hydration pass inside this submit has a thread id even before
+        // ``state_snapshot.thread_id`` arrives or ``_threadId`` catches up
+        // from the prop→state sync.
+        setLiveThreadId(threadId);
+
         setIsRunning(true);
         setStreamingAi(null);
 
@@ -1049,25 +1098,38 @@ export function useThreadStream({
           for await (const event of iter) {
             if (abortController.signal.aborted) break;
             lastRunId = event.data.run_id ?? lastRunId;
+            // Pick up any authoritative thread id surfaced by the Gateway
+            // (state_snapshot.thread_id) so the hydrate path still has a
+            // fallback even if the caller-supplied id drifts out of sync.
+            const snapshotThreadId = event.data.thread_id;
+            if (typeof snapshotThreadId === "string" && snapshotThreadId) {
+              setLiveThreadId((prev) =>
+                prev === snapshotThreadId ? prev : snapshotThreadId,
+              );
+            }
             applyGatewayEvent({
               event,
               onStateSnapshot: (patch, customPatch) => {
+                // Drop state_snapshots from a run we've already superseded —
+                // tracked in ``staleRunIdsRef`` by the submit-start reset
+                // block and the eventPatch side when a newer run_id rolled
+                // in. This check runs at event reception (outside the
+                // setter updater) because React 18 batches all queued
+                // ``setEventPatch`` updaters before any ``setLiveValuesPatch``
+                // updater — inside the LVP updater the ref would already
+                // reflect *future* EP transitions from later events in the
+                // same batch, mis-flagging the current event as stale.
+                const receivedRunId =
+                  patch.run_id ?? customPatch?.run_id ?? null;
+                if (
+                  receivedRunId !== null &&
+                  staleRunIdsRef.current.has(receivedRunId)
+                ) {
+                  return;
+                }
                 setLiveValuesPatch((prev) => {
                   const prevRunId = prev.run_id ?? null;
                   const incomingRunId = patch.run_id ?? null;
-
-                  // Drop state_snapshots from a run we've already superseded
-                  // — tracked in ``staleRunIdsRef`` by the eventPatch side
-                  // when a newer run_id rolled in. Without this, a late
-                  // late-arriving snapshot from run N-1 would clobber live
-                  // run N's workflow_stage / resolved_orchestration_mode
-                  // that now feed straight into ``mergedThread.values``.
-                  if (
-                    incomingRunId !== null &&
-                    staleRunIdsRef.current.has(incomingRunId)
-                  ) {
-                    return prev;
-                  }
 
                   // Same-run out-of-order guard: a snapshot whose
                   // ``workflow_stage_updated_at`` is older than what we
@@ -1240,6 +1302,7 @@ export function useThreadStream({
       upsertTask,
       liveValuesPatch,
       refetchThreadState,
+      resetTasksBySource,
       onFinish,
     ],
   );
