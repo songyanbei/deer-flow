@@ -3,12 +3,21 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useThreadStream } from "./hooks";
+import type { RuntimeStreamEvent } from "./runtime-stream";
 
 const useStreamMock = vi.fn();
 const useQueryClientMock = vi.fn(() => ({
   invalidateQueries: vi.fn(),
   setQueriesData: vi.fn(),
 }));
+const streamRuntimeMessageMock =
+  vi.fn<
+    (
+      threadId: string,
+      body: unknown,
+      options?: { signal?: AbortSignal },
+    ) => AsyncGenerator<unknown, void, void>
+  >();
 const hydrateTasksMock = vi.fn();
 const resetTasksBySourceMock = vi.fn();
 const upsertTaskMock = vi.fn();
@@ -17,12 +26,26 @@ async function* emptyGatewayStream(): AsyncGenerator<never, void, void> {
   /* yields nothing */
 }
 
+function streamEvents(
+  events: RuntimeStreamEvent[],
+): AsyncGenerator<RuntimeStreamEvent, void, void> {
+  return (async function* () {
+    for (const event of events) {
+      yield event;
+    }
+  })();
+}
+
 vi.mock("./runtime-stream", async () => {
   const actual =
     await vi.importActual<typeof import("./runtime-stream")>("./runtime-stream");
   return {
     ...actual,
-    streamRuntimeMessage: () => emptyGatewayStream(),
+    streamRuntimeMessage: (
+      threadId: string,
+      body: unknown,
+      options?: { signal?: AbortSignal },
+    ) => streamRuntimeMessageMock(threadId, body, options),
   };
 });
 
@@ -67,6 +90,9 @@ vi.mock("../tasks/context", () => ({
 }));
 
 let lastStreamOptions: Record<string, unknown> = {};
+let latestSendMessage:
+  | ((threadId: string, message: { text: string; files: [] }) => Promise<void>)
+  | null = null;
 
 function renderHook(props: {
   assistantId: "lead_agent" | "multi_agent";
@@ -77,11 +103,12 @@ function renderHook(props: {
   const root = createRoot(container);
 
   function Harness() {
-    useThreadStream({
+    const [, sendMessage] = useThreadStream({
       assistantId: props.assistantId,
       threadId: "thread-1",
       context: { mode: "flash" },
     });
+    latestSendMessage = sendMessage as typeof latestSendMessage;
     return null;
   }
 
@@ -118,7 +145,10 @@ describe("useThreadStream multi-agent compatibility", () => {
     hydrateTasksMock.mockReset();
     resetTasksBySourceMock.mockReset();
     upsertTaskMock.mockReset();
+    streamRuntimeMessageMock.mockReset();
+    streamRuntimeMessageMock.mockImplementation(() => emptyGatewayStream());
     lastStreamOptions = {};
+    latestSendMessage = null;
   });
 
   afterEach(() => {
@@ -160,20 +190,27 @@ describe("useThreadStream multi-agent compatibility", () => {
     rendered.cleanup();
   });
 
-  it("routes source-less task events through the legacy adapter", () => {
+  it("routes source-less task events through the legacy adapter", async () => {
     const rendered = renderHook({
       assistantId: "multi_agent",
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "task_running",
-        task_id: "legacy-1",
-        message: "Still working",
-      });
+    streamRuntimeMessageMock.mockImplementation(() =>
+      streamEvents([
+        {
+          type: "task_running",
+          data: {
+            thread_id: "thread-1",
+            run_id: null,
+            task_id: "legacy-1",
+            message: "Still working",
+          },
+        },
+      ]),
+    );
+
+    await act(async () => {
+      await latestSendMessage?.("thread-1", { text: "noop", files: [] });
     });
 
     expect(upsertTaskMock).toHaveBeenCalledWith(
@@ -187,31 +224,37 @@ describe("useThreadStream multi-agent compatibility", () => {
     rendered.cleanup();
   });
 
-  it("maps multi-agent dependency events into workflow task state", () => {
+  it("maps multi-agent dependency events into workflow task state", async () => {
     const rendered = renderHook({
       assistantId: "multi_agent",
     });
 
-    act(() => {
-      const onCustomEvent = lastStreamOptions.onCustomEvent as
-        | ((event: unknown) => void)
-        | undefined;
-      onCustomEvent?.({
-        type: "task_waiting_dependency",
-        source: "multi_agent",
-        task_id: "task-42",
-        run_id: "run-42",
-        description: "Book the meeting room",
-        requested_by_agent: "meeting-agent",
-        blocked_reason: "Need organizer openId before booking",
-        request_help: {
-          problem: "Missing organizer openId",
-          required_capability: "contact lookup",
-          reason: "Meeting API requires an openId",
-          expected_output: "Organizer openId and city",
-          candidate_agents: ["contacts-agent"],
+    streamRuntimeMessageMock.mockImplementation(() =>
+      streamEvents([
+        {
+          type: "task_waiting_dependency",
+          data: {
+            thread_id: "thread-1",
+            run_id: "run-42",
+            source: "multi_agent",
+            task_id: "task-42",
+            description: "Book the meeting room",
+            requested_by_agent: "meeting-agent",
+            blocked_reason: "Need organizer openId before booking",
+            request_help: {
+              problem: "Missing organizer openId",
+              required_capability: "contact lookup",
+              reason: "Meeting API requires an openId",
+              expected_output: "Organizer openId and city",
+              candidate_agents: ["contacts-agent"],
+            },
+          },
         },
-      });
+      ]),
+    );
+
+    await act(async () => {
+      await latestSendMessage?.("thread-1", { text: "noop", files: [] });
     });
 
     expect(upsertTaskMock).toHaveBeenCalledWith(
