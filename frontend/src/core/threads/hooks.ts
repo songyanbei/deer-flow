@@ -591,9 +591,36 @@ export function useThreadStream({
     [eventPatch.run_id, localWorkflowShell, mergedPatchedValues],
   );
 
+  // ── Gateway SSE live-run state ────────────────────────────────────
+  // Phase 1 D1.2: main chat submits go through the Gateway
+  // ``POST /api/runtime/threads/{id}/messages:stream`` endpoint. The SSE
+  // consumer drives this local state; ``useStream`` is kept only for
+  // initial thread hydration (``fetchStateHistory``) and never submits.
+  //
+  // Declared above the hydrateTasks effect because that effect reads
+  // ``liveValuesPatch`` to surface live-run task_pool updates (e.g.
+  // workflow clarification cards) before any persisted snapshot exists.
+  const [liveValuesPatch, setLiveValuesPatch] = useState<
+    Partial<AgentThreadState>
+  >({});
+  const [streamingAi, setStreamingAi] = useState<{
+    id: string;
+    content: string;
+  } | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
-    const runId = mergedValues.run_id ?? null;
-    const taskPool = mergedValues.task_pool ?? [];
+    // Prefer the Gateway SSE live patch when present — ``mergedValues`` is
+    // built from ``thread.values`` + ``eventPatch`` and does NOT include
+    // ``liveValuesPatch``, so state_snapshot updates (task_pool, run_id)
+    // would otherwise be invisible to this hydration path during a live
+    // run. Symptom: workflow clarification/intervention cards only
+    // appeared after a page refresh pulled the persisted state through
+    // ``fetchStateHistory``.
+    const runId = liveValuesPatch.run_id ?? mergedValues.run_id ?? null;
+    const taskPool =
+      liveValuesPatch.task_pool ?? mergedValues.task_pool ?? [];
     const shouldPreserveExistingTasksDuringLoading =
       thread.isLoading &&
       localWorkflowShell == null &&
@@ -648,6 +675,8 @@ export function useThreadStream({
     mergedValues.workflow_stage,
     mergedValues.run_id,
     mergedValues.task_pool,
+    liveValuesPatch.run_id,
+    liveValuesPatch.task_pool,
     localWorkflowShell,
     resetTasksBySource,
     thread.isLoading,
@@ -655,21 +684,6 @@ export function useThreadStream({
 
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   const prevMsgCountRef = useRef(thread.messages.length);
-
-  // ── Gateway SSE live-run state ────────────────────────────────────
-  // Phase 1 D1.2: main chat submits go through the Gateway
-  // ``POST /api/runtime/threads/{id}/messages:stream`` endpoint. The SSE
-  // consumer drives this local state; ``useStream`` is kept only for
-  // initial thread hydration (``fetchStateHistory``) and never submits.
-  const [liveValuesPatch, setLiveValuesPatch] = useState<
-    Partial<AgentThreadState>
-  >({});
-  const [streamingAi, setStreamingAi] = useState<{
-    id: string;
-    content: string;
-  } | null>(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
 
   const refetchThreadState = useCallback(async (activeThreadId?: string) => {
     // Prefer the caller-supplied thread id so first-submit hydration in a
