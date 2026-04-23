@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GovernanceItem } from "./types";
 import {
@@ -7,9 +7,14 @@ import {
   getGovernanceDisplaySummary,
   getGovernanceItemKind,
   pathOfGovernanceThread,
+  resumeGovernanceThread,
   toGovernanceFilterEndISO,
   toGovernanceFilterStartISO,
 } from "./utils";
+
+vi.mock("@/core/config", () => ({
+  getBackendBaseURL: () => "http://gateway.test",
+}));
 
 function createGovernanceItem(
   overrides: Partial<GovernanceItem> = {},
@@ -132,16 +137,12 @@ describe("governance utils", () => {
     );
   });
 
-  it("builds the resume request with workflow continuation context", () => {
+  it("builds the Gateway governance resume body with safe app_context", () => {
     const item = createGovernanceItem({
+      governance_id: "gov-7",
       thread_id: "thread-7",
       run_id: "run-7",
       task_id: "task-7",
-      metadata: {
-        hook_metadata: {
-          agent_name: "analyst",
-        },
-      },
     });
 
     const request = buildGovernanceResumeRequest(
@@ -152,21 +153,137 @@ describe("governance utils", () => {
         model_name: "gpt-5",
         reasoning_effort: "high",
       },
-      "[intervention_resolved] request_id=req-1",
+      "  [intervention_resolved] request_id=req-1  ",
     );
 
     expect(request.threadId).toBe("thread-7");
-    expect(request.assistantId).toBe("entry_graph");
-    expect(request.payload.streamSubgraphs).toBe(false);
-    expect(request.payload.context).toMatchObject({
-      agent_name: "analyst",
-      thread_id: "thread-7",
-      workflow_clarification_resume: true,
+    expect(request.body).toEqual({
+      message: "[intervention_resolved] request_id=req-1",
+      governance_id: "gov-7",
       workflow_resume_run_id: "run-7",
       workflow_resume_task_id: "task-7",
-      is_plan_mode: true,
-      subagent_enabled: false,
-      thinking_enabled: true,
+      app_context: {
+        thinking_enabled: true,
+        is_plan_mode: true,
+        subagent_enabled: false,
+      },
     });
+    // Critical: the Gateway pins ``AppRuntimeContext.extra="forbid"`` —
+    // wholesale ``...settings`` smuggling of identity / routing keys would
+    // 422. Only the three whitelisted flags must be present.
+    const appContextKeys = Object.keys(
+      request.body.app_context ?? {},
+    ).sort();
+    expect(appContextKeys).toEqual([
+      "is_plan_mode",
+      "subagent_enabled",
+      "thinking_enabled",
+    ]);
+    // No direct streamMode / streamSubgraphs / streamResumable / config —
+    // those are server-owned now.
+    expect(request.body).not.toHaveProperty("streamMode");
+    expect(request.body).not.toHaveProperty("streamSubgraphs");
+    expect(request.body).not.toHaveProperty("streamResumable");
+    expect(request.body).not.toHaveProperty("context");
+  });
+
+  it("omits workflow_resume_* hints when the governance item lacks them", () => {
+    const item = createGovernanceItem({
+      governance_id: "gov-8",
+      thread_id: "thread-8",
+      run_id: "",
+      task_id: "",
+    });
+
+    const request = buildGovernanceResumeRequest(
+      item,
+      {
+        mode: undefined,
+        requested_orchestration_mode: "auto",
+        model_name: undefined,
+      },
+      "resume",
+    );
+
+    expect(request.body).not.toHaveProperty("workflow_resume_run_id");
+    expect(request.body).not.toHaveProperty("workflow_resume_task_id");
+  });
+});
+
+describe("resumeGovernanceThread", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("POSTs to the Gateway governance:resume endpoint with the trusted body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: {
+        cancel: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const item = createGovernanceItem({
+      governance_id: "gov-42",
+      thread_id: "thread-9",
+      run_id: "run-9",
+      task_id: "task-3",
+    });
+
+    await resumeGovernanceThread(
+      item,
+      {
+        mode: "flash",
+        requested_orchestration_mode: "auto",
+        model_name: undefined,
+      },
+      "approved",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(
+      "http://gateway.test/api/runtime/threads/thread-9/governance:resume",
+    );
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual({
+      message: "approved",
+      governance_id: "gov-42",
+      workflow_resume_run_id: "run-9",
+      workflow_resume_task_id: "task-3",
+      app_context: {
+        thinking_enabled: false,
+        is_plan_mode: false,
+        subagent_enabled: false,
+      },
+    });
+  });
+
+  it("throws with Gateway detail text when the endpoint returns non-2xx", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      text: vi.fn().mockResolvedValue("already running"),
+    }) as unknown as typeof fetch;
+
+    const item = createGovernanceItem();
+    await expect(
+      resumeGovernanceThread(
+        item,
+        {
+          mode: "pro",
+          requested_orchestration_mode: "auto",
+          model_name: undefined,
+        },
+        "approved",
+      ),
+    ).rejects.toThrow(/409.*already running/);
   });
 });

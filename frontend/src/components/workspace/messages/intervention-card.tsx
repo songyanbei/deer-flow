@@ -1,6 +1,5 @@
 "use client";
 
-import type { Checkpoint } from "@langchain/langgraph-sdk";
 import {
   AlertTriangleIcon,
   ArrowRightIcon,
@@ -19,8 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useResolveIntervention } from "@/core/interventions/hooks";
 import { useI18n } from "@/core/i18n/hooks";
+import { useResolveIntervention } from "@/core/interventions/hooks";
 import { useLocalSettings } from "@/core/settings";
 import type { TaskViewModel } from "@/core/tasks/types";
 import type {
@@ -29,6 +28,7 @@ import type {
   InterventionOption,
   InterventionQuestion,
 } from "@/core/threads";
+import type { RuntimeResumeRequest } from "@/core/threads/runtime-stream";
 import { cn } from "@/lib/utils";
 
 import { useThread } from "./context";
@@ -192,7 +192,7 @@ function getActionButtonLabel(
     return action.confirm_text!.trim();
   }
   if (!isBrokenDisplayText(action.label)) {
-    return action.label!.trim();
+    return action.label.trim();
   }
   return fallback;
 }
@@ -310,7 +310,7 @@ export function InterventionCard({
 }) {
   const { t } = useI18n();
   const interactionCopy = t.subtasks.interventionCopy;
-  const { thread } = useThread();
+  const { thread, resumeRuntime } = useThread();
   const [settings] = useLocalSettings();
   const resolveMutation = useResolveIntervention();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -366,42 +366,30 @@ export function InterventionCard({
       typeof response === "object" &&
       response !== null &&
       "checkpoint" in response
-        ? (response.checkpoint as
-            | Omit<Checkpoint, "thread_id">
-            | null
-            | undefined)
+        ? response.checkpoint
         : null;
 
     const ctx = settings.context;
-    const isWorkflow = ctx.requested_orchestration_mode === "workflow";
-    await thread.submit(
-      {
-        messages: [
-          {
-            type: "human",
-            content: [{ type: "text", text: resumeMessage }],
-          },
-        ],
+    if (!resumeRuntime) {
+      throw new Error("Gateway resume stream is not available for this thread");
+    }
+
+    const resumeBody: RuntimeResumeRequest = {
+      resume_payload: {
+        message: resumeMessage,
       },
-      {
-        threadId,
-        streamSubgraphs: !isWorkflow,
-        streamResumable: true,
-        streamMode: ["values", "messages-tuple", "custom"],
-        checkpoint,
-        config: { recursion_limit: 1000 },
-        context: {
-          ...ctx,
-          thinking_enabled: ctx.mode !== "flash",
-          is_plan_mode: ctx.mode === "pro" || ctx.mode === "ultra",
-          subagent_enabled: ctx.mode === "ultra",
-          thread_id: threadId,
-          workflow_clarification_resume: true,
-          workflow_resume_run_id: thread.values.run_id ?? undefined,
-          workflow_resume_task_id: task.id,
-        },
+      checkpoint,
+      workflow_clarification_resume: true,
+      workflow_resume_run_id: thread.values.run_id ?? undefined,
+      workflow_resume_task_id: task.id,
+      app_context: {
+        thinking_enabled: ctx.mode !== "flash",
+        is_plan_mode: ctx.mode === "pro" || ctx.mode === "ultra",
+        subagent_enabled: ctx.mode === "ultra",
       },
-    );
+    };
+
+    await resumeRuntime(threadId, resumeBody);
   };
   const rawQuestions = request.questions ?? [];
   const explanatoryQuestion = rawQuestions.find(isExplanatoryQuestion);

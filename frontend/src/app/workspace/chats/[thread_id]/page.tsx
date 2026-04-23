@@ -70,7 +70,7 @@ export default function ChatPage() {
     paddingBottom,
   } = useFooterPadding();
 
-  const [thread, sendMessage] = useThreadStream({
+  const [thread, sendMessage, resumeRuntime] = useThreadStream({
     assistantId: "entry_graph",
     threadId: isNewThread ? undefined : threadId,
     context: settings.context,
@@ -158,7 +158,7 @@ export default function ChatPage() {
   }
 
   return (
-    <ThreadContext.Provider value={{ thread, isMock }}>
+    <ThreadContext.Provider value={{ thread, resumeRuntime, isMock }}>
       <ChatBox threadId={threadId}>
         <div className="relative flex size-full min-h-0 justify-between">
           <header

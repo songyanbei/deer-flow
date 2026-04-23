@@ -75,7 +75,7 @@ export default function AgentChatPage() {
     inputShellRef,
     paddingBottom,
   } = useFooterPadding();
-  const [thread, sendMessage] = useThreadStream({
+  const [thread, sendMessage, resumeRuntime] = useThreadStream({
     assistantId: "entry_graph",
     threadId: isNewThread ? undefined : threadId,
     context: { ...settings.context, agent_name: agent_name },
@@ -168,7 +168,7 @@ export default function AgentChatPage() {
   }
 
   return (
-    <ThreadContext.Provider value={{ thread }}>
+    <ThreadContext.Provider value={{ thread, resumeRuntime }}>
       <ChatBox threadId={threadId}>
         <div className="relative flex size-full min-h-0 justify-between">
           <header

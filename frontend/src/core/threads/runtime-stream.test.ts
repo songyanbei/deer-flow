@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   streamRuntimeMessage,
+  streamRuntimeResume,
   type RuntimeStreamEvent,
   type RuntimeStreamHttpError,
 } from "./runtime-stream";
@@ -165,5 +166,49 @@ describe("streamRuntimeMessage", () => {
     );
     const [, init] = fetchMock.mock.calls[0]!;
     expect((init as RequestInit).signal).toBe(controller.signal);
+  });
+
+  it("posts to the Gateway resume endpoint with resume_payload and checkpoint", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: encodeBody(
+        `event: ack\ndata: {"thread_id":"t1","run_id":null}\n\n`,
+        `event: state_snapshot\ndata: {"thread_id":"t1","run_id":"r1","workflow_stage":"executing"}\n\n`,
+        `event: run_completed\ndata: {"thread_id":"t1","run_id":"r1"}\n\n`,
+      ),
+    } as unknown as Response);
+
+    const events = await collect(
+      streamRuntimeResume("t1", {
+        resume_payload: { message: "[intervention_resolved] request_id=req-1" },
+        checkpoint: { checkpoint_id: "cp-1" },
+        workflow_clarification_resume: true,
+        workflow_resume_run_id: "r1",
+        workflow_resume_task_id: "task-1",
+        app_context: { thinking_enabled: true },
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toContain("/api/runtime/threads/t1/resume");
+    expect((init as RequestInit).method).toBe("POST");
+    expect((init as RequestInit).credentials).toBe("include");
+    const parsed = JSON.parse((init as RequestInit).body as string);
+    expect(parsed.resume_payload).toEqual({
+      message: "[intervention_resolved] request_id=req-1",
+    });
+    expect(parsed.checkpoint).toEqual({ checkpoint_id: "cp-1" });
+    expect(parsed.workflow_clarification_resume).toBe(true);
+    expect(parsed.workflow_resume_run_id).toBe("r1");
+    expect(parsed.workflow_resume_task_id).toBe("task-1");
+    expect(parsed.app_context).toEqual({ thinking_enabled: true });
+
+    expect(events.map((e) => e.type)).toEqual([
+      "ack",
+      "state_snapshot",
+      "run_completed",
+    ]);
   });
 });

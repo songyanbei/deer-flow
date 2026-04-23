@@ -33,6 +33,20 @@ export type RuntimeStreamRequest = {
   metadata?: Record<string, string | number | boolean | null>;
 };
 
+export type RuntimeResumeRequest = {
+  message?: string;
+  resume_payload?: {
+    message?: string;
+  };
+  checkpoint?: unknown;
+  interrupt_feedback?: unknown;
+  goto?: string;
+  workflow_clarification_resume?: boolean;
+  workflow_resume_run_id?: string;
+  workflow_resume_task_id?: string;
+  app_context?: RuntimeAppContext;
+};
+
 // ── Event contract (mirrors backend/src/gateway/runtime_service.py) ────
 
 export type RuntimeStreamBaseEvent = {
@@ -242,6 +256,86 @@ export async function* streamRuntimeMessage(
       }
     }
     // Flush any trailing partial frame that happens to be complete.
+    buffer.value += decoder.decode();
+    for (const frame of parseSseFrames(buffer)) {
+      if (!isKnownEventName(frame.event)) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(frame.data);
+      } catch {
+        continue;
+      }
+      if (typeof parsed !== "object" || parsed === null) continue;
+      yield {
+        type: frame.event,
+        data: parsed as RuntimeStreamEventMap[typeof frame.event],
+      } as RuntimeStreamEvent;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // swallow — AbortController.abort() already cancels the underlying stream
+    }
+  }
+}
+
+export async function* streamRuntimeResume(
+  threadId: string,
+  body: RuntimeResumeRequest,
+  options: StreamRuntimeMessageOptions = {},
+): AsyncGenerator<RuntimeStreamEvent, void, void> {
+  const url = `${getBackendBaseURL()}/api/runtime/threads/${encodeURIComponent(
+    threadId,
+  )}/resume`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    credentials: "include",
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new RuntimeStreamHttpError(response.status, detail);
+  }
+
+  if (!response.body) {
+    throw new RuntimeStreamHttpError(
+      response.status,
+      "Response body is empty",
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  const buffer = { value: "" };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer.value += decoder.decode(value, { stream: true });
+      for (const frame of parseSseFrames(buffer)) {
+        if (!isKnownEventName(frame.event)) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(frame.data);
+        } catch {
+          continue;
+        }
+        if (typeof parsed !== "object" || parsed === null) continue;
+        yield {
+          type: frame.event,
+          data: parsed as RuntimeStreamEventMap[typeof frame.event],
+        } as RuntimeStreamEvent;
+      }
+    }
     buffer.value += decoder.decode();
     for (const frame of parseSseFrames(buffer)) {
       if (!isKnownEventName(frame.event)) continue;

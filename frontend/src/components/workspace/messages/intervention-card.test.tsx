@@ -9,6 +9,7 @@ import { ThreadContext, type ThreadContextType } from "./context";
 import { InterventionCard } from "./intervention-card";
 
 const mutateAsyncMock = vi.fn();
+const resumeRuntimeMock = vi.fn();
 
 vi.mock("sonner", () => ({
   toast: {
@@ -83,7 +84,10 @@ function renderCard(task: TaskViewModel) {
     root.render(
       <I18nProvider initialLocale="en-US">
         <ThreadContext.Provider
-          value={{ thread: mockThread as ThreadContextType["thread"] }}
+          value={{
+            thread: mockThread as ThreadContextType["thread"],
+            resumeRuntime: resumeRuntimeMock,
+          }}
         >
           <InterventionCard task={task} />
         </ThreadContext.Provider>
@@ -106,6 +110,7 @@ describe("InterventionCard", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     mutateAsyncMock.mockReset();
+    resumeRuntimeMock.mockReset();
     (mockThread as { submit: ReturnType<typeof vi.fn> }).submit.mockReset();
   });
 
@@ -287,9 +292,9 @@ describe("InterventionCard", () => {
     rendered.cleanup();
   });
 
-  it("calls thread.submit with correct resume params after approve resolves", async () => {
+  it("calls Gateway resume with correct params after approve resolves", async () => {
     const submitMock = (mockThread as { submit: ReturnType<typeof vi.fn> }).submit;
-    submitMock.mockResolvedValue(undefined);
+    resumeRuntimeMock.mockResolvedValue(undefined);
     mutateAsyncMock.mockResolvedValue({
       ok: true,
       thread_id: "thread-1",
@@ -326,32 +331,28 @@ describe("InterventionCard", () => {
       payload: {},
     });
 
-    // thread.submit must be called to create the observable resume run
-    expect(submitMock).toHaveBeenCalledTimes(1);
-    const [submitValues, submitOptions] = submitMock.mock.calls[0]!;
-
-    // Verify the human message carries the intervention_resolved prefix
-    expect(submitValues.messages[0].type).toBe("human");
-    expect(submitValues.messages[0].content[0].text).toBe(
-      "[intervention_resolved] request_id=req-1 action_key=approve",
+    expect(submitMock).not.toHaveBeenCalled();
+    expect(resumeRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(resumeRuntimeMock).toHaveBeenCalledWith(
+      "thread-1",
+      expect.objectContaining({
+        resume_payload: {
+          message: "[intervention_resolved] request_id=req-1 action_key=approve",
+        },
+        checkpoint: {
+          checkpoint_id: "cp-1",
+          checkpoint_ns: "",
+        },
+        workflow_clarification_resume: true,
+        workflow_resume_run_id: "run-1",
+        workflow_resume_task_id: "task-1",
+        app_context: {
+          thinking_enabled: true,
+          is_plan_mode: true,
+          subagent_enabled: true,
+        },
+      }),
     );
-
-    // Verify critical context params for the backend resume path
-    expect(submitOptions.threadId).toBe("thread-1");
-    expect(submitOptions.checkpoint).toEqual({
-      checkpoint_id: "cp-1",
-      checkpoint_ns: "",
-    });
-    expect(submitOptions.context.workflow_clarification_resume).toBe(true);
-    expect(submitOptions.context.workflow_resume_run_id).toBe("run-1");
-    expect(submitOptions.context.workflow_resume_task_id).toBe("task-1");
-    expect(submitOptions.streamResumable).toBe(true);
-    expect(submitOptions.streamMode).toEqual(["values", "messages-tuple", "custom"]);
-
-    // Verify mode-derived context (mock settings has mode: "ultra")
-    expect(submitOptions.context.thinking_enabled).toBe(true);
-    expect(submitOptions.context.is_plan_mode).toBe(true);
-    expect(submitOptions.context.subagent_enabled).toBe(true);
 
     rendered.cleanup();
   });
@@ -413,11 +414,13 @@ describe("InterventionCard", () => {
       expect.objectContaining({ actionKey: "reject" }),
     );
     expect(submitMock).not.toHaveBeenCalled();
+    expect(resumeRuntimeMock).not.toHaveBeenCalled();
 
     rendered.cleanup();
   });
 
-  it("submits a resume run after resolve succeeds with submit_resume", async () => {
+  it("submits a Gateway resume stream after resolve succeeds with submit_resume", async () => {
+    resumeRuntimeMock.mockResolvedValue(undefined);
     mutateAsyncMock.mockResolvedValue({
       ok: true,
       thread_id: "thread-1",
@@ -456,36 +459,20 @@ describe("InterventionCard", () => {
       actionKey: "approve",
       payload: {},
     });
-    expect((mockThread as { submit: ReturnType<typeof vi.fn> }).submit).toHaveBeenCalledTimes(1);
-    expect((mockThread as { submit: ReturnType<typeof vi.fn> }).submit).toHaveBeenCalledWith(
-      {
-        messages: [
-          {
-            type: "human",
-            content: [
-              {
-                type: "text",
-                text: "[intervention_resolved] request_id=req-1 action_key=approve",
-              },
-            ],
-          },
-        ],
-      },
+    expect((mockThread as { submit: ReturnType<typeof vi.fn> }).submit).not.toHaveBeenCalled();
+    expect(resumeRuntimeMock).toHaveBeenCalledWith(
+      "thread-1",
       expect.objectContaining({
-        threadId: "thread-1",
-        streamResumable: true,
-        streamMode: ["values", "messages-tuple", "custom"],
+        resume_payload: {
+          message: "[intervention_resolved] request_id=req-1 action_key=approve",
+        },
         checkpoint: {
           checkpoint_id: "cp-1",
           checkpoint_ns: "",
         },
-        context: expect.objectContaining({
-          requested_orchestration_mode: "workflow",
-          workflow_clarification_resume: true,
-          workflow_resume_run_id: "run-1",
-          workflow_resume_task_id: "task-1",
-          thread_id: "thread-1",
-        }),
+        workflow_clarification_resume: true,
+        workflow_resume_run_id: "run-1",
+        workflow_resume_task_id: "task-1",
       }),
     );
 

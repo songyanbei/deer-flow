@@ -2,9 +2,14 @@ import type { BaseStream } from "@langchain/langgraph-sdk/react";
 import { createContext, useContext } from "react";
 
 import type { AgentThreadState } from "@/core/threads";
+import type { RuntimeResumeRequest } from "@/core/threads/runtime-stream";
 
 export interface ThreadContextType {
   thread: BaseStream<AgentThreadState>;
+  resumeRuntime?: (
+    threadId: string,
+    body: RuntimeResumeRequest,
+  ) => Promise<void>;
   isMock?: boolean;
 }
 

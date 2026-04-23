@@ -1,6 +1,4 @@
-import type { StreamMode } from "@langchain/langgraph-sdk";
-
-import { getAPIClient } from "@/core/api";
+import { getBackendBaseURL } from "@/core/config";
 import type { GovernanceItem } from "@/core/governance/types";
 import {
   getInterventionDisplaySummary,
@@ -8,10 +6,6 @@ import {
 } from "@/core/interventions/view";
 import type { LocalSettings } from "@/core/settings";
 import type { InterventionQuestion } from "@/core/threads";
-
-type RunsCreatePayload = Parameters<
-  ReturnType<typeof getAPIClient>["runs"]["create"]
->[2];
 
 export type GovernanceItemKind =
   | "clarification"
@@ -173,66 +167,104 @@ export function toGovernanceFilterEndISO(value?: string) {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
+/**
+ * Body shape accepted by `POST /api/runtime/threads/{id}/governance:resume`.
+ *
+ * Gateway pins this contract with `AppRuntimeContext.extra="forbid"` — any
+ * identity-bearing field (tenant_id/user_id/thread_context/auth_user/…) or
+ * unknown key under `app_context` triggers a 422. The browser only sends
+ * safe app-level flags derived from local settings; routing (group_key /
+ * allowed_agents / agent_name / requested_orchestration_mode) and the
+ * streamMode / streamSubgraphs / streamResumable / recursion_limit knobs
+ * are server-owned.
+ */
+export type GovernanceResumeRequestBody = {
+  message: string;
+  governance_id: string;
+  workflow_resume_run_id?: string;
+  workflow_resume_task_id?: string;
+  app_context?: {
+    thinking_enabled?: boolean;
+    is_plan_mode?: boolean;
+    subagent_enabled?: boolean;
+  };
+};
+
+export type GovernanceResumeRequest = {
+  threadId: string;
+  body: GovernanceResumeRequestBody;
+};
+
 export function buildGovernanceResumeRequest(
   item: GovernanceItem,
   settings: LocalSettings["context"],
   resumeMessage: string,
-) {
-  const agentName = getGovernanceThreadAgentName(item);
+): GovernanceResumeRequest {
   const normalizedResumeMessage = resumeMessage.trim();
-  const streamMode: StreamMode[] = ["values", "messages-tuple", "custom"];
-  const payload: RunsCreatePayload = {
-    input: {
-      messages: [
-        {
-          type: "human",
-          content: [
-            {
-              type: "text",
-              text: normalizedResumeMessage,
-            },
-          ],
-        },
-      ],
-    },
-    streamMode,
-    streamSubgraphs: settings.requested_orchestration_mode !== "workflow",
-    streamResumable: true,
-    config: {
-      recursion_limit: 1000,
-    },
-    context: {
-      ...settings,
-      ...(agentName ? { agent_name: agentName } : {}),
+  const body: GovernanceResumeRequestBody = {
+    message: normalizedResumeMessage,
+    governance_id: item.governance_id,
+    app_context: {
       thinking_enabled: settings.mode !== "flash",
       is_plan_mode: settings.mode === "pro" || settings.mode === "ultra",
       subagent_enabled: settings.mode === "ultra",
-      thread_id: item.thread_id,
-      workflow_clarification_resume: true,
-      workflow_resume_run_id: item.run_id || undefined,
-      workflow_resume_task_id: item.task_id || undefined,
     },
   };
+  if (item.run_id) {
+    body.workflow_resume_run_id = item.run_id;
+  }
+  if (item.task_id) {
+    body.workflow_resume_task_id = item.task_id;
+  }
 
   return {
     threadId: item.thread_id,
-    assistantId: "entry_graph" as const,
-    payload,
+    body,
   };
 }
 
+/**
+ * Submit a governance resume through the Gateway (Phase 2.2).
+ *
+ * Replaces the legacy direct `client.runs.create(...)` call against the
+ * LangGraph SDK. The Gateway validates the governance ledger, constructs
+ * the trusted LangGraph `context`, and forwards to the upstream run.
+ *
+ * The response is a long-lived SSE stream shared with `messages:stream` /
+ * `resume`. This helper is fire-and-forget: we wait for the HTTP ack,
+ * surface non-2xx as an error, then cancel the body so the live subscriber
+ * (`useThreadStream`) handles the event stream.
+ */
 export async function resumeGovernanceThread(
   item: GovernanceItem,
   settings: LocalSettings["context"],
   resumeMessage: string,
 ) {
-  const client = getAPIClient();
   const request = buildGovernanceResumeRequest(item, settings, resumeMessage);
-  await client.runs.create(
-    request.threadId,
-    request.assistantId,
-    request.payload,
+  const response = await fetch(
+    `${getBackendBaseURL()}/api/runtime/threads/${encodeURIComponent(
+      request.threadId,
+    )}/governance:resume`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      credentials: "include",
+      body: JSON.stringify(request.body),
+    },
   );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Failed to resume governance thread (${response.status})${
+        detail ? `: ${detail}` : ""
+      }`,
+    );
+  }
+  // Fire-and-forget — the live thread subscriber consumes the SSE stream.
+  void response.body?.cancel().catch(() => undefined);
 }
 
 export function isRenderableGovernanceQuestion(
