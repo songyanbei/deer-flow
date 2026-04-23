@@ -24,7 +24,9 @@ import { uploadFiles } from "../uploads";
 import {
   RuntimeStreamHttpError,
   streamRuntimeMessage,
+  streamRuntimeResume,
   type RuntimeAppContext,
+  type RuntimeResumeRequest,
   type RuntimeStreamEvent,
   type RuntimeStreamRequest,
 } from "./runtime-stream";
@@ -1241,6 +1243,12 @@ export function useThreadStream({
                 setIsRunning(false);
                 setStreamingAi(null);
                 setLocalWorkflowShell(null);
+                setLiveValuesPatch((prev) => ({
+                  ...prev,
+                  workflow_stage: null,
+                  workflow_stage_detail: null,
+                  workflow_stage_updated_at: null,
+                }));
                 void refetchThreadState(threadId);
                 void queryClient.invalidateQueries({
                   queryKey: ["threads", "search"],
@@ -1251,6 +1259,12 @@ export function useThreadStream({
                 setIsRunning(false);
                 setStreamingAi(null);
                 setLocalWorkflowShell(null);
+                setLiveValuesPatch((prev) => ({
+                  ...prev,
+                  workflow_stage: null,
+                  workflow_stage_detail: null,
+                  workflow_stage_updated_at: null,
+                }));
                 toast.error(errorText || "Runtime execution failed");
               },
             });
@@ -1329,6 +1343,203 @@ export function useThreadStream({
     setStreamingAi(null);
   }, []);
 
+  const resumeRuntime = useCallback(
+    async (threadId: string, body: RuntimeResumeRequest) => {
+      abortControllerRef.current?.abort();
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      setLiveThreadId(threadId);
+      setIsRunning(true);
+      setStreamingAi(null);
+
+      let runFailed = false;
+      let lastRunId: string | null = null;
+
+      try {
+        const iter = streamRuntimeResume(threadId, body, {
+          signal: abortController.signal,
+        });
+
+        for await (const event of iter) {
+          if (abortController.signal.aborted) break;
+          lastRunId = event.data.run_id ?? lastRunId;
+
+          const snapshotThreadId = event.data.thread_id;
+          if (typeof snapshotThreadId === "string" && snapshotThreadId) {
+            setLiveThreadId((prev) =>
+              prev === snapshotThreadId ? prev : snapshotThreadId,
+            );
+          }
+
+          applyGatewayEvent({
+            event,
+            onStateSnapshot: (patch, customPatch) => {
+              const receivedRunId = patch.run_id ?? customPatch?.run_id ?? null;
+              if (
+                receivedRunId !== null &&
+                staleRunIdsRef.current.has(receivedRunId)
+              ) {
+                return;
+              }
+              setLiveValuesPatch((prev) => {
+                const prevRunId = prev.run_id ?? null;
+                const incomingRunId = patch.run_id ?? null;
+                const prevStamp =
+                  typeof prev.workflow_stage_updated_at === "string"
+                    ? prev.workflow_stage_updated_at
+                    : (typeof thread.values.workflow_stage_updated_at ===
+                          "string" &&
+                        (prevRunId === null ||
+                          prevRunId === (thread.values.run_id ?? null))
+                        ? thread.values.workflow_stage_updated_at
+                        : null);
+                const incomingStamp =
+                  typeof patch.workflow_stage_updated_at === "string"
+                    ? patch.workflow_stage_updated_at
+                    : null;
+                const sameRun =
+                  incomingRunId !== null &&
+                  (prevRunId === incomingRunId ||
+                    (prevRunId === null &&
+                      (thread.values.run_id ?? null) === incomingRunId));
+                if (
+                  sameRun &&
+                  prevStamp !== null &&
+                  incomingStamp !== null &&
+                  incomingStamp < prevStamp
+                ) {
+                  return prev;
+                }
+                return { ...prev, ...patch };
+              });
+              if (customPatch) {
+                setEventPatch((current) => {
+                  const currentRunIdLocal =
+                    current.run_id ?? thread.values.run_id ?? null;
+                  const incomingRunIdLocal = customPatch.run_id ?? null;
+                  if (
+                    currentRunIdLocal !== null &&
+                    incomingRunIdLocal !== null &&
+                    currentRunIdLocal !== incomingRunIdLocal
+                  ) {
+                    staleRunIdsRef.current.add(currentRunIdLocal);
+                  }
+                  return mergeThreadEventPatch(
+                    current,
+                    customPatch,
+                    staleRunIdsRef.current,
+                  );
+                });
+              }
+            },
+            onMessageDelta: (deltaContent) => {
+              setStreamingAi((prev) => ({
+                id: prev?.id ?? `live-ai-${Date.now()}`,
+                content: (prev?.content ?? "") + deltaContent,
+              }));
+            },
+            onMessageCompleted: () => {
+              setStreamingAi(null);
+            },
+            onArtifactCreated: (artifact) => {
+              setLiveValuesPatch((prev) => {
+                const existing =
+                  prev.artifacts ?? thread.values.artifacts ?? [];
+                const candidateUrl = artifact.artifact_url;
+                const artifactKey =
+                  typeof candidateUrl === "string" && candidateUrl
+                    ? candidateUrl
+                    : JSON.stringify(artifact);
+                if (existing.includes(artifactKey)) return prev;
+                return {
+                  ...prev,
+                  artifacts: [...existing, artifactKey],
+                };
+              });
+            },
+            onCustomTaskEvent: (taskEvent) => {
+              const classified = classifyTaskEvent(taskEvent);
+              if (!classified) return;
+              if (classified.kind === "multi_agent") {
+                upsertTask(
+                  fromMultiAgentTaskEvent(
+                    classified.event,
+                    threadId,
+                  ),
+                );
+              } else {
+                upsertTask(fromLegacyTaskEvent(classified.event));
+              }
+            },
+            onRunCompleted: () => {
+              setIsRunning(false);
+              setStreamingAi(null);
+              setLocalWorkflowShell(null);
+              setLiveValuesPatch((prev) => ({
+                ...prev,
+                workflow_stage: null,
+                workflow_stage_detail: null,
+                workflow_stage_updated_at: null,
+              }));
+              void refetchThreadState(threadId);
+              void queryClient.invalidateQueries({
+                queryKey: ["threads", "search"],
+              });
+            },
+            onRunFailed: (errorText) => {
+              runFailed = true;
+              setIsRunning(false);
+              setStreamingAi(null);
+              setLocalWorkflowShell(null);
+              setLiveValuesPatch((prev) => ({
+                ...prev,
+                workflow_stage: null,
+                workflow_stage_detail: null,
+                workflow_stage_updated_at: null,
+              }));
+              toast.error(errorText || "Runtime execution failed");
+            },
+          });
+        }
+
+        if (!runFailed && !abortController.signal.aborted) {
+          const finishedValues: AgentThreadState = {
+            ...thread.values,
+            ...liveValuesPatch,
+            run_id: lastRunId ?? thread.values.run_id ?? null,
+          };
+          onFinish?.(finishedValues);
+        }
+      } catch (error) {
+        setIsRunning(false);
+        setStreamingAi(null);
+        setLocalWorkflowShell(null);
+        if (
+          !(error instanceof DOMException && error.name === "AbortError") &&
+          error instanceof RuntimeStreamHttpError
+        ) {
+          toast.error(
+            `Gateway rejected the resume (${error.status})${error.detail ? `: ${error.detail}` : ""}`,
+          );
+        }
+        throw error;
+      } finally {
+        if (abortControllerRef.current === abortController) {
+          abortControllerRef.current = null;
+        }
+      }
+    },
+    [
+      liveValuesPatch,
+      onFinish,
+      queryClient,
+      refetchThreadState,
+      thread.values,
+      upsertTask,
+    ],
+  );
+
   const liveStreamingMessages = useMemo<Message[]>(() => {
     if (!streamingAi) return [];
     return [
@@ -1368,14 +1579,23 @@ export function useThreadStream({
         orchestration_reason:
           liveValuesPatch.orchestration_reason ??
           mergedValues.orchestration_reason,
+        // NOTE: use `in` rather than `??` so an explicit `null` written by
+        // `onRunCompleted` / `onRunFailed` actually clears the stage — `??`
+        // would fall back to persisted `mergedValues.workflow_stage` (which
+        // stays "summarizing" after a clarification resume), leaving the
+        // footer stuck on "任务已完成，正在汇总结果…" until refresh.
         workflow_stage:
-          liveValuesPatch.workflow_stage ?? mergedValues.workflow_stage,
+          "workflow_stage" in liveValuesPatch
+            ? liveValuesPatch.workflow_stage
+            : mergedValues.workflow_stage,
         workflow_stage_detail:
-          liveValuesPatch.workflow_stage_detail ??
-          mergedValues.workflow_stage_detail,
+          "workflow_stage_detail" in liveValuesPatch
+            ? liveValuesPatch.workflow_stage_detail
+            : mergedValues.workflow_stage_detail,
         workflow_stage_updated_at:
-          liveValuesPatch.workflow_stage_updated_at ??
-          mergedValues.workflow_stage_updated_at,
+          "workflow_stage_updated_at" in liveValuesPatch
+            ? liveValuesPatch.workflow_stage_updated_at
+            : mergedValues.workflow_stage_updated_at,
         run_id:
           liveValuesPatch.run_id ?? mergedValues.run_id ?? null,
       },
@@ -1396,7 +1616,7 @@ export function useThreadStream({
     thread,
   ]);
 
-  return [mergedThread, sendMessage] as const;
+  return [mergedThread, sendMessage, resumeRuntime] as const;
 }
 
 function extractClarificationAnswers(
