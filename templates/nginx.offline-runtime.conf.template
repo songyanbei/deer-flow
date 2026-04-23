@@ -21,6 +21,20 @@ http {
     access_log __INSTALL_DIR__/logs/nginx-access.log;
     error_log __INSTALL_DIR__/logs/nginx-error.log;
 
+    # ── D2.4: browser access gate for /api/langgraph/* ──────────────────
+    # In protected/offline deployments the frontend must talk to LangGraph
+    # only via Gateway /api/runtime/*, never directly. Gateway itself
+    # reaches LangGraph via LANGGRAPH_URL (default http://127.0.0.1:2024)
+    # and does NOT route through nginx — so blocking this location does
+    # not break Gateway → LangGraph calls.
+    #
+    # Default here is 1 (blocked) because this template is the
+    # offline/protected deployment. Flip to 0 if a specific deployment
+    # still needs browser access (e.g. during frontend migration).
+    map $host $deer_block_langgraph_browser {
+        default 1;
+    }
+
     upstream gateway {
         server 127.0.0.1:8001;
     }
@@ -39,6 +53,10 @@ http {
         server_name _;
 
         location /api/langgraph/ {
+            # D2.4: refuse browser access when gate is set (protected deploy).
+            if ($deer_block_langgraph_browser = 1) {
+                return 404;
+            }
             rewrite ^/api/langgraph/(.*) /$1 break;
             proxy_pass http://langgraph;
             proxy_http_version 1.1;
