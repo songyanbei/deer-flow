@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.agents.governance.ledger import governance_ledger
 from src.config.agents_config import (
     list_all_agents,
     load_agent_config,
@@ -38,6 +39,7 @@ from src.gateway.runtime_service import (
     create_thread,
     get_thread_state_summary,
     iter_events,
+    start_governance_resume_stream,
     start_resume_stream,
     start_stream,
     stream_message,
@@ -813,6 +815,254 @@ async def resume_runtime_stream(
             message=message,
             checkpoint=checkpoint,
             command=command,
+        )
+    except RuntimeServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    return StreamingResponse(
+        iter_events(
+            thread_id=thread_id,
+            first_chunk=first_chunk,
+            upstream_iter=upstream_iter,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── Governance resume ────────────────────────────────────────────────
+#
+# Phase 2.2 (D2.2 / Task 2.2): trusted Gateway wrapper around the legacy
+# ``client.runs.create(...)`` path the browser uses from
+# ``frontend/src/core/governance/utils.ts::buildGovernanceResumeRequest``.
+#
+# Governance resume is semantically a **fresh human message** that carries
+# workflow-resume markers so the workflow graph resumes the governance-held
+# task rather than starting a new turn. Unlike intervention resume it never
+# ships a ``checkpoint`` or a ``Command`` (no interrupt to answer) — it
+# appends a resume message to the thread's latest checkpoint chain.
+#
+# Trust model:
+# - Identity (tenant_id/user_id/thread_context/auth_user) is resolved from
+#   auth middleware + ``resolve_thread_context``; the request body is never
+#   read for identity. ``extra="ignore"`` drops forged identity keys.
+# - ``workflow_clarification_resume`` is **forced to True** server-side so
+#   the browser cannot flip the marker.
+# - ``governance_id`` is forwarded into trusted context so downstream audit
+#   / ledger handlers can correlate the resume without trusting body scalars
+#   as routing keys beyond that.
+
+
+class GovernanceResumeRequest(BaseModel):
+    """Request body for ``POST /api/runtime/threads/{id}/governance:resume``.
+
+    Mirrors the legacy ``buildGovernanceResumeRequest`` contract minus any
+    identity channel:
+
+    - ``message`` — human resume text (required; governance resume always
+      appends a reviewer message).
+    - ``governance_id`` — governance ledger entry id the resume is attached
+      to. Forwarded into trusted context; never used as an identity key.
+    - ``workflow_resume_run_id`` / ``workflow_resume_task_id`` — optional
+      workflow-correlation hints matching the ledger's ``run_id`` /
+      ``task_id`` so the workflow graph resumes the right task.
+    - ``app_context`` — per-run flags (``thinking_enabled`` / ``is_plan_mode``
+      / ``subagent_enabled``). ``extra="forbid"`` keeps identity smuggling
+      visible as HTTP 422.
+
+    Intentionally **not** present:
+    - ``checkpoint`` — governance resume is not checkpoint-anchored.
+    - ``goto`` / ``interrupt_feedback`` — governance resume is a fresh
+      message, not an interrupt ``Command`` reply.
+    - ``workflow_clarification_resume`` — forced to ``True`` server-side.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=MAX_RESUME_MESSAGE_LENGTH,
+        description="Human resume text written by the reviewer",
+    )
+    governance_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        description="Governance ledger entry id being resumed",
+    )
+    workflow_resume_run_id: str | None = Field(
+        default=None, description="Run id of the governance-held workflow run"
+    )
+    workflow_resume_task_id: str | None = Field(
+        default=None, description="Task id of the governance-held workflow task"
+    )
+    app_context: AppRuntimeContext | None = Field(
+        default=None,
+        description="App-level runtime flags (thinking/plan/subagent)",
+    )
+
+
+def _validate_governance_message(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed:
+        raise HTTPException(status_code=422, detail="message must be non-empty")
+    return trimmed
+
+
+def _validate_governance_id(value: str) -> str:
+    trimmed = value.strip()
+    if not trimmed:
+        raise HTTPException(status_code=422, detail="governance_id must be non-empty")
+    return trimmed
+
+
+@router.post("/threads/{thread_id}/governance:resume")
+async def resume_governance_stream(
+    thread_id: str,
+    body: GovernanceResumeRequest,
+    tenant_id: str = Depends(get_tenant_id),
+    user_id: str = Depends(get_user_id),
+    username: str = Depends(get_username),
+    auth_user: AuthenticatedUser = Depends(get_user_profile),
+):
+    """Resume a governance-held workflow via trusted Gateway SSE.
+
+    Phase 2.2 successor to the browser ``client.runs.create(...)`` path in
+    ``frontend/src/core/governance/utils.ts``. Identity is server-sourced,
+    upstream submit is context-only (LG1.x dual-channel rejected), and the
+    normalized SSE projection is shared with ``messages:stream`` / ``resume``
+    so ``liveValuesPatch`` converges.
+    """
+    registry = get_thread_registry()
+
+    # Ownership validation — 403 for unknown/unauthorized threads.
+    ctx = resolve_thread_context(thread_id, tenant_id, user_id)
+
+    message = _validate_governance_message(body.message)
+    governance_id = _validate_governance_id(body.governance_id)
+
+    # Ledger authorization — fail-closed. The ledger is authoritative for
+    # governance correlation: we never trust governance_id / run_id / task_id
+    # from the browser without a matching pending ledger entry that belongs to
+    # this tenant/user/thread.
+    entry = governance_ledger.get_by_id(governance_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="governance entry not found")
+    if entry.get("thread_id") != thread_id:
+        raise HTTPException(
+            status_code=403, detail="governance entry does not belong to this thread"
+        )
+    if entry.get("tenant_id", "default") != tenant_id:
+        raise HTTPException(
+            status_code=403, detail="governance entry does not belong to this tenant"
+        )
+    if entry.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=403, detail="governance entry does not belong to this user"
+        )
+    # Resumable statuses. The real flow is:
+    #   1. POST /api/governance/{id}:resolve  → ledger flips pending → resolved
+    #   2. POST /api/runtime/threads/{id}/governance:resume
+    # so ``resolved`` is the normal state at resume time. ``pending_intervention``
+    # is allowed to cover a race where resume races the resolve commit. Terminal
+    # failure states (``rejected`` / ``failed`` / ``expired``) and ``decided``
+    # (immediate allow/deny, no human interrupt to resume) are fail-closed.
+    _RESUMABLE_STATUSES = {"pending_intervention", "resolved"}
+    if entry.get("status") not in _RESUMABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"governance entry is not resumable (status={entry.get('status')})",
+        )
+    ledger_run_id = entry.get("run_id")
+    ledger_task_id = entry.get("task_id")
+    if body.workflow_resume_run_id is not None and body.workflow_resume_run_id != ledger_run_id:
+        raise HTTPException(
+            status_code=422, detail="workflow_resume_run_id does not match ledger entry"
+        )
+    if body.workflow_resume_task_id is not None and body.workflow_resume_task_id != ledger_task_id:
+        raise HTTPException(
+            status_code=422, detail="workflow_resume_task_id does not match ledger entry"
+        )
+
+    # Build trusted LangGraph ``context``. App flags first, then server-sourced
+    # identity overwrites any collision, then registry-bound routing is
+    # inherited (never widened by the browser).
+    context: dict[str, Any] = {}
+    if body.app_context is not None:
+        app_fields = body.app_context.model_dump(exclude_none=True)
+        for key in list(app_fields.keys()):
+            if key in _IDENTITY_CONTEXT_KEYS:
+                app_fields.pop(key, None)
+        context.update(app_fields)
+
+    # Governance resume always marks the submit as a workflow clarification
+    # resume — the browser cannot flip this off. workflow_resume_* values are
+    # sourced from the ledger entry (authoritative), never from the request
+    # body, so a tampered body cannot redirect the resume to a different run.
+    context["workflow_clarification_resume"] = True
+    if ledger_run_id is not None:
+        context["workflow_resume_run_id"] = ledger_run_id
+    if ledger_task_id is not None:
+        context["workflow_resume_task_id"] = ledger_task_id
+    # TODO(D2.x audit): ``governance_id`` is forwarded into trusted context for a
+    # future governance-resumed audit hook to correlate the resume with its
+    # ledger entry. No consumer reads it today — audit integrity on Phase 2.2
+    # currently relies on workflow_resume_run_id / workflow_resume_task_id
+    # anchoring, same as the legacy browser path. Keep writing the field so the
+    # downstream hook can be added without a contract change.
+    context["governance_id"] = governance_id
+
+    context.update(
+        {
+            "thread_id": thread_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "username": username,
+            "thread_context": ctx.serialize(),
+            "auth_user": {
+                "tenant_id": auth_user.tenant_id,
+                "user_id": auth_user.user_id,
+                "name": auth_user.name,
+                "employee_no": auth_user.employee_no,
+                "target_system": auth_user.target_system,
+                "role": auth_user.role,
+            },
+        }
+    )
+
+    binding = registry.get_binding(thread_id) or {}
+    bound_group_key = binding.get("group_key")
+    if bound_group_key:
+        context["group_key"] = bound_group_key
+    bound_allowed_agents = binding.get("allowed_agents")
+    if bound_allowed_agents:
+        context["allowed_agents"] = list(bound_allowed_agents)
+    bound_entry_agent = binding.get("entry_agent")
+    if bound_entry_agent:
+        context["agent_name"] = bound_entry_agent
+    bound_mode = binding.get("requested_orchestration_mode")
+    if bound_mode:
+        context["requested_orchestration_mode"] = bound_mode
+
+    # Mirror the legacy ``buildGovernanceResumeRequest`` contract: workflow
+    # runs keep ``stream_subgraphs=False`` so the outer workflow transcript
+    # stays clean; leader / auto / unset modes enable subgraph streaming so
+    # governance reviewers still see subagent progress events after resume.
+    # Derived server-side from the bound mode — the browser never gets to
+    # flip this toggle.
+    stream_subgraphs = bound_mode != "workflow"
+
+    try:
+        first_chunk, upstream_iter = await start_governance_resume_stream(
+            thread_id=thread_id,
+            context=context,
+            message=message,
+            stream_subgraphs=stream_subgraphs,
         )
     except RuntimeServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

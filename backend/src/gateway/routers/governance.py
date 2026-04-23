@@ -312,11 +312,14 @@ async def operator_resolve(
         )
 
     # 2. Delegate to the existing intervention resolution flow
-    #    This reuses the same LangGraph client + resolution logic from interventions.py
+    #    This reuses the same LangGraph client + resolution logic from interventions.py.
+    #    IMPORTANT: share the runtime_service-cached client so we honour the
+    #    LANGGRAPH_URL env var (hardcoding 127.0.0.1:2024 breaks deployments
+    #    where LangGraph runs on a different host or port).
     try:
-        from langgraph_sdk import get_client
+        from src.gateway.runtime_service import _get_client as _get_langgraph_client
 
-        client = get_client(url="http://127.0.0.1:2024")
+        client = _get_langgraph_client()
         thread = await client.threads.get(thread_id)
     except Exception as e:
         logger.error("[GovernanceAPI] Failed to get thread '%s': %s", thread_id, e)

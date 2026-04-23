@@ -227,8 +227,23 @@ def _apply_before_interrupt_emit_safe(
     proposed_update: dict[str, Any],
     state: dict[str, Any] | None = None,
     run_id: str | None = None,
+    thread_id: str | None = None,
+    tenant_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Wrapper around lifecycle.apply_before_interrupt_emit with fail-closed error handling."""
+    """Wrapper around lifecycle.apply_before_interrupt_emit with fail-closed error handling.
+
+    ``thread_id`` / ``tenant_id`` / ``user_id`` flow into the hook context so the
+    governance audit hook (``GovernanceInterruptEmitAuditHook``) can persist a
+    ledger entry bound to the originating tenant / user / thread. Without this
+    wiring the ledger writes empty ``thread_id`` and ``null`` ``user_id``,
+    which later breaks the Gateway ``governance:resume`` ownership check.
+    """
+    extra_metadata: dict[str, Any] = {}
+    if tenant_id:
+        extra_metadata["tenant_id"] = tenant_id
+    if user_id:
+        extra_metadata["user_id"] = user_id
     try:
         from src.agents.hooks.lifecycle import apply_before_interrupt_emit
         return apply_before_interrupt_emit(
@@ -239,6 +254,8 @@ def _apply_before_interrupt_emit_safe(
             proposed_update=proposed_update,
             state=state or {},
             run_id=run_id,
+            thread_id=thread_id,
+            extra_metadata=extra_metadata or None,
         )
     except Exception as exc:
         logger.error("[Executor] before_interrupt_emit hook error at %s: %s", source_path, exc)
@@ -797,6 +814,14 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
     continuation_mode = task.get("continuation_mode")
     tenant_id = config.get("configurable", {}).get("tenant_id", "default")
     user_id = config.get("configurable", {}).get("user_id")
+    # ``thread_id`` flows into the before_interrupt_emit governance audit hook
+    # so ledger entries carry thread ownership. Without this the ledger writes
+    # an empty string and the Gateway governance:resume ownership check then
+    # 403s every real intervention resume.
+    _thread_id_for_hooks = (
+        config.get("configurable", {}).get("thread_id")
+        or (config.get("configurable", {}).get("thread_context") or {}).get("thread_id")
+    )
     agents_dir = resolve_tenant_agents_dir(tenant_id)
     logger.info(
         "[Executor] Executing task '%s' via agent '%s' continuation_mode=%s.",
@@ -1325,6 +1350,9 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 proposed_update=_candidate_return,
                 state=state,
                 run_id=task_run_id,
+                thread_id=_thread_id_for_hooks,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
             if _candidate_return.get("execution_state") == "ERROR":
                 return _candidate_return
@@ -1489,6 +1517,9 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                         proposed_update=_candidate_return,
                         state=state,
                         run_id=task_run_id,
+                        thread_id=_thread_id_for_hooks,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
                     )
                     if _candidate_return.get("execution_state") == "ERROR":
                         return _candidate_return
@@ -1544,6 +1575,9 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 proposed_update=_candidate_return,
                 state=state,
                 run_id=task_run_id,
+                thread_id=_thread_id_for_hooks,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
             if _candidate_return.get("execution_state") == "ERROR":
                 return _candidate_return
@@ -1609,6 +1643,9 @@ async def _execute_single_task(task: TaskStatus, state: ThreadState, config: Run
                 proposed_update=_candidate_return,
                 state=state,
                 run_id=task_run_id,
+                thread_id=_thread_id_for_hooks,
+                tenant_id=tenant_id,
+                user_id=user_id,
             )
             if _candidate_return.get("execution_state") == "ERROR":
                 return _candidate_return

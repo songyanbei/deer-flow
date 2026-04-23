@@ -325,6 +325,102 @@ class TestLedgerPerUserFileIsolation:
         assert alice_entry is not None
         assert alice_entry["status"] == "resolved"
 
+    def test_cross_process_writes_visible_via_refresh(self):
+        """Regression: simulate LangGraph writing the JSONL while Gateway
+        holds an older in-memory index. The Gateway-side ledger must pick
+        up the new entry on the next read, not return 404.
+
+        This is the Phase 2.2 blocker: without mtime-based refresh,
+        ``get_by_id`` / ``query`` see only entries loaded at __init__,
+        so governance:resolve 404s on freshly-emitted entries.
+        """
+        import json
+
+        # Gateway-side ledger starts empty.
+        gateway_ledger = GovernanceLedger(data_dir=self._tmpdir)
+        assert gateway_ledger.total_count == 0
+
+        # Simulate LangGraph in a separate process appending to the per-user
+        # JSONL file (bypass record() so we don't touch gateway's memory).
+        per_user_dir = os.path.join(
+            self._tmpdir, "tenants", "acme", "users", "alice",
+        )
+        os.makedirs(per_user_dir, exist_ok=True)
+        per_user_file = os.path.join(per_user_dir, "governance_ledger.jsonl")
+        external_entry = {
+            "governance_id": "gov_external_1",
+            "thread_id": "thread-xp",
+            "run_id": "run-xp",
+            "task_id": "task-xp",
+            "source_agent": "research-agent",
+            "hook_name": "before_interrupt_emit",
+            "source_path": "executor.request_intervention",
+            "risk_level": "high",
+            "category": "intervention",
+            "decision": "require_intervention",
+            "status": "pending_intervention",
+            "tenant_id": "acme",
+            "user_id": "alice",
+            "created_at": "2026-04-23T00:00:00+00:00",
+            "request_id": "req-xp",
+        }
+        # Ensure mtime actually changes (filesystem resolution on Windows/macOS).
+        import time
+        time.sleep(0.02)
+        with open(per_user_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(external_entry) + "\n")
+
+        # Gateway must now see the foreign write.
+        found = gateway_ledger.get_by_id("gov_external_1")
+        assert found is not None, "Ledger failed to pick up foreign JSONL write"
+        assert found["thread_id"] == "thread-xp"
+
+        # And via other read paths.
+        assert gateway_ledger.get_by_request_id("req-xp") is not None
+        results = gateway_ledger.query(tenant_id="acme", user_id="alice")
+        assert any(e["governance_id"] == "gov_external_1" for e in results)
+        assert gateway_ledger.pending_count(thread_id="thread-xp") == 1
+
+    def test_refresh_picks_up_status_transition_from_other_process(self):
+        """If another process resolves an entry (rewrites the file), our
+        in-memory copy must reflect the new status on the next read."""
+        import json
+        import time
+
+        # Seed via our own ledger so both sides know about it. Use
+        # REQUIRE_INTERVENTION so it lands as pending_intervention.
+        seed = self.ledger.record(**self._base_kwargs(
+            tenant_id="acme",
+            user_id="alice",
+            decision=GovernanceDecision.REQUIRE_INTERVENTION,
+        ))
+        entry_id = seed["governance_id"]
+
+        # Simulate a foreign process rewriting the per-user file with the
+        # entry flipped to "resolved".
+        per_user_file = os.path.join(
+            self._tmpdir, "tenants", "acme", "users", "alice", "governance_ledger.jsonl",
+        )
+        original_lines = open(per_user_file, encoding="utf-8").read().splitlines()
+        rewritten = []
+        for line in original_lines:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row["governance_id"] == entry_id:
+                row["status"] = "resolved"
+                row["resolved_at"] = "2026-04-23T00:00:00+00:00"
+                row["resolved_by"] = "external-process"
+            rewritten.append(json.dumps(row))
+        time.sleep(0.02)
+        with open(per_user_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(rewritten) + "\n")
+
+        refreshed = self.ledger.get_by_id(entry_id)
+        assert refreshed is not None
+        assert refreshed["status"] == "resolved"
+        assert refreshed["resolved_by"] == "external-process"
+
     def test_archive_by_user_deletes_per_user_file(self):
         """archive_by_user should remove the per-user file when all entries are archived."""
         self.ledger.record(**self._base_kwargs(tenant_id="acme", user_id="alice"))

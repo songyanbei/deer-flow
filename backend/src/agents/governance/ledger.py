@@ -51,11 +51,17 @@ class GovernanceLedger:
     """
 
     def __init__(self, data_dir: str | None = None) -> None:
-        self._lock = threading.Lock()
+        # RLock so that read methods can call _refresh_from_disk_if_stale()
+        # while still holding the lock themselves without deadlocking.
+        self._lock = threading.RLock()
         self._entries: list[GovernanceLedgerEntry] = []
         # Indexes for fast lookup
         self._by_id: dict[str, GovernanceLedgerEntry] = {}
         self._by_request_id: dict[str, GovernanceLedgerEntry] = {}
+        # Per-file mtimes recorded at last load; used to detect cross-process
+        # writes (LangGraph server and Gateway run in separate processes and
+        # share the same JSONL files).
+        self._file_mtimes: dict[str, float] = {}
 
         self._data_dir = data_dir or _DEFAULT_DATA_DIR
         self._global_file_path = os.path.join(self._data_dir, _LEDGER_FILENAME)
@@ -80,29 +86,78 @@ class GovernanceLedger:
 
     # -- Persistence ----------------------------------------------------------
 
+    def _discover_ledger_files(self) -> list[str]:
+        """Return the current list of JSONL files to track.
+
+        Always probes the filesystem (global file + per-user glob) so that
+        files created by other processes after startup are picked up.
+        """
+        files: list[str] = []
+        if os.path.isfile(self._global_file_path):
+            files.append(self._global_file_path)
+        pattern = os.path.join(self._data_dir, "tenants", "*", "users", "*", _LEDGER_FILENAME)
+        for path in glob.glob(pattern):
+            if path not in files:
+                files.append(path)
+        return files
+
     def _load_from_disk(self) -> None:
         """Load existing entries from all JSONL files on startup.
 
         Scans the global ledger file **and** per-user files under
         ``tenants/*/users/*/governance_ledger.jsonl``.
         """
-        files_to_load: list[str] = []
-        if os.path.isfile(self._global_file_path):
-            files_to_load.append(self._global_file_path)
-        # Discover per-user ledger files
-        pattern = os.path.join(self._data_dir, "tenants", "*", "users", "*", _LEDGER_FILENAME)
-        for path in glob.glob(pattern):
-            if path not in files_to_load:
-                files_to_load.append(path)
+        with self._lock:
+            files_to_load = self._discover_ledger_files()
+            for fp in files_to_load:
+                self._load_file(fp)
 
-        for fp in files_to_load:
-            self._load_file(fp)
+            if self._entries:
+                logger.info(
+                    "[GovernanceLedger] Loaded %d entries from %d file(s)",
+                    len(self._entries), len(files_to_load),
+                )
 
-        if self._entries:
-            logger.info(
-                "[GovernanceLedger] Loaded %d entries from %d file(s)",
-                len(self._entries), len(files_to_load),
-            )
+    def _refresh_from_disk_if_stale(self) -> None:
+        """Reload the in-memory index if any tracked JSONL file changed.
+
+        Cross-process safety: LangGraph (port 2024) and Gateway (port 8001)
+        run in separate processes and share the same ``.deer-flow/`` data
+        directory.  Without this mtime-based refresh, Gateway's in-memory
+        index never sees entries LangGraph appends, and the Phase 2.2
+        ``governance:resolve`` / ``governance:resume`` endpoints 404 on
+        freshly-emitted governance entries.
+
+        Must be called while holding ``self._lock`` (the lock is an RLock,
+        so callers that already hold it are safe).
+        """
+        with self._lock:
+            current_files = self._discover_ledger_files()
+            current_mtimes: dict[str, float] = {}
+            stale = False
+            for fp in current_files:
+                try:
+                    mt = os.path.getmtime(fp)
+                except OSError:
+                    continue
+                current_mtimes[fp] = mt
+                cached_mt = self._file_mtimes.get(fp)
+                if cached_mt is None or mt > cached_mt:
+                    stale = True
+            # A file we had tracked previously has disappeared.
+            if not stale and (set(self._file_mtimes) - set(current_mtimes)):
+                stale = True
+            if not stale:
+                return
+
+            # Full reload — the cost is bounded by total ledger size and
+            # only triggers when a foreign process has written.
+            self._entries.clear()
+            self._by_id.clear()
+            self._by_request_id.clear()
+            self._file_mtimes.clear()
+            for fp in current_files:
+                self._load_file(fp)
 
     def _load_file(self, file_path: str) -> None:
         """Load entries from a single JSONL file into the in-memory index."""
@@ -118,6 +173,12 @@ class GovernanceLedger:
                     req_id = entry.get("request_id")
                     if req_id:
                         self._by_request_id[req_id] = entry
+            # Record mtime so subsequent refresh checks know this file's
+            # current state is already reflected in the in-memory index.
+            try:
+                self._file_mtimes[file_path] = os.path.getmtime(file_path)
+            except OSError:
+                pass
         except Exception:
             logger.exception("[GovernanceLedger] Failed to load ledger from %s", file_path)
 
@@ -128,6 +189,12 @@ class GovernanceLedger:
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            # Track our own write so the next refresh check doesn't
+            # pointlessly reload the file we just extended.
+            try:
+                self._file_mtimes[file_path] = os.path.getmtime(file_path)
+            except OSError:
+                pass
         except Exception:
             logger.exception("[GovernanceLedger] Failed to append entry to %s", file_path)
 
@@ -138,11 +205,16 @@ class GovernanceLedger:
                 # No entries left — remove the file
                 if os.path.isfile(file_path):
                     os.remove(file_path)
+                self._file_mtimes.pop(file_path, None)
                 return
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 for entry in entries:
                     f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+            try:
+                self._file_mtimes[file_path] = os.path.getmtime(file_path)
+            except OSError:
+                pass
         except Exception:
             logger.exception("[GovernanceLedger] Failed to rewrite ledger at %s", file_path)
 
@@ -234,6 +306,8 @@ class GovernanceLedger:
         Returns the updated entry, or None if not found / not pending.
         """
         with self._lock:
+            # Pick up cross-process writes before snapshotting for rewrite.
+            self._refresh_from_disk_if_stale()
             entry = None
             if governance_id:
                 entry = self._by_id.get(governance_id)
@@ -270,10 +344,12 @@ class GovernanceLedger:
 
     def get_by_id(self, governance_id: str) -> GovernanceLedgerEntry | None:
         with self._lock:
+            self._refresh_from_disk_if_stale()
             return self._by_id.get(governance_id)
 
     def get_by_request_id(self, request_id: str) -> GovernanceLedgerEntry | None:
         with self._lock:
+            self._refresh_from_disk_if_stale()
             return self._by_request_id.get(request_id)
 
     def query(
@@ -302,6 +378,7 @@ class GovernanceLedger:
         excluded when ``resolved_from`` or ``resolved_to`` is specified.
         """
         with self._lock:
+            self._refresh_from_disk_if_stale()
             results = list(self._entries)
 
         if tenant_id:
@@ -338,6 +415,7 @@ class GovernanceLedger:
     def pending_count(self, thread_id: str | None = None, tenant_id: str | None = None) -> int:
         """Count entries with status=pending_intervention."""
         with self._lock:
+            self._refresh_from_disk_if_stale()
             entries = self._entries
             if tenant_id:
                 entries = [e for e in entries if e.get("tenant_id", "default") == tenant_id]
@@ -348,6 +426,7 @@ class GovernanceLedger:
     @property
     def total_count(self) -> int:
         with self._lock:
+            self._refresh_from_disk_if_stale()
             return len(self._entries)
 
     # ── lifecycle API (for admin / cleanup operations) ──────────────────
