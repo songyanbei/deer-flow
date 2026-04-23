@@ -24,7 +24,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.gateway.runtime_service import start_resume_stream, start_stream
+from src.gateway.runtime_service import (
+    start_governance_resume_stream,
+    start_resume_stream,
+    start_stream,
+)
 from src.subagents.executor import SubagentExecutor
 
 
@@ -217,6 +221,76 @@ def test_start_resume_stream_command_only(mock_get_client):
     assert runs.captured_kwargs.get("input") is None
     assert runs.captured_kwargs.get("command") == {"resume": {"answer": "yes"}}
     assert "configurable" not in runs.captured_kwargs.get("config", {})
+
+
+# ── D2.2: Gateway governance resume submit kwargs ─────────────────────
+
+
+@patch("src.gateway.runtime_service._get_client")
+def test_start_governance_resume_stream_kwargs(mock_get_client):
+    """D2.2: governance resume mirrors legacy ``buildGovernanceResumeRequest``:
+
+    - context-only (no ``config.configurable``)
+    - ``stream_resumable=True``
+    - ``stream_mode=["values", "messages-tuple", "custom"]``
+    - ``stream_subgraphs`` forwarded from caller
+    - ``input`` carries a human message (not None — governance is a fresh
+      submit, not a pure Command resume)
+    """
+    runs = _CapturingRuns()
+    client = MagicMock()
+    client.runs = runs
+    mock_get_client.return_value = client
+
+    context = _build_trusted_context()
+
+    asyncio.run(
+        start_governance_resume_stream(
+            thread_id="thread-xyz",
+            context=context,
+            message="approved",
+            stream_subgraphs=True,
+        )
+    )
+
+    kwargs = runs.captured_kwargs
+    config = kwargs.get("config")
+    assert config == {"recursion_limit": 1000}
+    assert "configurable" not in config
+
+    assert kwargs.get("stream_resumable") is True
+    assert kwargs.get("stream_mode") == ["values", "messages-tuple", "custom"]
+    assert kwargs.get("stream_subgraphs") is True
+    assert kwargs.get("multitask_strategy") == "reject"
+
+    input_payload = kwargs.get("input")
+    assert isinstance(input_payload, dict)
+    assert input_payload["messages"][0]["content"][0]["text"] == "approved"
+
+    sent_ctx = kwargs.get("context")
+    assert sent_ctx["thread_context"]["thread_id"] == "thread-xyz"
+    # Governance path must not surface checkpoint / command kwargs to upstream.
+    assert "checkpoint" not in kwargs
+    assert "command" not in kwargs
+
+
+@patch("src.gateway.runtime_service._get_client")
+def test_start_governance_resume_stream_subgraphs_false(mock_get_client):
+    """Workflow-mode resume flips ``stream_subgraphs`` to False."""
+    runs = _CapturingRuns()
+    client = MagicMock()
+    client.runs = runs
+    mock_get_client.return_value = client
+
+    asyncio.run(
+        start_governance_resume_stream(
+            thread_id="thread-xyz",
+            context=_build_trusted_context(),
+            message="resume",
+            stream_subgraphs=False,
+        )
+    )
+    assert runs.captured_kwargs.get("stream_subgraphs") is False
 
 
 # ── D0.2: Subagent trusted context propagation ────────────────────────

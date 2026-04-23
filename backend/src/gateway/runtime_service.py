@@ -417,6 +417,67 @@ async def start_resume_stream(
         _raise_runtime_error(exc, thread_id)
 
 
+async def start_governance_resume_stream(
+    *,
+    thread_id: str,
+    context: dict[str, Any],
+    message: str,
+    stream_subgraphs: bool,
+) -> tuple[Any, Any]:
+    """Initiate an upstream LangGraph governance-resume run.
+
+    Mirrors :func:`start_stream` but preserves the legacy governance resume
+    streaming contract (``streamResumable=True`` + ``messages-tuple``) and
+    accepts a ``stream_subgraphs`` toggle derived server-side from the bound
+    ``requested_orchestration_mode`` (workflow runs disable subgraph streams
+    to keep the outer workflow transcript clean).
+
+    Governance resume is a *fresh* submit — no ``checkpoint``/``command`` is
+    accepted. Workflow continuity is driven entirely via trusted-context
+    fields (``workflow_resume_run_id`` / ``workflow_resume_task_id`` /
+    ``workflow_clarification_resume``) which the workflow resume node picks
+    up from ``context``.
+
+    Identity is expected to already be in ``context`` — the router builds it
+    from auth middleware + ``resolve_thread_context``. Single-channel remote
+    submit is preserved (LG1.x rejects dual ``configurable + context``).
+    """
+    client = _get_client()
+
+    input_payload = {
+        "messages": [
+            {
+                "type": "human",
+                "content": [{"type": "text", "text": message}],
+            }
+        ],
+    }
+
+    kwargs: dict[str, Any] = {
+        "input": input_payload,
+        "config": {"recursion_limit": 1000},
+        "context": dict(context),
+        "stream_mode": ["values", "messages-tuple", "custom"],
+        "stream_resumable": True,
+        "stream_subgraphs": stream_subgraphs,
+        "multitask_strategy": "reject",
+    }
+
+    try:
+        upstream_iter = client.runs.stream(
+            thread_id,
+            ENTRY_GRAPH_ASSISTANT_ID,
+            **kwargs,
+        )
+        upstream_aiter = upstream_iter.__aiter__()
+        first_chunk = await upstream_aiter.__anext__()
+        return first_chunk, upstream_aiter
+    except StopAsyncIteration:
+        return None, None
+    except Exception as exc:
+        _raise_runtime_error(exc, thread_id)
+
+
 def _raise_runtime_error(exc: Exception, thread_id: str) -> NoReturn:
     """Map upstream SDK exceptions to ``RuntimeServiceError`` with HTTP status."""
     exc_text = str(exc).lower()
