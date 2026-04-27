@@ -471,3 +471,4 @@ See `docs/` directory for detailed documentation:
 - [summarization.md](docs/summarization.md) - Context summarization
 - [plan_mode_usage.md](docs/plan_mode_usage.md) - Plan mode with TodoList
 - [RUNTIME_HOOKS.md](docs/RUNTIME_HOOKS.md) - Runtime hook harness (hook points, metadata contract, usage)
+- [langgraph_channel_probes.md](docs/langgraph_channel_probes.md) - LangGraph configurable-vs-context channel probes (rerun on LG dependency bumps)
