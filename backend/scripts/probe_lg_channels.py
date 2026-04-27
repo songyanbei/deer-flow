@@ -53,8 +53,28 @@ def thread_context_dict(thread_id: str) -> dict:
     }
 
 
-async def submit_variant(client, *, tag: str, use_config: bool, use_context: bool):
+async def submit_variant(
+    client,
+    *,
+    tag: str,
+    use_config: bool,
+    use_context: bool,
+    include_thread_context: bool = True,
+):
     """Create a thread, then submit one run under the chosen channel mix.
+
+    Parameters
+    ----------
+    use_config / use_context:
+        Toggle the two channels independently.
+    include_thread_context:
+        When False, the channel(s) carry identity scalars (``tenant_id`` /
+        ``user_id`` / ``auth_user``) but **omit** the serialized
+        ``thread_context`` blob. This is the single fail-closed scenario the
+        ``ThreadDataMiddleware`` regression matrix relies on — without this
+        flag the variant tag would lie about what was actually submitted
+        (the previous bug: ``config_only_no_tc`` always shipped
+        ``thread_context``).
 
     Returns (status, error_text_or_none).
     """
@@ -76,27 +96,25 @@ async def submit_variant(client, *, tag: str, use_config: bool, use_context: boo
         "multitask_strategy": "reject",
     }
 
-    if use_config:
-        run_kwargs["config"] = {
-            "recursion_limit": 50,
-            "configurable": {
-                "__probe__": tag,
-                "thread_id": thread_id,
-                "tenant_id": TENANT,
-                "user_id": USER,
-                "auth_user": AUTH_USER,
-                "thread_context": thread_context_dict(thread_id),
-            },
-        }
-    if use_context:
-        run_kwargs["context"] = {
+    def _identity_block() -> dict:
+        block = {
             "__probe__": tag,
             "thread_id": thread_id,
             "tenant_id": TENANT,
             "user_id": USER,
             "auth_user": AUTH_USER,
-            "thread_context": thread_context_dict(thread_id),
         }
+        if include_thread_context:
+            block["thread_context"] = thread_context_dict(thread_id)
+        return block
+
+    if use_config:
+        run_kwargs["config"] = {
+            "recursion_limit": 50,
+            "configurable": _identity_block(),
+        }
+    if use_context:
+        run_kwargs["context"] = _identity_block()
 
     try:
         # Pull a handful of chunks then stop.
@@ -121,53 +139,35 @@ async def main():
 
     client = get_client(url=LG_URL)
 
+    # Variant matrix. ``include_tc`` toggles whether the serialized
+    # ``thread_context`` blob is shipped alongside the identity scalars on the
+    # chosen channel(s). ``config_only_no_tc`` MUST set it to False — that is
+    # the entire point of the tag. Earlier revisions of this script forgot the
+    # flag, so ``config_only_no_tc`` produced a duplicate of ``config_only``
+    # and the real strip case lived in a separate inline block under a
+    # different name (``strip_tc``). Don't reintroduce that asymmetry.
     variants = [
-        ("config_only", True, False),
-        ("context_only", False, True),
-        ("both", True, True),  # expected LG 1.x 400
-        ("config_only_no_tc", True, False),  # for comparison: no thread_context in cfg
+        ("config_only", True, False, True),
+        ("context_only", False, True, True),
+        ("both", True, True, True),  # expected LG 1.x 400
+        ("config_only_no_tc", True, False, False),  # truly omits thread_context
     ]
 
-    # Special case: config_only_no_tc — strip thread_context
-    for name, use_cfg, use_ctx in variants:
-        print(f"\n== variant: {name} (config={use_cfg}, context={use_ctx}) ==")
-        status, err = await submit_variant(client, tag=name, use_config=use_cfg, use_context=use_ctx)
+    for name, use_cfg, use_ctx, include_tc in variants:
+        print(
+            f"\n== variant: {name} "
+            f"(config={use_cfg}, context={use_ctx}, thread_context={include_tc}) =="
+        )
+        status, err = await submit_variant(
+            client,
+            tag=name,
+            use_config=use_cfg,
+            use_context=use_ctx,
+            include_thread_context=include_tc,
+        )
         print(f"  status: {status}")
         if err:
             print(f"  error: {err[:300]}")
-
-    # Also do the "no thread_context" test by running a custom variant
-    print("\n== variant: config_only_strip_tc (config with NO thread_context key) ==")
-    try:
-        th = await client.threads.create()
-        thread_id = th["thread_id"]
-        kwargs = {
-            "input": {"messages": [{"type": "human", "content": [{"type": "text", "text": "probe strip"}]}]},
-            "stream_mode": ["values"],
-            "multitask_strategy": "reject",
-            "config": {
-                "recursion_limit": 50,
-                "configurable": {
-                    "__probe__": "strip_tc",
-                    "thread_id": thread_id,
-                    "tenant_id": TENANT,
-                    "user_id": USER,
-                    "auth_user": AUTH_USER,
-                    # NO thread_context
-                },
-            },
-        }
-        aiter = client.runs.stream(thread_id, ASSISTANT, **kwargs).__aiter__()
-        n = 0
-        while n < 4:
-            try:
-                await asyncio.wait_for(aiter.__anext__(), timeout=15.0)
-                n += 1
-            except (StopAsyncIteration, asyncio.TimeoutError):
-                break
-        print("  status: ok")
-    except Exception as exc:
-        print(f"  error: {type(exc).__name__}: {str(exc)[:300]}")
 
     # Give the server a sec to flush probe writes
     await asyncio.sleep(2)

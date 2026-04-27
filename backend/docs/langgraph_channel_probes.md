@@ -40,8 +40,9 @@ time.
 | [`backend/scripts/probe_lg_channels.py`](../scripts/probe_lg_channels.py) | Probes the **remote LangGraph API** (`langgraph dev` / `langgraph-api`) by submitting four channel variants (`config_only`, `context_only`, `both`, `config_only_no_thread_context`) and recording which combinations the server accepts. |
 | [`backend/scripts/probe_local_pregel.py`](../scripts/probe_local_pregel.py) | Probes the **in-process pregel** runtime — the same path `DeerFlowClient` and `SubagentExecutor` take — with three variants (`L-A` config-only, `L-B` context-only, `L-C` both). Captures what `make_lead_agent` and `ThreadDataMiddleware._resolve_context` actually see at build time and runtime. |
 
-`PROBE_DIR` defaults to `E:/work/deer-flow/.probe_out` and can be overridden
-with the `DF_PROBE_DIR` env var.
+`PROBE_DIR` defaults to `<repo-root>/.probe_out` (derived from the script's
+own location, so it works on any machine and any OS without setup) and can
+be overridden with the `DF_PROBE_DIR` env var.
 
 ## How to run
 

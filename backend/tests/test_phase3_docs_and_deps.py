@@ -149,3 +149,93 @@ def test_claude_md_points_at_probe_doc():
         "Phase 3 D3.3: backend/CLAUDE.md must list the probe doc under the "
         "Documentation section so it is discoverable from the entry doc."
     )
+
+
+# ── D3.3 portability fixes (codex P2 review) ─────────────────────────
+
+
+def test_probe_channels_default_dir_is_not_hardcoded(tmp_path, monkeypatch):
+    """``_probe_channels.PROBE_DIR`` must derive from the script location.
+
+    Earlier revisions hardcoded ``E:/work/deer-flow/.probe_out``, which made
+    the probe scripts unusable on any other developer machine. The default
+    must be derived from the script's own location (``parents[2]`` →
+    repo root) so the probes are portable.
+    """
+    # Force a clean import so module-level path computation runs against the
+    # current env (no DF_PROBE_DIR override).
+    monkeypatch.delenv("DF_PROBE_DIR", raising=False)
+    import importlib
+    import sys as _sys
+
+    _sys.path.insert(0, str(BACKEND_ROOT / "scripts"))
+    if "_probe_channels" in _sys.modules:
+        del _sys.modules["_probe_channels"]
+    mod = importlib.import_module("_probe_channels")
+
+    expected_root = BACKEND_ROOT.parent  # <repo-root> = backend/..
+    assert mod.PROBE_DIR == expected_root / ".probe_out", (
+        f"PROBE_DIR ({mod.PROBE_DIR}) must derive from repo root "
+        f"({expected_root}) instead of being hardcoded."
+    )
+
+    # And the override must still work.
+    monkeypatch.setenv("DF_PROBE_DIR", str(tmp_path / "custom"))
+    del _sys.modules["_probe_channels"]
+    mod2 = importlib.import_module("_probe_channels")
+    assert mod2.PROBE_DIR == tmp_path / "custom"
+
+
+def test_probe_channels_source_has_no_hardcoded_user_path():
+    """Guard against the hardcoded ``E:/work/...`` regressing.
+
+    A grep-style assertion on the source so future edits cannot silently
+    reintroduce a developer-specific absolute path.
+    """
+    src = (BACKEND_ROOT / "scripts" / "_probe_channels.py").read_text(encoding="utf-8")
+    # Match the specific regression we hit, not a generic "drive letter"
+    # check (Windows users may legitimately set DF_PROBE_DIR to E:\...).
+    assert "E:/work/deer-flow" not in src
+    assert "E:\\work\\deer-flow" not in src
+
+
+def test_probe_doc_does_not_hardcode_user_path():
+    text = (BACKEND_ROOT / "docs" / "langgraph_channel_probes.md").read_text(encoding="utf-8")
+    assert "E:/work/deer-flow" not in text
+    assert "E:\\work\\deer-flow" not in text
+
+
+def test_probe_lg_channels_variant_tags_are_truthful():
+    """``config_only_no_tc`` must actually omit ``thread_context``.
+
+    The earlier bug: the variant tag promised "no thread_context" but the
+    submit helper unconditionally injected ``thread_context`` whenever
+    ``use_config=True``, so the tag was a duplicate of ``config_only`` and
+    the real strip case lived under a different name (``strip_tc``) in an
+    inline block. This test pins the contract that the variant matrix
+    actually exercises the no-thread-context path.
+    """
+    src = (BACKEND_ROOT / "scripts" / "probe_lg_channels.py").read_text(encoding="utf-8")
+    # The submit helper must accept the toggle.
+    assert "include_thread_context" in src, (
+        "submit_variant must accept include_thread_context to make the "
+        "config_only_no_tc tag truthful."
+    )
+    # The variant matrix must use it for config_only_no_tc.
+    # We don't pin the exact tuple shape, but we require the tag and the
+    # toggle to co-occur on the same line (i.e. False is passed for it).
+    lines = src.splitlines()
+    matrix_lines = [ln for ln in lines if "config_only_no_tc" in ln]
+    assert matrix_lines, "config_only_no_tc variant missing from matrix"
+    assert any("False" in ln for ln in matrix_lines), (
+        "config_only_no_tc must pass include_thread_context=False (or a "
+        "False element in the variant tuple) so the tag matches reality."
+    )
+    # The redundant inline ``strip_tc`` block must be gone. Match the
+    # quoted tag string specifically — the historical-reference comment
+    # explaining the old bug is allowed to mention the name in prose.
+    assert '"strip_tc"' not in src and "'strip_tc'" not in src, (
+        "inline strip_tc block is redundant once config_only_no_tc is "
+        "truthful — remove it to keep the variant matrix the single source "
+        "of truth."
+    )

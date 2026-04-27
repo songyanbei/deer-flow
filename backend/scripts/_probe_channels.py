@@ -17,7 +17,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-PROBE_DIR = Path(os.environ.get("DF_PROBE_DIR", "E:/work/deer-flow/.probe_out"))
+# Default probe output directory is derived from the script's location so the
+# probes work on any developer machine and any OS without setup. Layout is
+#   <repo-root>/backend/scripts/_probe_channels.py  →  parents[2] == <repo-root>
+# yielding <repo-root>/.probe_out. Override with the ``DF_PROBE_DIR`` env var
+# when running outside the repo (CI sandboxes, ad-hoc reproductions, etc.).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_PROBE_DIR = _REPO_ROOT / ".probe_out"
+PROBE_DIR = Path(os.environ.get("DF_PROBE_DIR") or _DEFAULT_PROBE_DIR)
 
 
 def dump(tag: str, payload: dict[str, Any]) -> None:
