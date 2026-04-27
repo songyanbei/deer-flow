@@ -37,6 +37,7 @@ from src.gateway.dependencies import (
 from src.gateway.runtime_service import (
     RuntimeServiceError,
     create_thread,
+    debug_errors_enabled,
     get_thread_state_summary,
     iter_events,
     start_governance_resume_stream,
@@ -501,6 +502,27 @@ def _validate_checkpoint(checkpoint: dict[str, Any] | None) -> dict[str, Any] | 
     return {k: v for k, v in checkpoint.items() if k not in _IDENTITY_CONTEXT_KEYS}
 
 
+# ── Error translation ────────────────────────────────────────────────
+
+
+def _http_exception_from_runtime_error(exc: RuntimeServiceError) -> HTTPException:
+    """Translate a ``RuntimeServiceError`` into an HTTPException.
+
+    Default behavior returns the sanitized error string as the HTTP detail,
+    preserving the existing external contract. When
+    ``GATEWAY_DEBUG_LG_ERRORS`` is enabled, the detail becomes a JSON object
+    ``{"error": <sanitized>, "debug": <raw_exc_payload>}`` so operators can
+    diagnose LangGraph channel regressions on a live Gateway without
+    redeploying. See ``runtime_service.debug_errors_enabled``.
+    """
+    if debug_errors_enabled() and getattr(exc, "debug", None):
+        return HTTPException(
+            status_code=exc.status_code,
+            detail={"error": str(exc), "debug": exc.debug},
+        )
+    return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 
@@ -524,7 +546,7 @@ async def create_runtime_thread(
     try:
         lg_thread = await create_thread()
     except RuntimeServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http_exception_from_runtime_error(exc) from exc
 
     thread_id = lg_thread["thread_id"]
     portal_session_id = provided_portal_session_id or f"deerflow-web:{thread_id}"
@@ -564,7 +586,7 @@ async def get_runtime_thread(
     try:
         state_summary = await get_thread_state_summary(thread_id)
     except RuntimeServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http_exception_from_runtime_error(exc) from exc
 
     return ThreadBindingResponse(
         thread_id=thread_id,
@@ -667,7 +689,7 @@ async def stream_runtime_message(
             context=context,
         )
     except RuntimeServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http_exception_from_runtime_error(exc) from exc
 
     # Upstream accepted — persist binding metadata
     registry.update_binding(
@@ -817,7 +839,7 @@ async def resume_runtime_stream(
             command=command,
         )
     except RuntimeServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http_exception_from_runtime_error(exc) from exc
 
     return StreamingResponse(
         iter_events(
@@ -1065,7 +1087,7 @@ async def resume_governance_stream(
             stream_subgraphs=stream_subgraphs,
         )
     except RuntimeServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise _http_exception_from_runtime_error(exc) from exc
 
     return StreamingResponse(
         iter_events(

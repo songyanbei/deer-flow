@@ -100,11 +100,68 @@ def _get_client():
 
 
 class RuntimeServiceError(Exception):
-    """Base exception for runtime service failures."""
+    """Base exception for runtime service failures.
 
-    def __init__(self, message: str, status_code: int = 503) -> None:
+    ``debug`` carries an optional diagnostic payload (exception type / raw
+    message / traceback tail) captured from the original upstream exception.
+    It is populated unconditionally at raise time but only surfaced to
+    callers when ``GATEWAY_DEBUG_LG_ERRORS`` is truthy — see
+    :func:`debug_errors_enabled`. Default production behavior stays sanitized.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 503,
+        debug: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.debug = debug
+
+
+# ── Debug error gating (Phase 3 / D3.1) ───────────────────────────────
+#
+# Default behavior is fully sanitized. Setting ``GATEWAY_DEBUG_LG_ERRORS`` to
+# a truthy value (``1`` / ``true`` / ``yes`` / ``on``, case-insensitive)
+# enables a ``debug`` field on HTTP error responses and ``run_failed`` SSE
+# frames containing the raw upstream exception class, message, and a
+# traceback tail. This is intended for diagnosing LangGraph channel
+# regressions (for example the LG1.x ``Cannot specify both configurable and
+# context`` 400) on a live Gateway without redeploying.
+#
+# See ``collaboration/features/runtime-lg1x-trusted-context-submit.md``
+# §Phase 3 / Task 3.1.
+
+
+_DEBUG_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def debug_errors_enabled() -> bool:
+    """Return True iff ``GATEWAY_DEBUG_LG_ERRORS`` is set to a truthy value.
+
+    Exported (no leading underscore) so router-side code can gate the
+    ``debug`` merge without reaching into private module state.
+    """
+    return os.getenv("GATEWAY_DEBUG_LG_ERRORS", "").strip().lower() in _DEBUG_TRUTHY
+
+
+def build_debug_error_payload(exc: BaseException) -> dict[str, Any]:
+    """Return a compact diagnostic dict for an exception (debug mode only).
+
+    The traceback is truncated to the last 2000 characters to keep SSE frames
+    and HTTP error bodies bounded. Production code gates this behind
+    :func:`debug_errors_enabled`; see module docstring.
+    """
+    import traceback
+    tb_tail = "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__)
+    )[-2000:]
+    return {
+        "exc_type": type(exc).__name__,
+        "exc_message": str(exc),
+        "traceback_tail": tb_tail,
+    }
 
 
 # ── Thread creation ───────────────────────────────────────────────────
@@ -121,8 +178,16 @@ async def create_thread() -> dict[str, Any]:
         thread = await client.threads.create()
         return thread
     except Exception as exc:
+        # Full raw exception goes to the log (operator-only); the message that
+        # leaves this module must already be sanitized so the default HTTP
+        # response cannot leak connection strings, upstream secrets, or
+        # internal hostnames. Raw detail is preserved on ``debug`` for the
+        # opt-in ``GATEWAY_DEBUG_LG_ERRORS`` path.
         logger.error("[RuntimeService] Failed to create LangGraph thread: %s", exc)
-        raise RuntimeServiceError(f"LangGraph thread creation failed: {exc}") from exc
+        raise RuntimeServiceError(
+            f"LangGraph thread creation failed: {_sanitize_error(exc)}",
+            debug=build_debug_error_payload(exc),
+        ) from exc
 
 
 # ── Thread state summary ──────────────────────────────────────────────
@@ -162,10 +227,20 @@ async def get_thread_state_summary(thread_id: str) -> dict[str, Any]:
         # Distinguish "not found" from connectivity errors.
         # langgraph_sdk raises HTTPStatusError for 404, various connection
         # errors for unreachable server.
+        debug = build_debug_error_payload(exc)
         if "404" in exc_text or "not found" in exc_text:
-            raise RuntimeServiceError(f"Thread not found upstream: {thread_id}", status_code=404) from exc
+            raise RuntimeServiceError(
+                f"Thread not found upstream: {thread_id}", status_code=404, debug=debug
+            ) from exc
+        # Sanitize the outer message so debug-off HTTP responses cannot leak
+        # raw connection strings / upstream secret fragments. The raw text is
+        # still captured on ``debug`` for the opt-in debug path.
         logger.error("[RuntimeService] Failed to get thread state for '%s': %s", thread_id, exc)
-        raise RuntimeServiceError(f"LangGraph unavailable: {exc}", status_code=503) from exc
+        raise RuntimeServiceError(
+            f"LangGraph unavailable: {_sanitize_error(exc)}",
+            status_code=503,
+            debug=debug,
+        ) from exc
 
     # Thread exists but has no runs yet → values may be empty / None
     if not values:
@@ -479,13 +554,25 @@ async def start_governance_resume_stream(
 
 
 def _raise_runtime_error(exc: Exception, thread_id: str) -> NoReturn:
-    """Map upstream SDK exceptions to ``RuntimeServiceError`` with HTTP status."""
+    """Map upstream SDK exceptions to ``RuntimeServiceError`` with HTTP status.
+
+    The raw exception is always captured into ``RuntimeServiceError.debug``;
+    whether it leaks to the client is gated at the router / SSE layer by
+    :func:`debug_errors_enabled`.
+    """
+    debug = build_debug_error_payload(exc)
     exc_text = str(exc).lower()
     if "404" in exc_text or "not found" in exc_text:
-        raise RuntimeServiceError(f"Runtime thread not found: {thread_id}", status_code=404) from exc
+        raise RuntimeServiceError(
+            f"Runtime thread not found: {thread_id}", status_code=404, debug=debug
+        ) from exc
     if any(tok in exc_text for tok in ("reject", "multitask", "already running", "409")):
-        raise RuntimeServiceError("Runtime rejected the submission (already running)", status_code=409) from exc
-    raise RuntimeServiceError(f"LangGraph submission failed: {_sanitize_error(exc)}", status_code=503) from exc
+        raise RuntimeServiceError(
+            "Runtime rejected the submission (already running)", status_code=409, debug=debug
+        ) from exc
+    raise RuntimeServiceError(
+        f"LangGraph submission failed: {_sanitize_error(exc)}", status_code=503, debug=debug
+    ) from exc
 
 
 async def iter_events(
@@ -565,11 +652,17 @@ async def iter_events(
 
     except Exception as exc:
         logger.error("[RuntimeService] Stream error for thread '%s': %s", thread_id, exc)
-        yield _format_sse(SSE_RUN_FAILED, {
+        failed_payload: dict[str, Any] = {
             "thread_id": thread_id,
             "run_id": run_id,
             "error": _sanitize_error(exc),
-        })
+        }
+        # D3.1: surface raw exception details only when explicitly opted in.
+        # Production default stays sanitized so stacktraces / internal
+        # exception messages never leak to external platform clients.
+        if debug_errors_enabled():
+            failed_payload["debug"] = build_debug_error_payload(exc)
+        yield _format_sse(SSE_RUN_FAILED, failed_payload)
 
 
 def _normalize_stream_event(
